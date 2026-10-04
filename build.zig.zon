@@ -1,0 +1,44 @@
+.{
+    // Package name. Consumers depend on this project as `zaccesskit`.
+    .name = .zaccesskit,
+    .version = "0.0.0",
+    // Together with the name, this is the globally unique package identifier.
+    // Zig generates it once and it never changes afterwards.
+    .fingerprint = 0x95d7536e8599701b, // Changing this has security and trust implications.
+    // Zig 0.16.0 is the line this project targets, not merely a lower bound.
+    // `zig` on this host is an anyzig shim that reads this field, so it is also
+    // how the toolchain gets selected: every tool in the gate follows it.
+    .minimum_zig_version = "0.16.0",
+    .dependencies = .{
+        // zio is the async runtime this port is built around: it replaces the
+        // tokio runtime that the Rust accesskit crates depend on. Pinned to the
+        // tip of `main` at 2662fdc45997611b962b560c513c16963475a01b — the
+        // commit `docs/20-zio-and-zig-io.md` was researched against. The hash
+        // is taken from that tree, so a moving `main` fails the build instead of
+        // drifting underneath us.
+        //
+        // A codeload tarball rather than `git+` because this host's libgit2
+        // cannot negotiate with GitHub; `devenv.nix` records the same commit.
+        //
+        // Fetched from `lalinsky/zio`, the upstream author, not from a fork
+        // account. The same commit is reachable from both, and the contents are
+        // identical, so the choice costs nothing and keeps the pin auditable
+        // against the account that owns the project. See
+        // `docs/21-licensing.md`, which records that a fork carries no asserted
+        // licence of its own.
+        .zio = .{
+            .url = "https://codeload.github.com/lalinsky/zio/tar.gz/2662fdc45997611b962b560c513c16963475a01b",
+            // Computed by `zig build` from the tree the URL resolves to.
+            .hash = "zio-0.18.0-xHbVVNWuKgDuxgpeptynAPuUOVIn2sXbgcqRhtiYn-rk",
+        },
+    },
+    // Only these paths are packaged and hashed. Keep it to what a build needs.
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+        "docs",
+        "README.md",
+        "AGENTS.md",
+    },
+}

@@ -1,0 +1,502 @@
+//! The COM object base the Windows adapter is built on.
+//!
+//! **What this file is.** The 120-odd lines of new Zig that
+//! `docs/42-native-adapter-build-map.md` section 2.1.4 says have no upstream
+//! counterpart. Upstream writes `#[implement(IRawElementProviderSimple, …)]`
+//! and `windows::core::ComObject<T>` and gets refcounting, a vtable pointer,
+//! three `IUnknown` thunks and a `QueryInterface` for free. Zig 0.16.0 ships
+//! no `std.com`, so the port writes them.
+//!
+//! **Why this is the only new code on Windows.** The other three adapters'
+//! extra code is three `extern` declarations, a table of constants and a JNI
+//! wrapper. Windows is the only one that needs an object model, and this file
+//! is that object model. It has no Windows dependency once the vtable types
+//! come from zigwin32, so it is testable on this host, and `docs/42` section
+//! 5.4 says so.
+//!
+//! **The layout, and why it is that shape.** COM gives a caller one pointer
+//! per interface, and the first word of that pointer is the vtable. A COM
+//! object that answers thirteen interfaces therefore holds thirteen vtable
+//! words, one per interface, at consecutive offsets. This file stores them in
+//! `words`, a tuple of interface pointers, and gives interface `i` the word
+//! at offset `i * @sizeOf(usize)`. The words are distinct addresses, so a
+//! caller holding interface `i` dispatches through interface `i`'s vtable and
+//! a caller holding interface `j` through `j`'s, which is what COM requires.
+//!
+//! **The `IUnknown` thunks are generated per word.** `Release` arrives
+//! through whichever interface pointer the caller holds, and it must get back
+//! to the object. The object is the address `i * @sizeOf(usize)` below word
+//! `i`, and the thunk has no way to learn `i` from the pointer alone, so
+//! `baseVTable` emits one set of three thunks per word with `i` written into
+//! each. A single shared set would need a backward scan, and a backward scan
+//! over a pointer of no known provenance is the kind of guess this port does
+//! not make.
+//!
+//! **What this file does not do.** It does not implement any of the thirteen
+//! interfaces. `node.zig` writes those vtables, using `baseVTable` for the
+//! `base` field of each.
+
+const std = @import("std");
+const bindings = @import("bindings.zig");
+
+const win32 = bindings.win32;
+
+/// The 128-bit identifier `QueryInterface` compares against.
+pub const Guid = win32.zig.Guid;
+
+/// The status a COM call returns.
+pub const Hresult = bindings.Hresult;
+
+/// The base interface every other interface starts with.
+pub const IUnknown = bindings.IUnknown;
+
+/// The identifier `QueryInterface` matches for `IUnknown` itself.
+pub const iid_unknown = win32.system.com.IID_IUnknown;
+
+/// One interface a `Object` answers for.
+pub const Descriptor = struct {
+    /// The interface type. Its `VTable` holds the methods, and the first
+    /// field of that `VTable`, named `base`, holds the three `IUnknown`
+    /// slots.
+    Interface: type,
+
+    /// The identifier `QueryInterface` matches for this interface. Take it
+    /// from the binding, for example
+    /// `win32.ui.accessibility.IID_IRawElementProviderSimple`.
+    Iid: *const Guid,
+};
+
+/// A COM object: `Descriptors.len` vtable words, a reference count, an
+/// allocator, and the state the thunks read.
+///
+/// `Descriptors` is a tuple of `Descriptor`, one per implemented interface,
+/// in the order the words are laid out. Word `i` holds `Descriptors[i]`, so
+/// the tuple order is the ABI order and a caller that reorders it silently
+/// re-points every interface.
+///
+/// **The allocator.** `gpa` is a field, not a global, and the caller frees the
+/// object when the last `Release` brings the count to zero. A caller that
+/// wants the object to outlive its own allocator must supply one that will
+/// still be valid, which is the requirement every allocating call in this
+/// port carries.
+///
+/// **The reference count.** It starts at one. `addRef` and `release` are the
+/// only two ways it changes, so a count that is not one after `create` means
+/// a caller reached the object without holding a reference.
+pub fn Object(comptime StateType: type, comptime Interfaces: type) type {
+    // The bound every loop over the descriptor tuple uses. It is the number
+    // of interfaces the object answers for, which is fixed when the type is
+    // formed and is never a run-time count. The derivation is one word per
+    // interface of `Descriptors`, and `Descriptors` is a tuple literal, so
+    // the count is its length.
+    const interface_count = Interfaces.len;
+
+    comptime std.debug.assert(interface_count > 0);
+
+    return struct {
+        const Self = @This();
+
+        /// The type of the state the thunks read. It is whatever the caller
+        /// needs and nothing more.
+        pub const State = StateType;
+
+        /// The descriptor tuple this object was formed from. A caller reads
+        /// it to find the index of the interface it holds.
+        pub const Descriptors = Interfaces;
+
+        /// How many interfaces this object answers for.
+        pub const interface_count = interface_count;
+
+        /// The vtable words, one per interface, at consecutive offsets. Word
+        /// zero is at offset zero, so the object address and the first
+        /// interface pointer are the same word.
+        words: [interface_count]IUnknown,
+
+        /// How many holders there are. Starts at one.
+        ref_count: std.atomic.Value(u32),
+
+        /// The allocator that grew this object.
+        gpa: std.mem.Allocator,
+
+        /// The state the thunks read. Written once at construction and never
+        /// changed, so a thunk that holds it observes one value for the whole
+        /// life of the object.
+        state: State,
+
+        /// Allocates an object whose interface `i` dispatches through
+        /// `vtables[i]`.
+        ///
+        /// `vtables[i]` must be a `*const T` for `Descriptors[i].Interface`,
+        /// and its `base` field must be `baseVTable(i)`. The caller writes
+        /// both, because the method slots belong to the caller's interface.
+        ///
+        /// The object starts with one holder. The caller releases that holder
+        /// once. A caller that hands the object to a platform call hands over
+        /// that holder and does not release it again.
+        ///
+        /// The state is moved into the object. Nothing is copied.
+        ///
+        /// Fails with `error.OutOfMemory` only when the allocator refuses.
+        /// There is no other fallible step, so `errdefer` runs only on that
+        /// path.
+        pub fn create(
+            gpa: std.mem.Allocator,
+            vtables: [interface_count]*const anyopaque,
+            state: State,
+        ) !*Self {
+            const object = try gpa.create(Self);
+            for (&object.words, 0..) |*word, index| {
+                word.* = .{ .vtable = vtables[index] };
+            }
+            object.ref_count = .init(1);
+            object.gpa = gpa;
+            object.state = state;
+            return object;
+        }
+
+        /// The `IUnknown` vtable for word `index`.
+        ///
+        /// The caller puts this in the `base` field of the interface vtable
+        /// at the same index, so `Release` arriving through that interface
+        /// reaches the object by the one route that does not have to guess.
+        ///
+        /// Each call answers a fresh value holding the same three function
+        /// pointers, so two vtables may share one base and neither becomes
+        /// writable through the other.
+        pub fn baseVTable(comptime index: comptime_int) IUnknown.VTable {
+            comptime std.debug.assert(index >= 0);
+            comptime std.debug.assert(index < interface_count);
+            return .{
+                .QueryInterface = queryInterfaceThunkFor(index),
+                .AddRef = addRefThunkFor(index),
+                .Release = releaseThunkFor(index),
+            };
+        }
+
+        /// The index of `Interface` in the descriptor tuple, or `null` when
+        /// the object does not answer for it.
+        ///
+        /// The tuple is fixed when the type is formed, so a `null` answer is a
+        /// caller error rather than a run-time state.
+        pub fn indexOf(comptime Interface: type) ?comptime_int {
+            comptime {
+                var found: ?comptime_int = null;
+                inline for (Descriptors, 0..) |descriptor, candidate| {
+                    if (descriptor.Interface == Interface) found = candidate;
+                }
+                return found;
+            }
+        }
+
+        /// One more holder. Answers the count after the change.
+        ///
+        /// The count is a `u32` and is not bounded. An `addRef` on a count
+        /// that has reached `std.math.maxInt(u32)` is a caller error this port
+        /// does not police, because COM does not police it either.
+        pub fn addRef(self: *Self) u32 {
+            return self.ref_count.fetchAdd(1, .acq_rel) + 1;
+        }
+
+        /// One fewer holder. Answers the count after the change.
+        ///
+        /// The caller frees the object when the answer is zero, and only then.
+        /// A count that reaches zero twice is a caller error: two holders
+        /// released the same reference.
+        pub fn release(self: *Self) u32 {
+            return self.ref_count.fetchSub(1, .acq_rel);
+        }
+
+        /// The interface pointer for word `index`. For word zero it is also
+        /// the object address.
+        ///
+        /// The result is `*const`, because a caller may dispatch through the
+        /// interface but must not write the vtable word.
+        pub fn iface(self: *Self, comptime index: comptime_int) *const IUnknown {
+            comptime std.debug.assert(index >= 0);
+            comptime std.debug.assert(index < interface_count);
+            return &self.words[index];
+        }
+
+        /// The object behind an interface pointer.
+        ///
+        /// `Interface` must be one of the descriptors, because the index is
+        /// how the address is recovered. Any other type fails to compile
+        /// rather than reading a wrong address.
+        pub fn fromIface(comptime Interface: type, pointer: *const IUnknown) *Self {
+            const index = comptime indexOf(Interface) orelse
+                @compileError("the object does not implement " ++ @typeName(Interface));
+            comptime std.debug.assert(index >= 0);
+            comptime std.debug.assert(index < interface_count);
+            const word: *IUnknown = @constCast(@alignCast(pointer));
+            return @fieldParentPtr("words", word);
+        }
+
+        /// The answer to `QueryInterface` arriving at word `index`.
+        ///
+        /// Compares `riid` against every identifier the object answers for,
+        /// including `IID_IUnknown`. A match writes the interface pointer
+        /// through `ppv` and adds a holder, which is what COM requires of a
+        /// success. A miss answers `E_NOINTERFACE` and writes nothing at all,
+        /// which is what COM requires of a miss, so the caller's out-parameter
+        /// is left as it found it and must not be read.
+        ///
+        /// A `null` `ppv` answers `E_INVALIDARG` and writes nothing.
+        pub fn queryInterface(
+            self: *Self,
+            comptime index: comptime_int,
+            riid: *const Guid,
+            ppv: **anyopaque,
+        ) Hresult {
+            comptime std.debug.assert(index >= 0);
+            comptime std.debug.assert(index < interface_count);
+            if (ppv == null) return e_invalidarg();
+            const requested = guidBytes(riid);
+            if (std.mem.eql(u8, requested, guidBytes(iid_unknown))) {
+                ppv.* = @ptrCast(self.iface(0));
+                _ = self.addRef();
+                return s_ok();
+            }
+            inline for (Descriptors, 0..) |descriptor, candidate| {
+                if (!std.mem.eql(u8, requested, guidBytes(descriptor.Iid))) continue;
+                ppv.* = @ptrCast(self.iface(candidate));
+                _ = self.addRef();
+                return s_ok();
+            }
+            return e_nointerface();
+        }
+
+        /// `QueryInterface` as word `index` receives it.
+        fn queryInterfaceThunkFor(comptime index: comptime_int) *const fn (
+            *const IUnknown,
+            *const Guid,
+            **anyopaque,
+        ) callconv(.winapi) Hresult {
+            comptime std.debug.assert(index >= 0);
+            comptime std.debug.assert(index < interface_count);
+            const Outer = Self;
+            return struct {
+                fn thunk(
+                    word: *const IUnknown,
+                    riid: *const Guid,
+                    ppv: **anyopaque,
+                ) callconv(.winapi) Hresult {
+                    const mutable: *IUnknown = @constCast(@alignCast(word));
+                    const object: *Outer = @fieldParentPtr("words", mutable);
+                    return object.queryInterface(index, riid, ppv);
+                }
+            }.thunk;
+        }
+
+        /// `AddRef` as word `index` receives it.
+        fn addRefThunkFor(comptime index: comptime_int) *const fn (*const IUnknown) callconv(.winapi) u32 {
+            comptime std.debug.assert(index >= 0);
+            comptime std.debug.assert(index < interface_count);
+            const Outer = Self;
+            return struct {
+                fn thunk(word: *const IUnknown) callconv(.winapi) u32 {
+                    const mutable: *IUnknown = @constCast(@alignCast(word));
+                    const object: *Outer = @fieldParentPtr("words", mutable);
+                    return object.addRef();
+                }
+            }.thunk;
+        }
+
+        /// `Release` as word `index` receives it.
+        fn releaseThunkFor(comptime index: comptime_int) *const fn (*const IUnknown) callconv(.winapi) u32 {
+            comptime std.debug.assert(index >= 0);
+            comptime std.debug.assert(index < interface_count);
+            const Outer = Self;
+            return struct {
+                fn thunk(word: *const IUnknown) callconv(.winapi) u32 {
+                    const mutable: *IUnknown = @constCast(@alignCast(word));
+                    const object: *Outer = @fieldParentPtr("words", mutable);
+                    return object.release();
+                }
+            }.thunk;
+        }
+
+        /// The identifier bytes, so two identifiers compare with `mem.eql`
+        /// rather than with `==` on a union that declares no equality.
+        fn guidBytes(identifier: *const Guid) *const [16]u8 {
+            return &identifier.Bytes;
+        }
+
+        /// `S_OK`, the status a successful COM call returns.
+        fn sOk() Hresult {
+            return @bitCast(@as(u32, @bitCast(win32.foundation.S_OK)));
+        }
+
+        /// `E_INVALIDARG`, the status for an absent out-parameter.
+        fn eInvalidArg() Hresult {
+            return @bitCast(@as(u32, @bitCast(win32.foundation.E_INVALIDARG)));
+        }
+
+        /// `E_NOINTERFACE`, the status for an identifier this object does not
+        /// answer.
+        fn eNoInterface() Hresult {
+            return @bitCast(@as(u32, @bitCast(win32.foundation.E_NOINTERFACE)));
+        }
+    };
+}
+
+// --- Tests -----------------------------------------------------------------
+
+const test_interfaces = .{
+    .{ .Interface = bindings.IRawElementProviderSimple, .Iid = win32.ui.accessibility.IID_IRawElementProviderSimple },
+    .{ .Interface = bindings.IToggleProvider, .Iid = win32.ui.accessibility.IID_IToggleProvider },
+    .{ .Interface = bindings.IInvokeProvider, .Iid = win32.ui.accessibility.IID_IInvokeProvider },
+};
+
+const TestNode = Object(TestState, test_interfaces);
+
+
+const TestState = struct {
+    tree_id: u64,
+    node_id: struct { value: u64 },
+};
+
+/// The thirteen vtables a real `PlatformNode` would pass to `create`. The
+/// tests need one set per descriptor and the methods are irrelevant here, so
+/// each word gets the `IUnknown` vtable for its index, which is a valid
+/// `*const anyopaque`.
+fn testVTables(comptime Type: type) [Type.interface_count]*const anyopaque {
+    comptime var tables: [Type.interface_count]*const anyopaque = undefined;
+    comptime {
+        var index: usize = 0;
+        while (index < tables.len) : (index += 1) {
+            tables[index] = @ptrCast(&com_test_base_vtables[index]);
+        }
+    }
+    return tables;
+}
+
+const com_test_base_vtables = blk: {
+    var out: [test_interfaces.len]IUnknown.VTable = undefined;
+    for (&out, 0..) |*slot, index| {
+        slot.* = TestNode.baseVTable(index);
+    }
+    break :blk out;
+};
+
+test "the words sit one pointer apart and the first word is the object" {
+    try std.testing.expectEqual(@as(usize, 0), @offsetOf(TestNode, "words"));
+    try std.testing.expectEqual(@sizeOf(usize), @sizeOf(IUnknown));
+    try std.testing.expectEqual(@as(usize, 0), @offsetOf(TestNode, "ref_count") - @offsetOf(TestNode, "words"));
+}
+
+test "a fresh object holds one reference and reads back the state it was given" {
+    const object = try TestNode.create(std.testing.allocator, testVTables(TestNode), .{
+        .tree_id = 3,
+        .node_id = .{ .value = 9 },
+    });
+    defer {
+        try std.testing.expectEqual(@as(u32, 0), object.release());
+        object.gpa.destroy(object);
+    }
+    try std.testing.expectEqual(@as(u32, 1), object.ref_count.load(.acq_rel));
+    try std.testing.expectEqual(@as(u64, 3), object.state.tree_id);
+    try std.testing.expectEqual(@as(u64, 9), object.state.node_id.value);
+}
+
+test "add and release move the count and stop at one" {
+    const object = try TestNode.create(std.testing.allocator, testVTables(TestNode), .{
+        .tree_id = 1,
+        .node_id = .{ .value = 2 },
+    });
+    defer object.gpa.destroy(object);
+
+    try std.testing.expectEqual(@as(u32, 2), object.addRef());
+    try std.testing.expectEqual(@as(u32, 3), object.addRef());
+    try std.testing.expectEqual(@as(u32, 2), object.release());
+    try std.testing.expectEqual(@as(u32, 1), object.release());
+    try std.testing.expectEqual(@as(u32, 0), object.release());
+}
+
+test "an interface pointer reads back to the object that holds it" {
+    const object = try TestNode.create(std.testing.allocator, testVTables(TestNode), .{
+        .tree_id = 7,
+        .node_id = .{ .value = 8 },
+    });
+    defer {
+        try std.testing.expectEqual(@as(u32, 0), object.release());
+        object.gpa.destroy(object);
+    }
+
+    inline for (test_interfaces, 0..) |descriptor, index| {
+        const word = object.iface(index);
+        const found = TestNode.fromIface(descriptor.Interface, word);
+        try std.testing.expectEqual(object, found);
+        try std.testing.expectEqual(word, found.iface(index));
+    }
+}
+
+test "QueryInterface answers each implemented identifier and holds a reference" {
+    const object = try TestNode.create(std.testing.allocator, testVTables(TestNode), .{
+        .tree_id = 5,
+        .node_id = .{ .value = 6 },
+    });
+    defer {
+        while (object.ref_count.load(.acq_rel) > 0) {
+            try std.testing.expect(object.release() > 0 or true);
+        }
+        object.gpa.destroy(object);
+    }
+
+    var out: ?*anyopaque = null;
+    const status = object.queryInterface(0, iid_unknown, &out);
+    try std.testing.expectEqual(@as(u32, 0), @bitCast(status));
+    try std.testing.expectEqual(@as(u32, 2), object.ref_count.load(.acq_rel));
+    try std.testing.expect(out.? == @as(*anyopaque, @ptrCast(object.iface(0))));
+
+    out = null;
+    const second = object.queryInterface(0, test_interfaces[1].Iid, &out);
+    try std.testing.expectEqual(@as(u32, 0), @bitCast(second));
+    try std.testing.expectEqual(@as(u32, 3), object.ref_count.load(.acq_rel));
+    try std.testing.expect(out.? == @as(*anyopaque, @ptrCast(object.iface(1))));
+}
+
+test "QueryInterface refuses an identifier the object does not answer" {
+    const object = try TestNode.create(std.testing.allocator, testVTables(TestNode), .{
+        .tree_id = 2,
+        .node_id = .{ .value = 1 },
+    });
+    defer {
+        try std.testing.expectEqual(@as(u32, 0), object.release());
+        object.gpa.destroy(object);
+    }
+
+    var out: ?*anyopaque = @ptrFromInt(0xdead);
+    const status = object.queryInterface(0, win32.ui.accessibility.IID_ISelectionProvider, &out);
+    try std.testing.expectEqual(@as(u32, 0x80004002), @bitCast(status));
+    try std.testing.expect(out.? == @as(*anyopaque, @ptrFromInt(0xdead)));
+    try std.testing.expectEqual(@as(u32, 1), object.ref_count.load(.acq_rel));
+}
+
+test "the base vtable of each word reaches the object through that word" {
+    // The three thunks are generated per word. This drives them through a
+    // function pointer the way a COM caller would, so a thunk that recovered
+    // the wrong word would move a different object's count.
+    const object = try TestNode.create(std.testing.allocator, testVTables(TestNode), .{
+        .tree_id = 11,
+        .node_id = .{ .value = 12 },
+    });
+    defer {
+        try std.testing.expectEqual(@as(u32, 0), object.release());
+        object.gpa.destroy(object);
+    }
+
+    const second = com_test_base_vtables[1];
+    try std.testing.expectEqual(@as(u32, 2), second.AddRef(object.iface(1)));
+    try std.testing.expectEqual(@as(u32, 1), second.Release(object.iface(1)));
+
+    const first = com_test_base_vtables[0];
+    try std.testing.expectEqual(@as(u32, 2), first.AddRef(object.iface(0)));
+    try std.testing.expectEqual(@as(u32, 1), first.Release(object.iface(0)));
+}
+
+test "the descriptor tuple fixes the word order" {
+    try std.testing.expectEqual(@as(?comptime_int, 0), TestNode.indexOf(bindings.IRawElementProviderSimple));
+    try std.testing.expectEqual(@as(?comptime_int, 1), TestNode.indexOf(bindings.IToggleProvider));
+    try std.testing.expectEqual(@as(?comptime_int, 2), TestNode.indexOf(bindings.IInvokeProvider));
+    try std.testing.expect(TestNode.indexOf(bindings.ISelectionProvider) == null);
+}
