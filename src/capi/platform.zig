@@ -353,74 +353,364 @@ pub const ExportRecord = struct {
 /// `export fn` with no row, is a defect a test in this file reports.
 pub const export_records = [_]ExportRecord{
     // --- Android, 13, guard `__ANDROID__` at include/zaccesskit.h:5701 ------
-    .{ .symbol = "accesskit_android_platform_action_from_java", .header_line = 5711, .upstream_line = 2539, .guard = .android },
-    .{ .symbol = "accesskit_android_platform_action_free", .header_line = 5720, .upstream_line = 2544, .guard = .android },
-    .{ .symbol = "accesskit_android_queued_events_raise", .header_line = 5732, .upstream_line = 2552, .guard = .android },
-    .{ .symbol = "accesskit_android_adapter_new", .header_line = 5744, .upstream_line = 2557, .guard = .android },
-    .{ .symbol = "accesskit_android_adapter_free", .header_line = 5753, .upstream_line = 2561, .guard = .android },
-    .{ .symbol = "accesskit_android_adapter_update_if_active", .header_line = 5765, .upstream_line = 2570, .guard = .android },
-    .{ .symbol = "accesskit_android_adapter_create_accessibility_node_info", .header_line = 5778, .upstream_line = 2577, .guard = .android },
-    .{ .symbol = "accesskit_android_adapter_find_focus", .header_line = 5794, .upstream_line = 2585, .guard = .android },
-    .{ .symbol = "accesskit_android_adapter_perform_action", .header_line = 5811, .upstream_line = 2598, .guard = .android },
-    .{ .symbol = "accesskit_android_adapter_on_hover_event", .header_line = 5826, .upstream_line = 2611, .guard = .android },
-    .{ .symbol = "accesskit_android_injecting_adapter_new", .header_line = 5843, .upstream_line = 2619, .guard = .android },
-    .{ .symbol = "accesskit_android_injecting_adapter_free", .header_line = 5855, .upstream_line = 2628, .guard = .android },
-    .{ .symbol = "accesskit_android_injecting_adapter_update_if_active", .header_line = 5868, .upstream_line = 2633, .guard = .android },
+    .{
+        .symbol = "accesskit_android_platform_action_from_java",
+        .header_line = 5711,
+        .upstream_line = 2539,
+        .guard = .android,
+    },
+    .{
+        .symbol = "accesskit_android_platform_action_free",
+        .header_line = 5720,
+        .upstream_line = 2544,
+        .guard = .android,
+    },
+    .{
+        .symbol = "accesskit_android_queued_events_raise",
+        .header_line = 5732,
+        .upstream_line = 2552,
+        .guard = .android,
+    },
+    .{
+        .symbol = "accesskit_android_adapter_new",
+        .header_line = 5744,
+        .upstream_line = 2557,
+        .guard = .android,
+    },
+    .{
+        .symbol = "accesskit_android_adapter_free",
+        .header_line = 5753,
+        .upstream_line = 2561,
+        .guard = .android,
+    },
+    .{
+        .symbol = "accesskit_android_adapter_update_if_active",
+        .header_line = 5765,
+        .upstream_line = 2570,
+        .guard = .android,
+    },
+    .{
+        .symbol = "accesskit_android_adapter_create_accessibility_node_info",
+        .header_line = 5778,
+        .upstream_line = 2577,
+        .guard = .android,
+    },
+    .{
+        .symbol = "accesskit_android_adapter_find_focus",
+        .header_line = 5794,
+        .upstream_line = 2585,
+        .guard = .android,
+    },
+    .{
+        .symbol = "accesskit_android_adapter_perform_action",
+        .header_line = 5811,
+        .upstream_line = 2598,
+        .guard = .android,
+    },
+    .{
+        .symbol = "accesskit_android_adapter_on_hover_event",
+        .header_line = 5826,
+        .upstream_line = 2611,
+        .guard = .android,
+    },
+    .{
+        .symbol = "accesskit_android_injecting_adapter_new",
+        .header_line = 5843,
+        .upstream_line = 2619,
+        .guard = .android,
+    },
+    .{
+        .symbol = "accesskit_android_injecting_adapter_free",
+        .header_line = 5855,
+        .upstream_line = 2628,
+        .guard = .android,
+    },
+    .{
+        .symbol = "accesskit_android_injecting_adapter_update_if_active",
+        .header_line = 5868,
+        .upstream_line = 2633,
+        .guard = .android,
+    },
 
     // --- Apple-mobile, 13, guard ACCESSKIT_IOS/TVOS/VISIONOS/WATCHOS at :5875 -
-    .{ .symbol = "accesskit_ios_queued_events_raise", .header_line = 5886, .upstream_line = 2644, .guard = .apple_mobile },
-    .{ .symbol = "accesskit_ios_adapter_new", .header_line = 5897, .upstream_line = 2658, .guard = .apple_mobile },
-    .{ .symbol = "accesskit_ios_adapter_free", .header_line = 5910, .upstream_line = 2669, .guard = .apple_mobile },
-    .{ .symbol = "accesskit_ios_adapter_update_if_active", .header_line = 5922, .upstream_line = 2678, .guard = .apple_mobile },
-    .{ .symbol = "accesskit_ios_adapter_view_did_appear", .header_line = 5934, .upstream_line = 2694, .guard = .apple_mobile },
-    .{ .symbol = "accesskit_ios_adapter_is_accessibility_element", .header_line = 5940, .upstream_line = 2704, .guard = .apple_mobile },
-    .{ .symbol = "accesskit_ios_adapter_accessibility_elements", .header_line = 5953, .upstream_line = 2715, .guard = .apple_mobile },
-    .{ .symbol = "accesskit_ios_adapter_hit_test", .header_line = 5965, .upstream_line = 2726, .guard = .apple_mobile },
-    .{ .symbol = "accesskit_ios_adapter_debug", .header_line = 5977, .upstream_line = 2735, .guard = .apple_mobile },
-    .{ .symbol = "accesskit_ios_subclassing_adapter_new", .header_line = 5989, .upstream_line = 2747, .guard = .apple_mobile },
-    .{ .symbol = "accesskit_ios_subclassing_adapter_for_window", .header_line = 6004, .upstream_line = 2771, .guard = .apple_mobile },
-    .{ .symbol = "accesskit_ios_subclassing_adapter_free", .header_line = 6018, .upstream_line = 2782, .guard = .apple_mobile },
-    .{ .symbol = "accesskit_ios_subclassing_adapter_update_if_active", .header_line = 6031, .upstream_line = 2793, .guard = .apple_mobile },
+    .{
+        .symbol = "accesskit_ios_queued_events_raise",
+        .header_line = 5886,
+        .upstream_line = 2644,
+        .guard = .apple_mobile,
+    },
+    .{
+        .symbol = "accesskit_ios_adapter_new",
+        .header_line = 5897,
+        .upstream_line = 2658,
+        .guard = .apple_mobile,
+    },
+    .{
+        .symbol = "accesskit_ios_adapter_free",
+        .header_line = 5910,
+        .upstream_line = 2669,
+        .guard = .apple_mobile,
+    },
+    .{
+        .symbol = "accesskit_ios_adapter_update_if_active",
+        .header_line = 5922,
+        .upstream_line = 2678,
+        .guard = .apple_mobile,
+    },
+    .{
+        .symbol = "accesskit_ios_adapter_view_did_appear",
+        .header_line = 5934,
+        .upstream_line = 2694,
+        .guard = .apple_mobile,
+    },
+    .{
+        .symbol = "accesskit_ios_adapter_is_accessibility_element",
+        .header_line = 5940,
+        .upstream_line = 2704,
+        .guard = .apple_mobile,
+    },
+    .{
+        .symbol = "accesskit_ios_adapter_accessibility_elements",
+        .header_line = 5953,
+        .upstream_line = 2715,
+        .guard = .apple_mobile,
+    },
+    .{
+        .symbol = "accesskit_ios_adapter_hit_test",
+        .header_line = 5965,
+        .upstream_line = 2726,
+        .guard = .apple_mobile,
+    },
+    .{
+        .symbol = "accesskit_ios_adapter_debug",
+        .header_line = 5977,
+        .upstream_line = 2735,
+        .guard = .apple_mobile,
+    },
+    .{
+        .symbol = "accesskit_ios_subclassing_adapter_new",
+        .header_line = 5989,
+        .upstream_line = 2747,
+        .guard = .apple_mobile,
+    },
+    .{
+        .symbol = "accesskit_ios_subclassing_adapter_for_window",
+        .header_line = 6004,
+        .upstream_line = 2771,
+        .guard = .apple_mobile,
+    },
+    .{
+        .symbol = "accesskit_ios_subclassing_adapter_free",
+        .header_line = 6018,
+        .upstream_line = 2782,
+        .guard = .apple_mobile,
+    },
+    .{
+        .symbol = "accesskit_ios_subclassing_adapter_update_if_active",
+        .header_line = 6031,
+        .upstream_line = 2793,
+        .guard = .apple_mobile,
+    },
 
     // --- macOS, 16, guard ACCESSKIT_MACOS at include/zaccesskit.h:6038 -------
-    .{ .symbol = "accesskit_macos_queued_events_raise", .header_line = 6048, .upstream_line = 2803, .guard = .macos },
-    .{ .symbol = "accesskit_macos_adapter_new", .header_line = 6059, .upstream_line = 2813, .guard = .macos },
-    .{ .symbol = "accesskit_macos_adapter_free", .header_line = 6068, .upstream_line = 2820, .guard = .macos },
-    .{ .symbol = "accesskit_macos_adapter_update_if_active", .header_line = 6080, .upstream_line = 2828, .guard = .macos },
-    .{ .symbol = "accesskit_macos_adapter_update_view_focus_state", .header_line = 6093, .upstream_line = 2842, .guard = .macos },
-    .{ .symbol = "accesskit_macos_adapter_view_children", .header_line = 6107, .upstream_line = 2851, .guard = .macos },
-    .{ .symbol = "accesskit_macos_adapter_focus", .header_line = 6121, .upstream_line = 2862, .guard = .macos },
-    .{ .symbol = "accesskit_macos_adapter_hit_test", .header_line = 6135, .upstream_line = 2873, .guard = .macos },
-    .{ .symbol = "accesskit_macos_adapter_debug", .header_line = 6149, .upstream_line = 2883, .guard = .macos },
-    .{ .symbol = "accesskit_macos_subclassing_adapter_new", .header_line = 6160, .upstream_line = 2894, .guard = .macos },
-    .{ .symbol = "accesskit_macos_subclassing_adapter_for_window", .header_line = 6174, .upstream_line = 2913, .guard = .macos },
-    .{ .symbol = "accesskit_macos_subclassing_adapter_free", .header_line = 6186, .upstream_line = 2921, .guard = .macos },
-    .{ .symbol = "accesskit_macos_subclassing_adapter_update_if_active", .header_line = 6199, .upstream_line = 2931, .guard = .macos },
-    .{ .symbol = "accesskit_macos_subclassing_adapter_update_view_focus_state", .header_line = 6212, .upstream_line = 2945, .guard = .macos },
-    .{ .symbol = "accesskit_macos_add_focus_forwarder_to_window_class", .header_line = 6228, .upstream_line = 2966, .guard = .macos },
-    .{ .symbol = "accesskit_macos_add_focus_forwarder_to_window_class_with_length", .header_line = 6242, .upstream_line = 2988, .guard = .macos },
+    .{
+        .symbol = "accesskit_macos_queued_events_raise",
+        .header_line = 6048,
+        .upstream_line = 2803,
+        .guard = .macos,
+    },
+    .{
+        .symbol = "accesskit_macos_adapter_new",
+        .header_line = 6059,
+        .upstream_line = 2813,
+        .guard = .macos,
+    },
+    .{
+        .symbol = "accesskit_macos_adapter_free",
+        .header_line = 6068,
+        .upstream_line = 2820,
+        .guard = .macos,
+    },
+    .{
+        .symbol = "accesskit_macos_adapter_update_if_active",
+        .header_line = 6080,
+        .upstream_line = 2828,
+        .guard = .macos,
+    },
+    .{
+        .symbol = "accesskit_macos_adapter_update_view_focus_state",
+        .header_line = 6093,
+        .upstream_line = 2842,
+        .guard = .macos,
+    },
+    .{
+        .symbol = "accesskit_macos_adapter_view_children",
+        .header_line = 6107,
+        .upstream_line = 2851,
+        .guard = .macos,
+    },
+    .{
+        .symbol = "accesskit_macos_adapter_focus",
+        .header_line = 6121,
+        .upstream_line = 2862,
+        .guard = .macos,
+    },
+    .{
+        .symbol = "accesskit_macos_adapter_hit_test",
+        .header_line = 6135,
+        .upstream_line = 2873,
+        .guard = .macos,
+    },
+    .{
+        .symbol = "accesskit_macos_adapter_debug",
+        .header_line = 6149,
+        .upstream_line = 2883,
+        .guard = .macos,
+    },
+    .{
+        .symbol = "accesskit_macos_subclassing_adapter_new",
+        .header_line = 6160,
+        .upstream_line = 2894,
+        .guard = .macos,
+    },
+    .{
+        .symbol = "accesskit_macos_subclassing_adapter_for_window",
+        .header_line = 6174,
+        .upstream_line = 2913,
+        .guard = .macos,
+    },
+    .{
+        .symbol = "accesskit_macos_subclassing_adapter_free",
+        .header_line = 6186,
+        .upstream_line = 2921,
+        .guard = .macos,
+    },
+    .{
+        .symbol = "accesskit_macos_subclassing_adapter_update_if_active",
+        .header_line = 6199,
+        .upstream_line = 2931,
+        .guard = .macos,
+    },
+    .{
+        .symbol = "accesskit_macos_subclassing_adapter_update_view_focus_state",
+        .header_line = 6212,
+        .upstream_line = 2945,
+        .guard = .macos,
+    },
+    .{
+        .symbol = "accesskit_macos_add_focus_forwarder_to_window_class",
+        .header_line = 6228,
+        .upstream_line = 2966,
+        .guard = .macos,
+    },
+    .{
+        .symbol = "accesskit_macos_add_focus_forwarder_to_window_class_with_length",
+        .header_line = 6242,
+        .upstream_line = 2988,
+        .guard = .macos,
+    },
 
     // --- Linux and BSD, 6, guard __linux__/DragonFly/FreeBSD/NetBSD/OpenBSD at
     //     include/zaccesskit.h:6248. These six are what a Linux build exports
     //     from this file.
-    .{ .symbol = "accesskit_unix_adapter_new", .header_line = 6260, .upstream_line = 2997, .guard = .unix },
-    .{ .symbol = "accesskit_unix_adapter_free", .header_line = 6273, .upstream_line = 3008, .guard = .unix },
-    .{ .symbol = "accesskit_unix_adapter_set_root_window_bounds", .header_line = 6282, .upstream_line = 3022, .guard = .unix },
-    .{ .symbol = "accesskit_unix_adapter_update_if_active", .header_line = 6297, .upstream_line = 3029, .guard = .unix },
-    .{ .symbol = "accesskit_unix_adapter_update_window_focus_state", .header_line = 6308, .upstream_line = 3040, .guard = .unix },
-    .{ .symbol = "accesskit_unix_adapter_debug", .header_line = 6321, .upstream_line = 3049, .guard = .unix },
+    .{
+        .symbol = "accesskit_unix_adapter_new",
+        .header_line = 6260,
+        .upstream_line = 2997,
+        .guard = .unix,
+    },
+    .{
+        .symbol = "accesskit_unix_adapter_free",
+        .header_line = 6273,
+        .upstream_line = 3008,
+        .guard = .unix,
+    },
+    .{
+        .symbol = "accesskit_unix_adapter_set_root_window_bounds",
+        .header_line = 6282,
+        .upstream_line = 3022,
+        .guard = .unix,
+    },
+    .{
+        .symbol = "accesskit_unix_adapter_update_if_active",
+        .header_line = 6297,
+        .upstream_line = 3029,
+        .guard = .unix,
+    },
+    .{
+        .symbol = "accesskit_unix_adapter_update_window_focus_state",
+        .header_line = 6308,
+        .upstream_line = 3040,
+        .guard = .unix,
+    },
+    .{
+        .symbol = "accesskit_unix_adapter_debug",
+        .header_line = 6321,
+        .upstream_line = 3049,
+        .guard = .unix,
+    },
 
     // --- Windows, 10, guard _WIN32 at include/zaccesskit.h:6325 --------------
-    .{ .symbol = "accesskit_windows_queued_events_raise", .header_line = 6335, .upstream_line = 3057, .guard = .windows },
-    .{ .symbol = "accesskit_windows_adapter_new", .header_line = 6346, .upstream_line = 3062, .guard = .windows },
-    .{ .symbol = "accesskit_windows_adapter_free", .header_line = 6356, .upstream_line = 3069, .guard = .windows },
-    .{ .symbol = "accesskit_windows_adapter_update_if_active", .header_line = 6368, .upstream_line = 3078, .guard = .windows },
-    .{ .symbol = "accesskit_windows_adapter_update_window_focus_state", .header_line = 6381, .upstream_line = 3092, .guard = .windows },
-    .{ .symbol = "accesskit_windows_adapter_handle_wm_getobject", .header_line = 6396, .upstream_line = 3097, .guard = .windows },
-    .{ .symbol = "accesskit_windows_adapter_debug", .header_line = 6412, .upstream_line = 3107, .guard = .windows },
-    .{ .symbol = "accesskit_windows_subclassing_adapter_new", .header_line = 6424, .upstream_line = 3126, .guard = .windows },
-    .{ .symbol = "accesskit_windows_subclassing_adapter_free", .header_line = 6436, .upstream_line = 3134, .guard = .windows },
-    .{ .symbol = "accesskit_windows_subclassing_adapter_update_if_active", .header_line = 6449, .upstream_line = 3144, .guard = .windows },
+    .{
+        .symbol = "accesskit_windows_queued_events_raise",
+        .header_line = 6335,
+        .upstream_line = 3057,
+        .guard = .windows,
+    },
+    .{
+        .symbol = "accesskit_windows_adapter_new",
+        .header_line = 6346,
+        .upstream_line = 3062,
+        .guard = .windows,
+    },
+    .{
+        .symbol = "accesskit_windows_adapter_free",
+        .header_line = 6356,
+        .upstream_line = 3069,
+        .guard = .windows,
+    },
+    .{
+        .symbol = "accesskit_windows_adapter_update_if_active",
+        .header_line = 6368,
+        .upstream_line = 3078,
+        .guard = .windows,
+    },
+    .{
+        .symbol = "accesskit_windows_adapter_update_window_focus_state",
+        .header_line = 6381,
+        .upstream_line = 3092,
+        .guard = .windows,
+    },
+    .{
+        .symbol = "accesskit_windows_adapter_handle_wm_getobject",
+        .header_line = 6396,
+        .upstream_line = 3097,
+        .guard = .windows,
+    },
+    .{
+        .symbol = "accesskit_windows_adapter_debug",
+        .header_line = 6412,
+        .upstream_line = 3107,
+        .guard = .windows,
+    },
+    .{
+        .symbol = "accesskit_windows_subclassing_adapter_new",
+        .header_line = 6424,
+        .upstream_line = 3126,
+        .guard = .windows,
+    },
+    .{
+        .symbol = "accesskit_windows_subclassing_adapter_free",
+        .header_line = 6436,
+        .upstream_line = 3134,
+        .guard = .windows,
+    },
+    .{
+        .symbol = "accesskit_windows_subclassing_adapter_update_if_active",
+        .header_line = 6449,
+        .upstream_line = 3144,
+        .guard = .windows,
+    },
 };
 
 /// How many declarations this module owns: 58, derived in this module's doc
@@ -768,19 +1058,61 @@ fn accesskit_android_injecting_adapter_update_if_active(
 // where its guard is true; this block is the whole of that decision.
 comptime {
     if (Guard.android.declaresOn(this_platform)) {
-        @export(&accesskit_android_platform_action_from_java, .{ .name = "accesskit_android_platform_action_from_java", .linkage = .strong });
-        @export(&accesskit_android_platform_action_free, .{ .name = "accesskit_android_platform_action_free", .linkage = .strong });
-        @export(&accesskit_android_queued_events_raise, .{ .name = "accesskit_android_queued_events_raise", .linkage = .strong });
-        @export(&accesskit_android_adapter_new, .{ .name = "accesskit_android_adapter_new", .linkage = .strong });
-        @export(&accesskit_android_adapter_free, .{ .name = "accesskit_android_adapter_free", .linkage = .strong });
-        @export(&accesskit_android_adapter_update_if_active, .{ .name = "accesskit_android_adapter_update_if_active", .linkage = .strong });
-        @export(&accesskit_android_adapter_create_accessibility_node_info, .{ .name = "accesskit_android_adapter_create_accessibility_node_info", .linkage = .strong });
-        @export(&accesskit_android_adapter_find_focus, .{ .name = "accesskit_android_adapter_find_focus", .linkage = .strong });
-        @export(&accesskit_android_adapter_perform_action, .{ .name = "accesskit_android_adapter_perform_action", .linkage = .strong });
-        @export(&accesskit_android_adapter_on_hover_event, .{ .name = "accesskit_android_adapter_on_hover_event", .linkage = .strong });
-        @export(&accesskit_android_injecting_adapter_new, .{ .name = "accesskit_android_injecting_adapter_new", .linkage = .strong });
-        @export(&accesskit_android_injecting_adapter_free, .{ .name = "accesskit_android_injecting_adapter_free", .linkage = .strong });
-        @export(&accesskit_android_injecting_adapter_update_if_active, .{ .name = "accesskit_android_injecting_adapter_update_if_active", .linkage = .strong });
+        @export(
+            &accesskit_android_platform_action_from_java,
+            .{ .name = "accesskit_android_platform_action_from_java", .linkage = .strong },
+        );
+        @export(
+            &accesskit_android_platform_action_free,
+            .{ .name = "accesskit_android_platform_action_free", .linkage = .strong },
+        );
+        @export(
+            &accesskit_android_queued_events_raise,
+            .{ .name = "accesskit_android_queued_events_raise", .linkage = .strong },
+        );
+        @export(
+            &accesskit_android_adapter_new,
+            .{ .name = "accesskit_android_adapter_new", .linkage = .strong },
+        );
+        @export(
+            &accesskit_android_adapter_free,
+            .{ .name = "accesskit_android_adapter_free", .linkage = .strong },
+        );
+        @export(
+            &accesskit_android_adapter_update_if_active,
+            .{ .name = "accesskit_android_adapter_update_if_active", .linkage = .strong },
+        );
+        @export(
+            &accesskit_android_adapter_create_accessibility_node_info,
+            .{
+                .name = "accesskit_android_adapter_create_accessibility_node_info",
+                .linkage = .strong,
+            },
+        );
+        @export(
+            &accesskit_android_adapter_find_focus,
+            .{ .name = "accesskit_android_adapter_find_focus", .linkage = .strong },
+        );
+        @export(
+            &accesskit_android_adapter_perform_action,
+            .{ .name = "accesskit_android_adapter_perform_action", .linkage = .strong },
+        );
+        @export(
+            &accesskit_android_adapter_on_hover_event,
+            .{ .name = "accesskit_android_adapter_on_hover_event", .linkage = .strong },
+        );
+        @export(
+            &accesskit_android_injecting_adapter_new,
+            .{ .name = "accesskit_android_injecting_adapter_new", .linkage = .strong },
+        );
+        @export(
+            &accesskit_android_injecting_adapter_free,
+            .{ .name = "accesskit_android_injecting_adapter_free", .linkage = .strong },
+        );
+        @export(
+            &accesskit_android_injecting_adapter_update_if_active,
+            .{ .name = "accesskit_android_injecting_adapter_update_if_active", .linkage = .strong },
+        );
     }
 }
 
@@ -1024,19 +1356,58 @@ fn accesskit_ios_subclassing_adapter_update_if_active(
 // where its guard is true; this block is the whole of that decision.
 comptime {
     if (Guard.apple_mobile.declaresOn(this_platform)) {
-        @export(&accesskit_ios_queued_events_raise, .{ .name = "accesskit_ios_queued_events_raise", .linkage = .strong });
-        @export(&accesskit_ios_adapter_new, .{ .name = "accesskit_ios_adapter_new", .linkage = .strong });
-        @export(&accesskit_ios_adapter_free, .{ .name = "accesskit_ios_adapter_free", .linkage = .strong });
-        @export(&accesskit_ios_adapter_update_if_active, .{ .name = "accesskit_ios_adapter_update_if_active", .linkage = .strong });
-        @export(&accesskit_ios_adapter_view_did_appear, .{ .name = "accesskit_ios_adapter_view_did_appear", .linkage = .strong });
-        @export(&accesskit_ios_adapter_is_accessibility_element, .{ .name = "accesskit_ios_adapter_is_accessibility_element", .linkage = .strong });
-        @export(&accesskit_ios_adapter_accessibility_elements, .{ .name = "accesskit_ios_adapter_accessibility_elements", .linkage = .strong });
-        @export(&accesskit_ios_adapter_hit_test, .{ .name = "accesskit_ios_adapter_hit_test", .linkage = .strong });
-        @export(&accesskit_ios_adapter_debug, .{ .name = "accesskit_ios_adapter_debug", .linkage = .strong });
-        @export(&accesskit_ios_subclassing_adapter_new, .{ .name = "accesskit_ios_subclassing_adapter_new", .linkage = .strong });
-        @export(&accesskit_ios_subclassing_adapter_for_window, .{ .name = "accesskit_ios_subclassing_adapter_for_window", .linkage = .strong });
-        @export(&accesskit_ios_subclassing_adapter_free, .{ .name = "accesskit_ios_subclassing_adapter_free", .linkage = .strong });
-        @export(&accesskit_ios_subclassing_adapter_update_if_active, .{ .name = "accesskit_ios_subclassing_adapter_update_if_active", .linkage = .strong });
+        @export(
+            &accesskit_ios_queued_events_raise,
+            .{ .name = "accesskit_ios_queued_events_raise", .linkage = .strong },
+        );
+        @export(
+            &accesskit_ios_adapter_new,
+            .{ .name = "accesskit_ios_adapter_new", .linkage = .strong },
+        );
+        @export(
+            &accesskit_ios_adapter_free,
+            .{ .name = "accesskit_ios_adapter_free", .linkage = .strong },
+        );
+        @export(
+            &accesskit_ios_adapter_update_if_active,
+            .{ .name = "accesskit_ios_adapter_update_if_active", .linkage = .strong },
+        );
+        @export(
+            &accesskit_ios_adapter_view_did_appear,
+            .{ .name = "accesskit_ios_adapter_view_did_appear", .linkage = .strong },
+        );
+        @export(
+            &accesskit_ios_adapter_is_accessibility_element,
+            .{ .name = "accesskit_ios_adapter_is_accessibility_element", .linkage = .strong },
+        );
+        @export(
+            &accesskit_ios_adapter_accessibility_elements,
+            .{ .name = "accesskit_ios_adapter_accessibility_elements", .linkage = .strong },
+        );
+        @export(
+            &accesskit_ios_adapter_hit_test,
+            .{ .name = "accesskit_ios_adapter_hit_test", .linkage = .strong },
+        );
+        @export(
+            &accesskit_ios_adapter_debug,
+            .{ .name = "accesskit_ios_adapter_debug", .linkage = .strong },
+        );
+        @export(
+            &accesskit_ios_subclassing_adapter_new,
+            .{ .name = "accesskit_ios_subclassing_adapter_new", .linkage = .strong },
+        );
+        @export(
+            &accesskit_ios_subclassing_adapter_for_window,
+            .{ .name = "accesskit_ios_subclassing_adapter_for_window", .linkage = .strong },
+        );
+        @export(
+            &accesskit_ios_subclassing_adapter_free,
+            .{ .name = "accesskit_ios_subclassing_adapter_free", .linkage = .strong },
+        );
+        @export(
+            &accesskit_ios_subclassing_adapter_update_if_active,
+            .{ .name = "accesskit_ios_subclassing_adapter_update_if_active", .linkage = .strong },
+        );
     }
 }
 
@@ -1330,22 +1701,76 @@ fn accesskit_macos_add_focus_forwarder_to_window_class_with_length(
 // where its guard is true; this block is the whole of that decision.
 comptime {
     if (Guard.macos.declaresOn(this_platform)) {
-        @export(&accesskit_macos_queued_events_raise, .{ .name = "accesskit_macos_queued_events_raise", .linkage = .strong });
-        @export(&accesskit_macos_adapter_new, .{ .name = "accesskit_macos_adapter_new", .linkage = .strong });
-        @export(&accesskit_macos_adapter_free, .{ .name = "accesskit_macos_adapter_free", .linkage = .strong });
-        @export(&accesskit_macos_adapter_update_if_active, .{ .name = "accesskit_macos_adapter_update_if_active", .linkage = .strong });
-        @export(&accesskit_macos_adapter_update_view_focus_state, .{ .name = "accesskit_macos_adapter_update_view_focus_state", .linkage = .strong });
-        @export(&accesskit_macos_adapter_view_children, .{ .name = "accesskit_macos_adapter_view_children", .linkage = .strong });
-        @export(&accesskit_macos_adapter_focus, .{ .name = "accesskit_macos_adapter_focus", .linkage = .strong });
-        @export(&accesskit_macos_adapter_hit_test, .{ .name = "accesskit_macos_adapter_hit_test", .linkage = .strong });
-        @export(&accesskit_macos_adapter_debug, .{ .name = "accesskit_macos_adapter_debug", .linkage = .strong });
-        @export(&accesskit_macos_subclassing_adapter_new, .{ .name = "accesskit_macos_subclassing_adapter_new", .linkage = .strong });
-        @export(&accesskit_macos_subclassing_adapter_for_window, .{ .name = "accesskit_macos_subclassing_adapter_for_window", .linkage = .strong });
-        @export(&accesskit_macos_subclassing_adapter_free, .{ .name = "accesskit_macos_subclassing_adapter_free", .linkage = .strong });
-        @export(&accesskit_macos_subclassing_adapter_update_if_active, .{ .name = "accesskit_macos_subclassing_adapter_update_if_active", .linkage = .strong });
-        @export(&accesskit_macos_subclassing_adapter_update_view_focus_state, .{ .name = "accesskit_macos_subclassing_adapter_update_view_focus_state", .linkage = .strong });
-        @export(&accesskit_macos_add_focus_forwarder_to_window_class, .{ .name = "accesskit_macos_add_focus_forwarder_to_window_class", .linkage = .strong });
-        @export(&accesskit_macos_add_focus_forwarder_to_window_class_with_length, .{ .name = "accesskit_macos_add_focus_forwarder_to_window_class_with_length", .linkage = .strong });
+        @export(
+            &accesskit_macos_queued_events_raise,
+            .{ .name = "accesskit_macos_queued_events_raise", .linkage = .strong },
+        );
+        @export(
+            &accesskit_macos_adapter_new,
+            .{ .name = "accesskit_macos_adapter_new", .linkage = .strong },
+        );
+        @export(
+            &accesskit_macos_adapter_free,
+            .{ .name = "accesskit_macos_adapter_free", .linkage = .strong },
+        );
+        @export(
+            &accesskit_macos_adapter_update_if_active,
+            .{ .name = "accesskit_macos_adapter_update_if_active", .linkage = .strong },
+        );
+        @export(
+            &accesskit_macos_adapter_update_view_focus_state,
+            .{ .name = "accesskit_macos_adapter_update_view_focus_state", .linkage = .strong },
+        );
+        @export(
+            &accesskit_macos_adapter_view_children,
+            .{ .name = "accesskit_macos_adapter_view_children", .linkage = .strong },
+        );
+        @export(
+            &accesskit_macos_adapter_focus,
+            .{ .name = "accesskit_macos_adapter_focus", .linkage = .strong },
+        );
+        @export(
+            &accesskit_macos_adapter_hit_test,
+            .{ .name = "accesskit_macos_adapter_hit_test", .linkage = .strong },
+        );
+        @export(
+            &accesskit_macos_adapter_debug,
+            .{ .name = "accesskit_macos_adapter_debug", .linkage = .strong },
+        );
+        @export(
+            &accesskit_macos_subclassing_adapter_new,
+            .{ .name = "accesskit_macos_subclassing_adapter_new", .linkage = .strong },
+        );
+        @export(
+            &accesskit_macos_subclassing_adapter_for_window,
+            .{ .name = "accesskit_macos_subclassing_adapter_for_window", .linkage = .strong },
+        );
+        @export(
+            &accesskit_macos_subclassing_adapter_free,
+            .{ .name = "accesskit_macos_subclassing_adapter_free", .linkage = .strong },
+        );
+        @export(
+            &accesskit_macos_subclassing_adapter_update_if_active,
+            .{ .name = "accesskit_macos_subclassing_adapter_update_if_active", .linkage = .strong },
+        );
+        @export(
+            &accesskit_macos_subclassing_adapter_update_view_focus_state,
+            .{
+                .name = "accesskit_macos_subclassing_adapter_update_view_focus_state",
+                .linkage = .strong,
+            },
+        );
+        @export(
+            &accesskit_macos_add_focus_forwarder_to_window_class,
+            .{ .name = "accesskit_macos_add_focus_forwarder_to_window_class", .linkage = .strong },
+        );
+        @export(
+            &accesskit_macos_add_focus_forwarder_to_window_class_with_length,
+            .{
+                .name = "accesskit_macos_add_focus_forwarder_to_window_class_with_length",
+                .linkage = .strong,
+            },
+        );
     }
 }
 
@@ -1459,12 +1884,30 @@ fn accesskit_unix_adapter_debug(
 // where its guard is true; this block is the whole of that decision.
 comptime {
     if (Guard.unix.declaresOn(this_platform)) {
-        @export(&accesskit_unix_adapter_new, .{ .name = "accesskit_unix_adapter_new", .linkage = .strong });
-        @export(&accesskit_unix_adapter_free, .{ .name = "accesskit_unix_adapter_free", .linkage = .strong });
-        @export(&accesskit_unix_adapter_set_root_window_bounds, .{ .name = "accesskit_unix_adapter_set_root_window_bounds", .linkage = .strong });
-        @export(&accesskit_unix_adapter_update_if_active, .{ .name = "accesskit_unix_adapter_update_if_active", .linkage = .strong });
-        @export(&accesskit_unix_adapter_update_window_focus_state, .{ .name = "accesskit_unix_adapter_update_window_focus_state", .linkage = .strong });
-        @export(&accesskit_unix_adapter_debug, .{ .name = "accesskit_unix_adapter_debug", .linkage = .strong });
+        @export(
+            &accesskit_unix_adapter_new,
+            .{ .name = "accesskit_unix_adapter_new", .linkage = .strong },
+        );
+        @export(
+            &accesskit_unix_adapter_free,
+            .{ .name = "accesskit_unix_adapter_free", .linkage = .strong },
+        );
+        @export(
+            &accesskit_unix_adapter_set_root_window_bounds,
+            .{ .name = "accesskit_unix_adapter_set_root_window_bounds", .linkage = .strong },
+        );
+        @export(
+            &accesskit_unix_adapter_update_if_active,
+            .{ .name = "accesskit_unix_adapter_update_if_active", .linkage = .strong },
+        );
+        @export(
+            &accesskit_unix_adapter_update_window_focus_state,
+            .{ .name = "accesskit_unix_adapter_update_window_focus_state", .linkage = .strong },
+        );
+        @export(
+            &accesskit_unix_adapter_debug,
+            .{ .name = "accesskit_unix_adapter_debug", .linkage = .strong },
+        );
     }
 }
 
@@ -1658,16 +2101,49 @@ fn accesskit_windows_subclassing_adapter_update_if_active(
 // where its guard is true; this block is the whole of that decision.
 comptime {
     if (Guard.windows.declaresOn(this_platform)) {
-        @export(&accesskit_windows_queued_events_raise, .{ .name = "accesskit_windows_queued_events_raise", .linkage = .strong });
-        @export(&accesskit_windows_adapter_new, .{ .name = "accesskit_windows_adapter_new", .linkage = .strong });
-        @export(&accesskit_windows_adapter_free, .{ .name = "accesskit_windows_adapter_free", .linkage = .strong });
-        @export(&accesskit_windows_adapter_update_if_active, .{ .name = "accesskit_windows_adapter_update_if_active", .linkage = .strong });
-        @export(&accesskit_windows_adapter_update_window_focus_state, .{ .name = "accesskit_windows_adapter_update_window_focus_state", .linkage = .strong });
-        @export(&accesskit_windows_adapter_handle_wm_getobject, .{ .name = "accesskit_windows_adapter_handle_wm_getobject", .linkage = .strong });
-        @export(&accesskit_windows_adapter_debug, .{ .name = "accesskit_windows_adapter_debug", .linkage = .strong });
-        @export(&accesskit_windows_subclassing_adapter_new, .{ .name = "accesskit_windows_subclassing_adapter_new", .linkage = .strong });
-        @export(&accesskit_windows_subclassing_adapter_free, .{ .name = "accesskit_windows_subclassing_adapter_free", .linkage = .strong });
-        @export(&accesskit_windows_subclassing_adapter_update_if_active, .{ .name = "accesskit_windows_subclassing_adapter_update_if_active", .linkage = .strong });
+        @export(
+            &accesskit_windows_queued_events_raise,
+            .{ .name = "accesskit_windows_queued_events_raise", .linkage = .strong },
+        );
+        @export(
+            &accesskit_windows_adapter_new,
+            .{ .name = "accesskit_windows_adapter_new", .linkage = .strong },
+        );
+        @export(
+            &accesskit_windows_adapter_free,
+            .{ .name = "accesskit_windows_adapter_free", .linkage = .strong },
+        );
+        @export(
+            &accesskit_windows_adapter_update_if_active,
+            .{ .name = "accesskit_windows_adapter_update_if_active", .linkage = .strong },
+        );
+        @export(
+            &accesskit_windows_adapter_update_window_focus_state,
+            .{ .name = "accesskit_windows_adapter_update_window_focus_state", .linkage = .strong },
+        );
+        @export(
+            &accesskit_windows_adapter_handle_wm_getobject,
+            .{ .name = "accesskit_windows_adapter_handle_wm_getobject", .linkage = .strong },
+        );
+        @export(
+            &accesskit_windows_adapter_debug,
+            .{ .name = "accesskit_windows_adapter_debug", .linkage = .strong },
+        );
+        @export(
+            &accesskit_windows_subclassing_adapter_new,
+            .{ .name = "accesskit_windows_subclassing_adapter_new", .linkage = .strong },
+        );
+        @export(
+            &accesskit_windows_subclassing_adapter_free,
+            .{ .name = "accesskit_windows_subclassing_adapter_free", .linkage = .strong },
+        );
+        @export(
+            &accesskit_windows_subclassing_adapter_update_if_active,
+            .{
+                .name = "accesskit_windows_subclassing_adapter_update_if_active",
+                .linkage = .strong,
+            },
+        );
     }
 }
 
