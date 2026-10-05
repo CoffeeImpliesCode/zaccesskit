@@ -123,6 +123,39 @@ pub fn build(b: *std.Build) void {
     // A cached run executes no tests and cannot prove execution coverage.
     cross_run.has_side_effects = true;
     cross_test_step.dependOn(&cross_run.step);
+
+    // The C ABI parity sweep. The tool compares `include/zaccesskit.h` against
+    // what `src/capi/*.zig` exports, per target, with the header's preprocessor
+    // guards and the Zig `comptime` guards both evaluated. It imports the
+    // published module so `src/capi/platform.zig` owns the guard logic rather
+    // than a second copy of it living in the tool.
+    //
+    // Debug, and the same module the Debug test shard uses: the sweep reads
+    // the same declarations the tests compile, and a mode that analysed a
+    // different set would be measuring something nobody builds.
+    //
+    // `has_side_effects` because a cached run executes nothing. A parity check
+    // that can report success without having compared anything is the failure
+    // this step exists to prevent.
+    const parity_step = b.step(
+        "capi-parity",
+        "Compare the C header against the exports for every measured target",
+    );
+    const parity = b.addExecutable(.{
+        .name = "capi-parity",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tools/capi_parity/main.zig"),
+            .target = target,
+            .optimize = .Debug,
+            .imports = &.{
+                .{ .name = "zaccesskit", .module = mod },
+            },
+        }),
+    });
+    const parity_run = b.addRunArtifact(parity);
+    parity_run.has_side_effects = true;
+    if (b.args) |args| parity_run.addArgs(args);
+    parity_step.dependOn(&parity_run.step);
 }
 
 /// Native runs retain the address-space ceiling that bounds a runaway test.

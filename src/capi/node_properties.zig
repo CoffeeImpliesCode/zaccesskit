@@ -185,9 +185,12 @@ fn mutable_properties(handle: *handles.accesskit_node) *Properties {
 
 /// Releases every action `list` holds and then `list` itself.
 ///
-/// One `defer` in `accesskit_node_set_custom_actions` calls this, and every path
-/// out of that function needs it: the null-slot precondition, the failed clone,
-/// the failed append and the failed store all leave a prefix of copies behind.
+/// One `defer` in `accesskit_node_set_custom_actions` calls this, and it is
+/// unconditional: the null-slot precondition, the failed clone, the failed
+/// append and the failed store all leave a prefix of copies behind, and the
+/// successful path does too, because the store copies each description rather
+/// than adopting the clone this call made.
+///
 /// The walk is bounded by `list.items.len`, which is the number of clones the
 /// loop above managed to make, so a clone is released exactly once and no slot
 /// is read that was never written.
@@ -6137,17 +6140,11 @@ export fn accesskit_node_set_custom_actions(
     const store = mutable_properties(node);
     const gpa = store.gpa;
     var copies: std.ArrayList(CustomAction) = .empty;
-    // This list's own backing array is always this call's, whatever the store
-    // does with the elements.
-    defer copies.deinit(gpa);
-    // The store adopts the description buffers, because
-    // `props/vectors.zig:308-316` copies the actions by value and the property it
-    // writes is what releases them afterwards. So the descriptions are this
-    // call's until the store has taken them and this call's no longer after.
-    var adopted = false;
-    defer if (!adopted) {
-        for (copies.items) |*action| action.deinit(gpa);
-    };
+    // Every clone in here belongs to this call on every path out, including the
+    // one that succeeds. `setCustomActions` copies each action again rather than
+    // adopting it, so what it stores is never one of these description buffers
+    // and none of them moves to the property.
+    defer releaseActionCopies(gpa, &copies);
     for (values[0..length]) |slot| {
         const handle = slot orelse return;
         var fresh = action_request.customActionClone(gpa, handle) catch {
@@ -6164,7 +6161,6 @@ export fn accesskit_node_set_custom_actions(
         note_oom();
         return;
     };
-    adopted = true;
 }
 
 // --- The signatures ----------------------------------------------------------------
@@ -8462,6 +8458,51 @@ test "set_custom_actions copies the array and leaves the caller's handles alone"
     // A copy, not the caller's own handle: the two must be different addresses,
     // because releasing the caller's handle must not touch what the node stores.
     try testing.expect(listed.values[0].? != first);
+    try testing.expect(allocation.lastError() == .none);
+}
+
+test "set_custom_actions copies the descriptions, so the caller's handles stay their own" {
+    // The address check in the test above cannot tell a copied description from
+    // a shared one, because this layer clones the caller's actions before the
+    // store sees them. What separates the two is what the caller may do with its
+    // own handles afterwards: write through them, and the node's list must not
+    // change; release them, and the node's list must still read. A boundary that
+    // handed the caller's buffers to the property fails both.
+    var channel: CountingPair = .{ .inner = testing.allocator };
+    defer channel.release();
+    channel.install();
+    defer CountingPair.restore();
+
+    const handle = accesskit_node_new(18) orelse return error.NodeNewFailed;
+    defer accesskit_node_free(handle);
+    const gpa = allocation.allocator();
+
+    const first = try newAction(1, "One");
+    const second = try newAction(2, "Two");
+    const array = [_]?*CustomAction{ first, second };
+
+    accesskit_node_set_custom_actions(handle, array.len, cActions(&array));
+    const listed = accesskit_node_custom_actions(handle).?;
+    defer marshal.custom_actions_deinit(gpa, listed);
+    try testing.expectEqual(@as(usize, 2), listed.length);
+    try testing.expectEqualSlices(u8, "One", listed.values[0].?.description.items);
+    try testing.expectEqualSlices(u8, "Two", listed.values[1].?.description.items);
+
+    // Neither the handles nor the bytes behind them are the node's to read, so
+    // writing through them changes nothing the node answers with.
+    first.description.items[0] = 'Z';
+    second.description.items[0] = 'Z';
+    try testing.expectEqualSlices(u8, "One", listed.values[0].?.description.items);
+    try testing.expectEqualSlices(u8, "Two", listed.values[1].?.description.items);
+
+    // The header takes ownership of nothing, so the caller releases both it
+    // built, once each, and the node's list reads back whole.
+    releaseAction(gpa, first);
+    releaseAction(gpa, second);
+    try testing.expectEqual(@as(c_int, 1), listed.values[0].?.id);
+    try testing.expectEqualSlices(u8, "One", listed.values[0].?.description.items);
+    try testing.expectEqual(@as(c_int, 2), listed.values[1].?.id);
+    try testing.expectEqualSlices(u8, "Two", listed.values[1].?.description.items);
     try testing.expect(allocation.lastError() == .none);
 }
 

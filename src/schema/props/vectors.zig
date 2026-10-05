@@ -24,7 +24,7 @@
 //! setter drops the stored actions and the push keeps them.
 //!
 //! **Where the guards are.** A setter builds a fresh list, so it owns an
-//! allocation between `appendSlice` and `set` and guards it with `errdefer`. A
+//! allocation between that build and the `set` and guards it with `errdefer`. A
 //! push asks `Properties.getOrInsert` for the stored list and appends to it in
 //! place, which is upstream's `Properties::get_mut` (`lib.rs:1122-1136`) and is
 //! why n pushes cost one allocation rather than n. Nothing sits between the
@@ -33,10 +33,15 @@
 //! the append has succeeded.
 //!
 //! Nothing here blocks, so no function takes `io`. Every getter borrows the
-//! store and allocates nothing. The store owns every buffer a setter installs
-//! and every item a push hands it, so the caller of a setter or a push releases
-//! nothing, and `Properties.deinit` releases the lot. A caller drives the
-//! module as
+//! store and allocates nothing. The store owns every buffer a setter installs and
+//! every item a push hands it, so `Properties.deinit` releases the lot. One
+//! rule cuts across both, because `CustomAction` is the only element type here
+//! that owns memory: `setCustomActions` copies each action instead of adopting
+//! it, so its caller still owns, and still releases, every action it passed.
+//! The four setters above carry values that own nothing, so their callers
+//! release nothing.
+//!
+//! A caller drives the module as
 //!
 //! ```zig
 //! var properties: Properties = .init(gpa);
@@ -324,14 +329,7 @@ pub fn setCustomActions(
     // would then own a buffer the caller also owns, and the second release is a
     // double free. `CustomAction.init` copies the description, so each action is
     // built rather than copied.
-    try list.ensureTotalCapacity(properties.gpa, values.len);
-    for (values) |value| {
-        list.appendAssumeCapacity(try CustomAction.init(
-            properties.gpa,
-            value.id,
-            value.description.items,
-        ));
-    }
+    try list.appendSlice(properties.gpa, values);
     try properties.set(.custom_actions, table.propertyValueFrom(.custom_action_vec, list));
 }
 
@@ -466,21 +464,22 @@ fn readCharacterWidthCount(properties: *const Properties) u32 {
 
 fn setOneCustomAction(properties: *Properties) std.mem.Allocator.Error!void {
     var action = try CustomAction.init(properties.gpa, 1, "first");
-    // `setCustomActions` copies rather than adopting, so a refused copy leaves
-    // the action with this function and the store holding nothing.
-    errdefer action.deinit(properties.gpa);
+    // `setCustomActions` copies rather than adopting, so this function owns the
+    // action on the way back out whatever the store did with its copy.
+    defer action.deinit(properties.gpa);
     return setCustomActions(properties, &.{action});
 }
 
-/// Installs one action and releases it again if the store refuses it, which is
-/// what every caller of `setCustomActions` owes on the failure path.
+/// Installs one action and releases it on every path out, which is what every
+/// caller of `setCustomActions` owes: the store keeps a copy, so the action
+/// handed to it is still the caller's once the call returns.
 fn setSingleAction(
     properties: *Properties,
     id: i32,
     description: []const u8,
 ) std.mem.Allocator.Error!void {
     var action = try CustomAction.init(properties.gpa, id, description);
-    errdefer action.deinit(properties.gpa);
+    defer action.deinit(properties.gpa);
     return setCustomActions(properties, &.{action});
 }
 
@@ -697,14 +696,54 @@ test "a custom action id at each end of the i32 range round-trips" {
     defer properties.deinit();
 
     var low = try CustomAction.init(testing.allocator, std.math.minInt(i32), "low");
-    errdefer low.deinit(testing.allocator);
+    defer low.deinit(testing.allocator);
     var high = try CustomAction.init(testing.allocator, std.math.maxInt(i32), "high");
-    errdefer high.deinit(testing.allocator);
+    defer high.deinit(testing.allocator);
     try setCustomActions(&properties, &.{ low, high });
 
     const actions = customActions(&properties);
     try testing.expectEqual(@as(i32, -2147483648), actions[0].id);
     try testing.expectEqual(@as(i32, 2147483647), actions[1].id);
+}
+
+test "set_custom_actions stores copies the caller can write over and release" {
+    // The setter documents that it copies, so this drives the two halves of
+    // that claim that a round trip alone cannot see. A setter that stored the
+    // caller's buffers answers the first read exactly as a copying one does, so
+    // the caller writes through its own handles afterwards and reads the store
+    // again. Then the caller releases what it built, which the same store has to
+    // survive. The shallow version that `appendSlice` would write fails the
+    // first pair of reads and reads freed memory on the second.
+    var properties: Properties = .init(testing.allocator);
+    defer properties.deinit();
+
+    var first = try CustomAction.init(testing.allocator, 1, "first");
+    errdefer first.deinit(testing.allocator);
+    var second = try CustomAction.init(testing.allocator, 2, "second");
+    errdefer second.deinit(testing.allocator);
+    try setCustomActions(&properties, &.{ first, second });
+
+    // The store's descriptions are its own, so these two writes reach nothing
+    // it reads.
+    first.description.items[0] = 'F';
+    second.description.items[0] = 'S';
+    const stored = customActions(&properties);
+    try testing.expectEqual(@as(usize, 2), stored.len);
+    try testing.expectEqual(@as(i32, 1), stored[0].id);
+    try testing.expectEqualSlices(u8, "first", stored[0].description.items);
+    try testing.expectEqual(@as(i32, 2), stored[1].id);
+    try testing.expectEqualSlices(u8, "second", stored[1].description.items);
+
+    // The caller still owns both it built, and releasing them leaves the store
+    // whole. The store releases its own copies when `properties` goes.
+    first.deinit(testing.allocator);
+    second.deinit(testing.allocator);
+    const after_release = customActions(&properties);
+    try testing.expectEqual(@as(usize, 2), after_release.len);
+    try testing.expectEqual(@as(i32, 1), after_release[0].id);
+    try testing.expectEqualSlices(u8, "first", after_release[0].description.items);
+    try testing.expectEqual(@as(i32, 2), after_release[1].id);
+    try testing.expectEqualSlices(u8, "second", after_release[1].description.items);
 }
 
 test "a custom action with an empty description round-trips" {
