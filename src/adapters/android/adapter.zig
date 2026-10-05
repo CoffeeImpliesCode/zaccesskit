@@ -52,6 +52,7 @@ const std = @import("std");
 const action_request = @import("../../capi/action_request.zig");
 const allocation = @import("../../capi/allocation.zig");
 const boundary = @import("../../capi/boundary.zig");
+const classes = @import("classes.zig");
 const consumer = @import("../../consumer/root.zig");
 const java_call = @import("java_call.zig");
 const jni = @import("jni_table.zig");
@@ -66,6 +67,7 @@ const values = @import("values.zig");
 const ActionHandler = boundary.ActionHandler;
 const ActivationHandler = boundary.ActivationHandler;
 const CActionRequest = boundary.CActionRequest;
+const CTreeUpdate = boundary.CTreeUpdate;
 const TreeUpdateFactory = boundary.TreeUpdateFactory;
 
 const FullNodeId = consumer.tree_index.FullNodeId;
@@ -193,6 +195,15 @@ pub const AndroidAdapter = struct {
     /// The tree, or `null` while the adapter has not been activated.
     tree: ?Tree,
 
+    /// Whether an activation handler has already been asked.
+    ///
+    /// **The handler is asked at most once**, which is upstream's rule: it calls
+    /// `request_initial_tree` once per adapter at `AK/android/src/adapter.rs:218`.
+    /// Without this, an application that has no tree yet would be asked again on
+    /// every platform call, and `include/zaccesskit.h:5789` promises the handler
+    /// belongs to the call that passed it rather than to the adapter.
+    activation_asked: bool = false,
+
     /// The two-way map between a virtual view id and a node.
     id_map: NodeIdMap,
 
@@ -206,7 +217,11 @@ pub const AndroidAdapter = struct {
     /// `error.OutOfMemory` leaves nothing allocated: the id map's own `init`
     /// releases its half-grown maps on the way out.
     pub fn init(gpa: Allocator) Allocator.Error!AndroidAdapter {
-        return .{ .gpa = gpa, .tree = null, .id_map = try NodeIdMap.init(gpa, 0) };
+        return .{
+            .gpa = gpa,
+            .tree = null,
+            .id_map = try NodeIdMap.init(gpa, 0),
+        };
     }
 
     /// An adapter in a block the C header can hold, or `null`.
@@ -240,6 +255,7 @@ pub const AndroidAdapter = struct {
     pub fn deinit(self: *AndroidAdapter) void {
         if (self.tree) |*tree| tree.deinit();
         self.tree = null;
+        self.activation_asked = false;
         self.id_map.deinit(self.gpa);
         self.last_error = null;
     }
@@ -280,10 +296,14 @@ pub const AndroidAdapter = struct {
         activation_handler_userdata: ?*anyopaque,
     ) Error!void {
         if (self.tree != null) return;
+        if (self.activation_asked) return;
+        self.activation_asked = true;
 
         const produced = activation_handler(activation_handler_userdata) orelse return;
-        // `Tree.init` takes the update by value and releases it on every path,
-        // success or failure, so there is no release past this call.
+        // `Tree.init` takes the update by value and releases the value's own
+        // nodes on every path, and the block the callback allocated stays this
+        // function's to release. Both are one `defer`, so neither can be skipped.
+        defer allocation.release(produced);
         const built = Tree.init(self.gpa, produced.*, false) catch |err| switch (err) {
             error.OutOfMemory => return error.OutOfMemory,
             else => return error.TreeRejected,
@@ -313,6 +333,10 @@ pub const AndroidAdapter = struct {
 
         const produced = update_factory(update_factory_userdata) orelse
             return error.NullTreeUpdate;
+        // The block the factory allocated is this function's to release, exactly
+        // as in `ensureActive`; the update value inside it is consumed by the
+        // commit below.
+        defer allocation.release(produced);
 
         var events = QueuedEvents.init(self.gpa, self);
         errdefer events.deinit();
@@ -805,3 +829,419 @@ comptime {
         @compileError("endIndex assumes a JInt fits in a usize");
     }
 }
+// --- Tests --------------------------------------------------------------------
+
+/// What one dispatched request carried, reached through the handler's userdata.
+///
+/// `boundary.ActionHandler` takes one `?*anyopaque`, so a recorder travels
+/// through it rather than being captured. The handler releases the request it is
+/// handed, which is the rule the type states and the only release there is.
+const ActionProbe = struct {
+    /// The allocator the request's payload came from.
+    gpa: Allocator,
+    /// How many requests arrived.
+    calls: usize = 0,
+    /// The action of the last request.
+    action: schema.Action = .click,
+    /// The target node of the last request.
+    target: schema.NodeId = .{ .value = 0 },
+    /// The tree of the last request.
+    target_tree: schema.TreeId = schema.tree_id_root,
+    /// Whether the last request carried a payload.
+    has_payload: bool = false,
+    /// The numeric payload of the last request, for the two actions that carry
+    /// one as a plain number.
+    numeric: f64 = 0,
+    /// The scroll unit of the last request.
+    scroll_unit: schema.ScrollUnit = .item,
+    /// The selection of the last request.
+    selection: schema.TextSelection = .{
+        .anchor = .{ .node_id = .{ .value = 0 }, .character_index = 0 },
+        .focus = .{ .node_id = .{ .value = 0 }, .character_index = 0 },
+    },
+
+
+    /// Reads one request, then releases it the way `boundary.ActionHandler`
+    /// requires: `schema.cActionRequestDeinit` for the payload and
+    /// `allocation.release` for the block `allocation.create` made.
+    fn take(self: *ActionProbe, request: *boundary.CActionRequest) void {
+        self.calls += 1;
+        self.action = request.action;
+        self.target = request.target_node;
+        self.target_tree = request.target_tree;
+        self.has_payload = request.data.has_value;
+        if (!request.data.has_value) return;
+
+        switch (@as(schema.ActionDataTag, @enumFromInt(request.data.value.tag))) {
+            .numeric_value => {
+                self.numeric = request.data.value.payload.numeric_value;
+            },
+            .scroll_unit => {
+                self.scroll_unit = request.data.value.payload.scroll_unit;
+            },
+            .set_text_selection => {
+                self.selection = request.data.value.payload.set_text_selection;
+            },
+            else => {},
+        }
+        var owned = request.*;
+        schema.cActionRequestDeinit(self.gpa, &owned);
+    }
+};
+
+/// A one-node tree update, which is the smallest `consumer.tree.Tree` accepts.
+fn rootUpdate(gpa: Allocator) std.mem.Allocator.Error!CTreeUpdate {
+    var update: CTreeUpdate = .{
+        .nodes = .empty,
+        .tree = schema.TreeInfo.init(.{ .value = 1 }),
+        .tree_id = schema.tree_id_root,
+        .focus = .{ .value = 1 },
+    };
+    try update.pushNode(gpa, .{ .value = 1 }, schema.Node.init(gpa, .button));
+    return update;
+}
+
+/// An adapter holding a one-node tree, released with `deinit`.
+fn activeAdapter(gpa: Allocator) consumer.tree.UpdateError!AndroidAdapter {
+    var adapter = try AndroidAdapter.init(gpa);
+    errdefer adapter.deinit();
+    adapter.tree = try Tree.init(gpa, try rootUpdate(gpa), false);
+    return adapter;
+}
+
+test "an adapter with no tree reports itself inactive" {
+    const gpa = testing.allocator;
+    var adapter = try AndroidAdapter.init(gpa);
+    defer adapter.deinit();
+
+    try testing.expect(!adapter.isActive());
+    try testing.expect(adapter.treeOf() == null);
+}
+
+test "an adapter holding a tree reports itself active and answers it" {
+    const gpa = testing.allocator;
+    var adapter = try activeAdapter(gpa);
+    defer adapter.deinit();
+
+    try testing.expect(adapter.isActive());
+    try testing.expect(adapter.treeOf() != null);
+    try testing.expectEqual(
+        @as(u64, 1),
+        adapter.treeOf().?.stateOf().rootId().local.value,
+    );
+}
+
+test "every simple action id becomes the AccessKit action the table names" {
+    // The walk is over the five rows of `simple_actions`, so
+    // `simple_action_count` is the bound, and reading the expectation out of the
+    // same table would compare the code with itself, so it is a literal here.
+    const expected = [_]schema.Action{
+        .click,
+        .focus,
+        .blur,
+        .set_text_selection,
+        .set_value,
+    };
+    try testing.expectEqual(expected.len, simple_actions.len);
+
+    const gpa = testing.allocator;
+    var adapter = try activeAdapter(gpa);
+    defer adapter.deinit();
+    const node = adapter.treeOf().?.stateOf().root();
+
+    for (simple_actions, expected) |row, want| {
+        const request = try adapter.buildRequest(
+            adapter.treeOf().?.stateOf(),
+            node,
+            .{ .simple = row.android },
+        );
+        try testing.expectEqual(want, request.?.action);
+        try testing.expectEqual(@as(u64, 1), request.?.target_node.value);
+        try testing.expectEqual(schema.tree_id_root, request.?.target_tree);
+    }
+}
+
+test "an action id the port does not map becomes no request at all" {
+    const gpa = testing.allocator;
+    var adapter = try activeAdapter(gpa);
+    defer adapter.deinit();
+    const node = adapter.treeOf().?.stateOf().root();
+
+    // `null` is not a failure: the application is told nothing, which is the
+    // contract at `include/zaccesskit.h:1016-1018`.
+    try testing.expectEqual(
+        @as(?schema.ActionRequest, null),
+        try adapter.buildRequest(adapter.treeOf().?.stateOf(), node, .{ .simple = 0x4242 }),
+    );
+}
+
+test "a scroll action follows the node's own scroll properties" {
+    const gpa = testing.allocator;
+    var adapter = try activeAdapter(gpa);
+    defer adapter.deinit();
+    const node = adapter.treeOf().?.stateOf().root();
+
+    // A node that states no scroll property scrolls down, which is the direction
+    // a page moves when nothing in the tree says otherwise.
+    try testing.expectEqual(
+        schema.Action.scroll_down,
+        scrollActionFor(node, true),
+    );
+    try testing.expectEqual(
+        schema.Action.scroll_up,
+        scrollActionFor(node, false),
+    );
+}
+
+test "a scroll action carries the page unit the platform means" {
+    const gpa = testing.allocator;
+    var adapter = try activeAdapter(gpa);
+    defer adapter.deinit();
+    var probe: ActionProbe = .{ .gpa = gpa };
+    const node = adapter.treeOf().?.stateOf().root();
+    _ = try adapter.idMap().getOrCreateJavaId(node);
+
+    var events = (try adapter.performAction(
+        recordingActionHandler,
+        &probe,
+        values.HOST_VIEW_ID,
+        .{ .simple = values.ACTION_SCROLL_FORWARD },
+    )).?;
+    defer events.deinit();
+
+    try testing.expectEqual(@as(usize, 1), probe.calls);
+    try testing.expectEqual(schema.Action.scroll_down, probe.action);
+    try testing.expect(probe.has_payload);
+    try testing.expectEqual(schema.ScrollUnit.page, probe.scroll_unit);
+}
+
+test "a set-progress action becomes a numeric value on the target node" {
+    const gpa = testing.allocator;
+    var adapter = try activeAdapter(gpa);
+    defer adapter.deinit();
+    var probe: ActionProbe = .{ .gpa = gpa };
+    const node = adapter.treeOf().?.stateOf().root();
+    _ = try adapter.idMap().getOrCreateJavaId(node);
+
+    var events = (try adapter.performAction(
+        recordingActionHandler,
+        &probe,
+        values.HOST_VIEW_ID,
+        .{ .set_progress = 0.5 },
+    )).?;
+    defer events.deinit();
+
+    try testing.expectEqual(@as(usize, 1), probe.calls);
+    try testing.expectEqual(schema.Action.set_value, probe.action);
+    try testing.expectEqual(@as(f64, 0.5), probe.numeric);
+}
+
+test "a selection action carries the two endpoints the bundle named" {
+    const gpa = testing.allocator;
+    var adapter = try activeAdapter(gpa);
+    defer adapter.deinit();
+    var probe: ActionProbe = .{ .gpa = gpa };
+    const node = adapter.treeOf().?.stateOf().root();
+    _ = try adapter.idMap().getOrCreateJavaId(node);
+
+    var events = (try adapter.performAction(
+        recordingActionHandler,
+        &probe,
+        values.HOST_VIEW_ID,
+        .{ .set_text_selection = .{ .start = 3, .end = 7 } },
+    )).?;
+    defer events.deinit();
+
+    try testing.expectEqual(schema.Action.set_text_selection, probe.action);
+    try testing.expectEqual(@as(usize, 3), probe.selection.anchor.character_index);
+    try testing.expectEqual(@as(usize, 7), probe.selection.focus.character_index);
+}
+
+test "a collapse becomes a caret at the start of the document" {
+    const gpa = testing.allocator;
+    var adapter = try activeAdapter(gpa);
+    defer adapter.deinit();
+    var probe: ActionProbe = .{ .gpa = gpa };
+    const node = adapter.treeOf().?.stateOf().root();
+    _ = try adapter.idMap().getOrCreateJavaId(node);
+
+    var events = (try adapter.performAction(
+        recordingActionHandler,
+        &probe,
+        values.HOST_VIEW_ID,
+        .collapse_text_selection,
+    )).?;
+    defer events.deinit();
+
+    try testing.expectEqual(schema.Action.set_text_selection, probe.action);
+    try testing.expectEqual(@as(usize, 0), probe.selection.anchor.character_index);
+    try testing.expectEqual(@as(usize, 0), probe.selection.focus.character_index);
+}
+
+test "a negative selection endpoint becomes the start of the document" {
+    // Android clamps a selection to the text it knows, and a negative endpoint is
+    // the platform saying it did not supply one. `-1` as a `usize` would be the
+    // largest index a document can hold, so the clamp is not cosmetic.
+    try testing.expectEqual(@as(usize, 0), endIndex(-1));
+    try testing.expectEqual(@as(usize, 0), endIndex(0));
+    try testing.expectEqual(@as(usize, 12), endIndex(12));
+}
+
+test "a traversal on a node that states no value raises nothing" {
+    // The fixture node declares no value, so there is no text to move through and
+    // the request is not built. `null` is the honest answer rather than a caret
+    // at an offset the node has no text for.
+    const gpa = testing.allocator;
+    var adapter = try activeAdapter(gpa);
+    defer adapter.deinit();
+    var probe: ActionProbe = .{ .gpa = gpa };
+    const node = adapter.treeOf().?.stateOf().root();
+    _ = try adapter.idMap().getOrCreateJavaId(node);
+
+    var events = (try adapter.performAction(
+        recordingActionHandler,
+        &probe,
+        values.HOST_VIEW_ID,
+        .{ .traverse_text = .{
+            .granularity = values.MOVEMENT_GRANULARITY_WORD,
+            .direction = 1,
+            .extend = false,
+        } },
+    )).?;
+    defer events.deinit();
+
+    try testing.expectEqual(@as(usize, 0), probe.calls);
+}
+
+test "an action on a node the map never named raises nothing" {
+    const gpa = testing.allocator;
+    var adapter = try activeAdapter(gpa);
+    defer adapter.deinit();
+    var probe: ActionProbe = .{ .gpa = gpa };
+
+    var events = (try adapter.performAction(
+        recordingActionHandler,
+        &probe,
+        99,
+        .{ .simple = values.ACTION_CLICK },
+    )).?;
+    defer events.deinit();
+
+    try testing.expectEqual(@as(usize, 0), probe.calls);
+    // The queue still exists: an active adapter with nothing to say is not an
+    // inactive adapter, and the header tells the two apart.
+    try testing.expectEqual(@as(usize, 0), events.len());
+}
+
+test "a hover that names no motion action raises nothing" {
+    const gpa = testing.allocator;
+    var adapter = try activeAdapter(gpa);
+    defer adapter.deinit();
+
+    var events = (try adapter.onHoverEvent(
+        unreachableActivation,
+        null,
+        0,
+        0,
+        0,
+    )).?;
+    defer events.deinit();
+    try testing.expectEqual(@as(usize, 0), events.len());
+}
+
+test "a hover exit raises one event about the host view" {
+    const gpa = testing.allocator;
+    var adapter = try activeAdapter(gpa);
+    defer adapter.deinit();
+
+    var events = (try adapter.onHoverEvent(
+        unreachableActivation,
+        null,
+        values.MOTION_ACTION_HOVER_EXIT,
+        0,
+        0,
+    )).?;
+    defer events.deinit();
+
+    try testing.expectEqual(@as(usize, 1), events.len());
+    try testing.expectEqual(
+        values.EVENT_VIEW_HOVER_EXIT,
+        events.events.items[0].event_type,
+    );
+    // The exit names the host view, because the platform is leaving the whole
+    // view rather than one node of it.
+    try testing.expect(events.events.items[0].node == null);
+}
+
+test "an inactive adapter refuses an action and a hover without asking for a tree" {
+    const gpa = testing.allocator;
+    var adapter = try AndroidAdapter.init(gpa);
+    defer adapter.deinit();
+
+    try testing.expectEqual(
+        @as(?queued_events.AndroidQueuedEvents, null),
+        try adapter.performAction(unusedAction, null, 0, .{ .simple = values.ACTION_CLICK }),
+    );
+    try testing.expectEqual(
+        @as(?queued_events.AndroidQueuedEvents, null),
+        try adapter.onHoverEvent(
+            unreachableActivation,
+            null,
+            values.MOTION_ACTION_HOVER_EXIT,
+            0,
+            0,
+        ),
+    );
+}
+
+test "every granularity the port answers has a movement row" {
+    // The walk is over the four rows, so `movement_step_count` is the bound, and
+    // the four values are the four `values.zig` declares.
+    const expected = [_]JInt{
+        values.MOVEMENT_GRANULARITY_CHARACTER,
+        values.MOVEMENT_GRANULARITY_WORD,
+        values.MOVEMENT_GRANULARITY_LINE,
+        values.MOVEMENT_GRANULARITY_PARAGRAPH,
+    };
+    try testing.expectEqual(expected.len, movement_steps.len);
+    for (movement_steps, expected) |step, want| {
+        try testing.expectEqual(want, step.granularity);
+    }
+}
+
+test "the node info obtain signature is the one methods.zig records" {
+    try testing.expectEqualStrings("obtain", node_info_obtain.name);
+    try testing.expectEqualStrings(
+        "(Landroid/view/View;I)Landroid/view/accessibility/AccessibilityNodeInfo;",
+        node_info_obtain.signature,
+    );
+    try testing.expect(classes.find(node_info_obtain.class.descriptor) != null);
+}
+
+/// The handler a probe test installs, which reads its probe from `userdata`.
+///
+/// `AGENTS.md` section 3 requires state to be a parameter rather than a capture,
+/// and `boundary.ActionHandler` has nowhere to put a capture, so the probe
+/// travels through the one pointer the callback already has.
+fn recordingActionHandler(
+    request: *boundary.CActionRequest,
+    userdata: ?*anyopaque,
+) callconv(.c) void {
+    const probe: *ActionProbe = @ptrCast(@alignCast(userdata orelse return));
+    probe.take(request);
+}
+
+/// An activation handler that must never be reached, reached through a pointer
+/// that is never dereferenced.
+///
+/// It returns `null` rather than trapping, because `AGENTS.md` section 3 bans a
+/// bare `unreachable` and a test that fails this way reports nothing useful.
+fn unreachableActivation(_: ?*anyopaque) callconv(.c) ?*CTreeUpdate {
+    return null;
+}
+
+/// An action handler that must never be reached.
+///
+/// It does not release the request because it is never given one; see
+/// `ActionProbe.handler` for the handler that does.
+fn unusedAction(_: *boundary.CActionRequest, _: ?*anyopaque) callconv(.c) void {}

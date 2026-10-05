@@ -219,6 +219,18 @@ pub const AndroidInjectingAdapter = struct {
     /// The plain adapter every call routes to. Owned: `free` releases it.
     inner: *AndroidAdapter,
 
+    /// The environment the constructor ran on.
+    ///
+    /// `accesskit_android_injecting_adapter_free` carries no `env`, and a
+    /// `JNIEnv *` is valid only on the thread that owns it, so this is the one
+    /// value that has to survive a thread hop. **The caller must therefore
+    /// release the adapter on the thread that constructed it**, which is what the
+    /// header's parameter list implies. Upstream avoids the same constraint by
+    /// keeping the `JavaVM` and attaching the calling thread at
+    /// `AK/android/src/inject.rs:412-430`; a port that wanted that would need the
+    /// second table `jni_table.zig` records it does not declare.
+    env: JniEnv,
+
     /// A **weak** global reference to the host view.
     ///
     /// Weak because the adapter must not keep the application's view alive,
@@ -305,6 +317,7 @@ pub const AndroidInjectingAdapter = struct {
             return error.OutOfMemory;
         block.* = .{
             .gpa = gpa,
+            .env = table.env,
             .inner = undefined,
             .host = null,
             .runnable = null,
@@ -446,10 +459,10 @@ pub const AndroidInjectingAdapter = struct {
     /// header gives this function no way to report it.
     pub fn updateIfActive(
         self: *AndroidInjectingAdapter,
-        table: JniTable,
         update_factory: TreeUpdateFactory,
         update_factory_userdata: ?*anyopaque,
     ) void {
+        const table = jni.realTable(self.env);
         const produced = self.inner.updateIfActive(update_factory, update_factory_userdata) catch
             return;
         const events = produced orelse return;
@@ -501,7 +514,8 @@ pub const AndroidInjectingAdapter = struct {
 /// that releases one, and it has to go through `allocation.release` because the
 /// block came from `allocation.create`.
 fn eventsRelease(events: QueuedEvents) void {
-    events.deinit();
+    var owned = events;
+    owned.deinit();
 }
 
 /// The five rows `RegisterNatives` takes.
@@ -983,13 +997,16 @@ test "every registered native names a row methods.zig records" {
     var matched: usize = 0;
     for (registered_natives) |row| {
         try testing.expect(methods.hasName(row.name));
+        var found = false;
         for (methods.method_ids) |candidate| {
             if (candidate.kind != .registered_native) continue;
-            try testing.expectEqualStrings(candidate.name, row.name);
-            if (candidate.signature) |signature| {
-                try testing.expectEqualStrings(signature, row.signature);
-            }
+            if (!std.mem.eql(u8, candidate.name, row.name)) continue;
+            try testing.expectEqualStrings(candidate.signature.?, row.signature);
+            found = true;
         }
+        // A row with no counterpart is a Java method upstream never registers,
+        // so registering it would bind nothing.
+        try testing.expect(found);
         matched += 1;
     }
     try testing.expectEqual(registered_native_count, matched);
@@ -1023,8 +1040,10 @@ test "the delegate class is the descriptor classes.zig derives" {
 test "a handle of zero names no adapter and a real address names one" {
     try testing.expect(adapterOf(0) == null);
     // A round trip through the `jlong` is the whole contract: the handle is the
-    // pointer, so an address that survives the cast comes back unchanged.
-    var anchor: u8 = 0;
+    // pointer, so an address that survives the cast comes back unchanged. The
+    // anchor is a `u64` rather than a `u8` because `adapterOf` answers a pointer
+    // to a struct with alignment 8, and a one-byte local is not aligned to it.
+    var anchor: u64 = 0;
     const handle: JLong = @bitCast(@intFromPtr(&anchor));
     const found = adapterOf(handle) orelse return error.NoAdapterFromHandle;
     try testing.expectEqual(@intFromPtr(&anchor), @intFromPtr(found));
@@ -1052,7 +1071,7 @@ test "a host that is null is refused before any Java call" {
     var recorder: Recorder = .{};
     const table = recordingTable(&recorder);
 
-    const built = AndroidInjectingAdapter.create(
+    const built = try AndroidInjectingAdapter.create(
         gpa,
         table,
         null,
@@ -1074,7 +1093,9 @@ test "a host that cannot load the delegate class is refused" {
     var recorder: Recorder = .{ .class_missing = true };
     const table = recordingTable(&recorder);
 
-    const built = AndroidInjectingAdapter.create(
+    // The C entry point turns this error into `null`; the Zig-level constructor
+    // reports it so the two shapes stay distinguishable.
+    try testing.expectError(error.JavaMemberMissing, AndroidInjectingAdapter.create(
         gpa,
         table,
         fakeHost(),
@@ -1082,8 +1103,7 @@ test "a host that cannot load the delegate class is refused" {
         null,
         unusedAction,
         null,
-    );
-    try testing.expect(built == null);
+    ));
     try testing.expectEqual(@as(usize, 0), recorder.registered_count);
 }
 
@@ -1127,7 +1147,7 @@ test "a global reference the VM refuses stops the construction" {
     var recorder: Recorder = .{ .reference_answer = null };
     const table = recordingTable(&recorder);
 
-    try testing.expect(AndroidInjectingAdapter.create(
+    try testing.expectError(error.OutOfMemory, AndroidInjectingAdapter.create(
         gpa,
         table,
         fakeHost(),
@@ -1135,7 +1155,7 @@ test "a global reference the VM refuses stops the construction" {
         null,
         unusedAction,
         null,
-    ) == null);
+    ));
     // Nothing was installed, so the host is exactly as it was.
     try testing.expectEqual(@as(usize, 0), recorder.delegate_sets);
 }
@@ -1145,8 +1165,11 @@ test "an update on an inactive adapter posts nothing" {
     const inner = (try AndroidAdapter.create(gpa)).?;
     defer inner.free();
 
+    var recorder: Recorder = .{};
+
     var target: AndroidInjectingAdapter = .{
         .gpa = gpa,
+        .env = @ptrCast(&recorder),
         .inner = inner,
         .host = @ptrFromInt(handle_base + 20),
         .runnable = fakeRunnable(),
@@ -1159,10 +1182,7 @@ test "an update on an inactive adapter posts nothing" {
     };
     defer target.pending_events.deinit(gpa);
 
-    var recorder: Recorder = .{};
-    const table = recordingTable(&recorder);
-
-    target.updateIfActive(table, noFactory, null);
+    target.updateIfActive(noFactory, null);
     try testing.expectEqual(@as(usize, 0), target.pending_events.items.len);
 }
 

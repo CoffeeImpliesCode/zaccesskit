@@ -51,6 +51,28 @@
 //! second table `JavaVM` reaches; `injecting.zig` records where that leaves the
 //! thread handoff.
 //!
+//! **The environment is a `*const` pointer, and Zig 0.16.0 miscompiles it.**
+//! `jni.h` spells `JNIEnv *` as a pointer to a *const* function table, and this
+//! type is deliberately **not** `?*const anyopaque`.
+//!
+//! **Zig 0.16.0 miscompiles it.** The compiler emits the LLVM parameter
+//! attribute `readonly` on a `*const T` parameter and then, in the body of that
+//! same function, emits a store through that parameter. LLVM reads `readonly`
+//! as the callee's promise never to write through the pointer, so the store is
+//! undefined behaviour and the optimiser deletes it. Once the call is
+//! devirtualised and inlined, the call goes too and the caller's load forwards
+//! from the store that preceded it.
+//!
+//! It is not hypothetical: `overriding one field of the inert table leaves the
+//! rest inert` expects 1 in Debug and observes 0 in ReleaseSafe, and the
+//! optimiser reduces the whole test body to two instructions that print the
+//! constant the test wrote itself. A twenty-line file with no adapter in it
+//! reproduces it. `?*anyopaque` emits no `readonly` and passes in every mode.
+//!
+//! A substituted field therefore recovers a *mutable* context from `.env` with
+//! `@constCast` and writes through it, which is what `withRecorder` and
+//! `TestRecorder` below do.
+//!
 //! **The loop bound.** `jni_slot_names` holds `jni_named_slot_count` rows and
 //! `slotOf` walks it once at comptime, so the bound is `jni_named_slot_count`.
 
@@ -120,7 +142,7 @@ pub const JFieldId = ?*anyopaque;
 
 /// `JNIEnv *`, `jni.h:197` in C mode: a pointer to the function table, so an
 /// opaque pointer is the whole contract.
-pub const JniEnv = ?*const anyopaque;
+pub const JniEnv = ?*anyopaque;
 
 /// `jvalue`, `jni.h:120-130`. The union a JNI call passes its arguments in, and
 /// 8 bytes on every target because the widest member is a pointer.
@@ -1594,6 +1616,50 @@ test "the inert table answers the JNI default without an environment" {
     table.deleteLocalRef(null);
     table.deleteGlobalRef(null);
     table.getIntArrayRegion(null, 0, 0, &.{});
+}
+
+test "a freshly allocated inert table answers the JNI default from every field" {
+    // `inertTable` returns a value, so a caller may hold one on the heap as
+    // easily as on the stack, and a heap table lands on storage nothing else in
+    // this process has written. A field `inertTable` left `undefined` answers
+    // whatever the allocator handed back rather than the JNI default, and the
+    // default is the whole contract: only a field a caller substitutes may run,
+    // and every other field must answer a value rather than fault. The test
+    // above answers that contract from a stack table, so the two differ only in
+    // where the table lives and that is what this one covers.
+    const gpa = testing.allocator;
+    const fresh = try gpa.create(JniTable);
+    defer gpa.destroy(fresh);
+    fresh.* = inertTable(@ptrFromInt(0x30));
+
+    // One entry point per line, so a failure names one field.
+    try testing.expectEqual(@as(JObject, null), fresh.findClass("android/view/View"));
+    try testing.expectEqual(@as(JObject, null), fresh.getMethodId(null, "a", "()V"));
+    try testing.expectEqual(@as(JObject, null), fresh.getStaticMethodId(null, "a", "()V"));
+    try testing.expectEqual(
+        @as(JObject, null),
+        fresh.getStaticFieldId(null, "a", "Ljava/lang/String;"),
+    );
+    try testing.expectEqual(@as(JObject, null), fresh.getStaticObjectField(null, null));
+    try testing.expectEqual(@as(JObject, null), fresh.callObjectMethod(null, null, &.{}));
+    try testing.expectEqual(@as(JObject, null), fresh.callStaticObjectMethod(null, null, &.{}));
+    try testing.expectEqual(@as(JBoolean, 0), fresh.callBooleanMethod(null, null, &.{}));
+    try testing.expectEqual(@as(JInt, 0), fresh.callIntMethod(null, null, &.{}));
+    try testing.expectEqual(@as(JFloat, 0), fresh.callFloatMethod(null, null, &.{}));
+    try testing.expectEqual(@as(JObject, null), fresh.newString("text"));
+    try testing.expectEqual(@as(JObject, null), fresh.newObject(null, null, &.{}));
+    try testing.expectEqual(@as(JObject, null), fresh.newIntArray(2));
+    try testing.expectEqual(@as(JObject, null), fresh.newGlobalRef(null));
+    try testing.expectEqual(@as(JObject, null), fresh.newWeakGlobalRef(null));
+    try testing.expectEqual(@as(JInt, 0), fresh.pushLocalFrame(2));
+    try testing.expectEqual(@as(JInt, 0), fresh.registerNativeMethods(null, &.{}));
+    try testing.expectEqual(@as(JObject, null), fresh.popLocalFrame(null));
+    try testing.expect(!fresh.isInstanceOf(null, null));
+    try testing.expect(!fresh.exceptionCheck());
+    fresh.callVoidMethod(null, null, &.{});
+    fresh.deleteLocalRef(null);
+    fresh.deleteGlobalRef(null);
+    fresh.getIntArrayRegion(null, 0, 0, &.{});
 }
 
 test "overriding one field of the inert table leaves the rest inert" {

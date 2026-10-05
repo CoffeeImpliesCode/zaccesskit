@@ -173,8 +173,9 @@ comptime {
 }
 
 /// `JNIEnv *`, from `<jni.h>`, which the header includes under `__ANDROID__`.
-/// A pointer to the function table, so an opaque pointer is the whole contract.
-pub const JniEnv = ?*const anyopaque;
+/// Declared once, by the adapter that owns the JNI boundary; see the note there
+/// for why it is `?*anyopaque` and not the `?*const anyopaque` `jni.h` implies.
+pub const JniEnv = android.JniEnv;
 
 /// `jobject`, a local reference to a Java object.
 pub const JObject = ?*anyopaque;

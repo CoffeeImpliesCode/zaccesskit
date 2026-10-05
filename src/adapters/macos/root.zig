@@ -1263,12 +1263,17 @@ var registered_window_classes: usize = 0;
 
 /// The names, in registration order. It is never released.
 ///
-/// **This is the one file-scope `var` in the adapter, and it is not a runtime
-/// handle.** Upstream keeps the same thing in a process-lifetime static at
-/// `subclass.rs:157` and the header states why: the modification cannot be
-/// undone, so a registration outlives every adapter and every call. There is no
-/// other place to put it, because `add_focus_forwarder_to_window_class` takes
-/// no adapter and no context.
+/// **The count above and this table are the only file-scope `var`s in the
+/// adapter, and they are not a runtime handle.** Upstream keeps the same thing
+/// in a process-lifetime static at `subclass.rs:157` and the header states why:
+/// the modification cannot be undone, so a registration outlives every adapter
+/// and every call. There is no other place to put it, because
+/// `add_focus_forwarder_to_window_class` takes no adapter and no context.
+///
+/// A name handed out by `registeredWindowClass` is a view of this table, so it
+/// stays readable for the life of the process. A view built on the frame of
+/// whichever function called the accessor dangles the moment that function
+/// returns, and the fault lands later, in whoever read the name.
 var window_class_names: [window_class_capacity][class_name_capacity]u8 = undefined;
 
 /// Records `name` and installs the forwarder, once per name.
@@ -1289,16 +1294,24 @@ fn patchWindowClass(name: []const u8) void {
     installFocusForwarder(name);
 }
 
-/// The window class names recorded so far, in registration order.
+/// How many window class names the registry holds.
 ///
-/// The walk is over `window_class_names[0..registered_window_classes]`, whose
-/// length is at most `window_class_capacity`.
-pub fn registeredWindowClasses() []const []const u8 {
-    const held = registered_window_classes;
-    const table = window_class_names[0..held];
-    var slices: [window_class_capacity][]const u8 = undefined;
-    for (table, 0..) |slot, i| slices[i] = std.mem.sliceTo(&slot, 0);
-    return slices[0..held];
+/// The count is at most `window_class_capacity` and only grows, because a
+/// registration cannot be undone.
+pub fn registeredWindowClassCount() usize {
+    return registered_window_classes;
+}
+
+/// The name at `index` in registration order, or `null` when `index` is at or
+/// past the count.
+///
+/// The slice points into `window_class_names` and stops at the NUL that follows
+/// the name. It is valid for the life of the process, so the caller keeps no
+/// reference and releases nothing.
+pub fn registeredWindowClass(index: usize) ?[]const u8 {
+    if (index >= registered_window_classes) return null;
+    const slot: *const [class_name_capacity]u8 = &window_class_names[index];
+    return std.mem.sliceTo(slot, 0);
 }
 
 /// Installs `accessibilityFocusedUIElement` on the class named `name`.
@@ -1704,27 +1717,56 @@ test "the debug text names the state and the platform node count" {
 test "the focus forwarder records a class name once" {
     // `include/zaccesskit.h:6228`: the function keeps its own copy, and calling
     // it twice for one class name has no additional effect.
-    const before = registeredWindowClasses().len;
+    const before = registeredWindowClassCount();
     macosAddFocusForwarderToWindowClass("AccessKitTestWindow");
-    try testing.expectEqual(before + 1, registeredWindowClasses().len);
+    try testing.expectEqual(before + 1, registeredWindowClassCount());
     try testing.expectEqualStrings(
         "AccessKitTestWindow",
-        registeredWindowClasses()[registeredWindowClasses().len - 1],
+        registeredWindowClass(registeredWindowClassCount() - 1).?,
     );
     macosAddFocusForwarderToWindowClass("AccessKitTestWindow");
-    try testing.expectEqual(before + 1, registeredWindowClasses().len);
+    try testing.expectEqual(before + 1, registeredWindowClassCount());
 
     // The length form reads the same bytes and reaches the same registry, so
     // the two entry points are one function rather than two.
     const padded = "AccessKitTestPadded";
     macosAddFocusForwarderToWindowClassWithLength(padded.ptr, padded.len);
-    try testing.expectEqual(before + 2, registeredWindowClasses().len);
+    try testing.expectEqual(before + 2, registeredWindowClassCount());
     macosAddFocusForwarderToWindowClassWithLength(padded.ptr, padded.len);
-    try testing.expectEqual(before + 2, registeredWindowClasses().len);
+    try testing.expectEqual(before + 2, registeredWindowClassCount());
     try testing.expectEqualStrings(
         padded,
-        registeredWindowClasses()[registeredWindowClasses().len - 1],
+        registeredWindowClass(registeredWindowClassCount() - 1).?,
     );
+}
+
+test "a name read from the registry outlives the call that returned it" {
+    // The registry is process-lifetime, so the name it hands out must still
+    // read the same after the accessor has returned. An accessor that built
+    // the view on its own frame handed out a pointer into that dead frame
+    // instead: a Debug build read the stale bytes and passed, and an optimised
+    // build faulted inside the assertion that read them. **The address is the
+    // invariant**, and the read after the registry has moved on is what a
+    // caller does.
+    const index = registeredWindowClassCount();
+    try testing.expect(index + 2 < window_class_capacity);
+    macosAddFocusForwarderToWindowClass("AccessKitTestHeldName");
+    const held = registeredWindowClass(index).?;
+    const table = @intFromPtr(&window_class_names);
+    const address = @intFromPtr(held.ptr);
+    try testing.expect(address >= table);
+    try testing.expect(address < table + @sizeOf(@TypeOf(window_class_names)));
+
+    // A later registration writes a later slot, so the earlier view still
+    // reads its own bytes and the count has grown past it.
+    macosAddFocusForwarderToWindowClass("AccessKitTestLaterName");
+    try testing.expectEqualStrings("AccessKitTestHeldName", held);
+    try testing.expectEqualStrings(
+        "AccessKitTestLaterName",
+        registeredWindowClass(index + 1).?,
+    );
+    try testing.expectEqual(index + 2, registeredWindowClassCount());
+    try testing.expect(registeredWindowClass(index + 2) == null);
 }
 
 test "the subclassing adapter forwards its four calls" {

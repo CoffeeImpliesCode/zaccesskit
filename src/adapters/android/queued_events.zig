@@ -289,7 +289,7 @@ pub const AndroidQueuedEvents = struct {
     ///
     /// Every local reference is released before the next one is taken, so a
     /// batch of any length runs inside the caller's one local frame.
-    pub fn raise(self: *AndroidQueuedEvents, table: JniTable, host: JObject) RaiseReport {
+    pub fn raise(self: *const AndroidQueuedEvents, table: JniTable, host: JObject) RaiseReport {
         var report: RaiseReport = .{};
         if (host == null) {
             report.failed += self.events.items.len;
