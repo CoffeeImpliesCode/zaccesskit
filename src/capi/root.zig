@@ -379,9 +379,11 @@ test "the failure tag reaches the C declaration, and only on the thread that fai
     // while this thread still reads its own failure. One plain global could not
     // produce both answers.
     const Seen = struct {
+        const Self = @This();
+
         tag: allocation.Tag = .none,
 
-        fn body(self: *@This()) void {
+        fn body(self: *Self) void {
             self.tag = accesskit_last_error();
         }
     };

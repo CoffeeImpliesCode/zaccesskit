@@ -28,6 +28,7 @@ const boundary = @import("../../capi/boundary.zig");
 const allocation = @import("../../capi/allocation.zig");
 const queued_events = @import("queued_events.zig");
 const syscalls = @import("syscalls.zig");
+const schema = @import("../../schema/root.zig");
 
 const ActivationHandler = boundary.ActivationHandler;
 const ActionHandler = boundary.ActionHandler;
@@ -294,7 +295,6 @@ fn ignoreActivation(context: ?*anyopaque) callconv(.c) ?*boundary.CTreeUpdate {
 /// a payload attached.
 fn ignoreAction(request: *boundary.CActionRequest, context: ?*anyopaque) callconv(.c) void {
     _ = context;
-    const schema = @import("../../schema/root.zig");
     schema.cActionRequestDeinit(allocation.allocator(), request);
     allocation.release(request);
 }
@@ -479,7 +479,7 @@ fn acceptingWindowApi() WindowApi {
             _ = index;
             _ = procedure;
             // A non-zero previous procedure, so `create` reads it as a success.
-            return @as(LResult, @intCast(@intFromPtr(&acceptingWindowApi)));
+            return @intCast(@intFromPtr(&acceptingWindowApi));
         }
     }.call;
     api.remove_property = struct {

@@ -277,13 +277,13 @@ pub fn newIntArrayChecked(table: JniTable, len: usize) CallError!JObject {
 const handle_base = 0x3000;
 
 /// One Java class, in both spellings.
-const view_class = Class{
+const view_class: Class = .{
     .descriptor = "Landroid/view/View;",
     .internal_name = "android/view/View",
 };
 
 /// One member of it, with a descriptor no document records.
-const test_member = Member{
+const test_member: Member = .{
     .class = view_class,
     .name = "setAccessibilityFocused",
     .signature = "(Z)V",

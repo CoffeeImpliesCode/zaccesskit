@@ -148,7 +148,7 @@ pub const QueuedEvents = struct {
     pub fn deinit(self: *QueuedEvents, platform: Platform) void {
         const gpa = self.gpa;
         for (self.owned_slots.items) |slot| {
-            platform.destroy_provider(gpa, detachedId, slot);
+            platform.destroy_provider(gpa, detached_id, slot);
             gpa.destroy(slot);
         }
         self.owned_slots.deinit(gpa);
@@ -173,7 +173,7 @@ pub const QueuedEvents = struct {
     /// for it. The release still needs a node identifier to hand the platform,
     /// and `NodeId(0)` is the one upstream uses for the only provider that
     /// names no node: `PLACEHOLDER_ROOT_ID` at `adapter.rs:374`.
-    pub const detachedId: consumer_node_id = consumer_node_id.init(.{ .value = 0 }, .init(0));
+    pub const detached_id: consumer_node_id = consumer_node_id.init(.{ .value = 0 }, .init(0));
 
     /// Adds one event at the end of the queue.
     ///
@@ -244,7 +244,7 @@ pub const QueuedEvents = struct {
         }
         var owned = self;
         for (owned.owned_slots.items) |slot| {
-            platform.destroy_provider(gpa, detachedId, slot);
+            platform.destroy_provider(gpa, detached_id, slot);
             gpa.destroy(slot);
         }
         owned.owned_slots.deinit(gpa);

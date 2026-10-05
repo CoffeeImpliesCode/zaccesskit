@@ -115,6 +115,7 @@ const platform_adapter = @import("platform_adapter.zig");
 const wire = @import("wire.zig");
 const wire_action = @import("wire/action.zig");
 const wire_rect = @import("wire/rect.zig");
+const schema = @import("../../schema/root.zig");
 
 const ActivationHandler = boundary.ActivationHandler;
 const ActionHandler = boundary.ActionHandler;
@@ -424,8 +425,7 @@ const testing = std.testing;
 /// cycle, and the consumer layer's validator rejects a cyclic tree, so a test
 /// built on one would measure the validator rather than the adapter.
 fn oneNodeUpdate(gpa: std.mem.Allocator) !CTreeUpdate {
-    const schema = @import("../../schema/root.zig");
-    var update = CTreeUpdate{
+    var update: CTreeUpdate = .{
         .tree = schema.TreeInfo.init(.{ .value = 1 }),
         .focus = .{ .value = 1 },
     };
@@ -494,7 +494,7 @@ fn adapterFor(probe: *Probe) !*UnixAdapter {
 
 test "a new adapter holds no tree and raises nothing" {
     const gpa = adapter_allocator;
-    var probe = Probe{};
+    var probe: Probe = .{};
     const adapter = try gpa.create(UnixAdapter);
     adapter.* = .{
         .gpa = gpa,
@@ -516,7 +516,7 @@ test "a new adapter holds no tree and raises nothing" {
 }
 
 test "an update calls the factory, builds the tree and marks the adapter active" {
-    var probe = Probe{};
+    var probe: Probe = .{};
     const adapter = try adapterFor(&probe);
     defer adapter.deinit();
 
@@ -533,7 +533,7 @@ test "an update calls the factory, builds the tree and marks the adapter active"
 }
 
 test "the factory is called on every update and the activation handler only once" {
-    var probe = Probe{};
+    var probe: Probe = .{};
     const adapter = try adapterFor(&probe);
     defer adapter.deinit();
 
@@ -549,7 +549,7 @@ test "the factory is called on every update and the activation handler only once
 }
 
 test "the application context reaches the handler unchanged" {
-    var probe = Probe{};
+    var probe: Probe = .{};
     const adapter = try adapterFor(&probe);
     defer adapter.deinit();
 
@@ -561,7 +561,7 @@ test "the application context reaches the handler unchanged" {
 }
 
 test "releasing an activated adapter calls the deactivation handler" {
-    var probe = Probe{};
+    var probe: Probe = .{};
     const adapter = try adapterFor(&probe);
 
     unixAdapterUpdateIfActive(adapter, Probe.factory, &probe);
@@ -572,7 +572,7 @@ test "releasing an activated adapter calls the deactivation handler" {
 }
 
 test "releasing an adapter that was never active does not deactivate" {
-    var probe = Probe{};
+    var probe: Probe = .{};
     const adapter = try adapterFor(&probe);
 
     unixAdapterFree(adapter);
@@ -583,7 +583,7 @@ test "releasing an adapter that was never active does not deactivate" {
 }
 
 test "the focus flag reaches the tree and raises a Focus event" {
-    var probe = Probe{};
+    var probe: Probe = .{};
     const adapter = try adapterFor(&probe);
     defer adapter.deinit();
 
@@ -603,12 +603,12 @@ test "the focus flag reaches the tree and raises a Focus event" {
 }
 
 test "the window boxes reach the platform adapter" {
-    var probe = Probe{};
+    var probe: Probe = .{};
     const adapter = try adapterFor(&probe);
     defer adapter.deinit();
 
-    const outer = @import("../../schema/root.zig").rectInit(0, 0, 800, 600);
-    const inner = @import("../../schema/root.zig").rectInit(0, 30, 800, 600);
+    const outer = schema.rectInit(0, 0, 800, 600);
+    const inner = schema.rectInit(0, 30, 800, 600);
     unixAdapterSetRootWindowBounds(adapter, outer, inner);
 
     try testing.expectEqual(@as(f64, 600), adapter.platform.bounds.outer.height());
@@ -616,14 +616,14 @@ test "the window boxes reach the platform adapter" {
 }
 
 test "the debug text names the adapter and borrows nothing from it" {
-    var probe = Probe{};
+    var probe: Probe = .{};
     const adapter = try adapterFor(&probe);
 
     unixAdapterUpdateIfActive(adapter, Probe.factory, &probe);
     unixAdapterSetRootWindowBounds(
         adapter,
-        @import("../../schema/root.zig").rectInit(0, 0, 800, 600),
-        @import("../../schema/root.zig").rectInit(0, 30, 800, 600),
+        schema.rectInit(0, 0, 800, 600),
+        schema.rectInit(0, 30, 800, 600),
     );
 
     const text = unixAdapterDebug(adapter) orelse return error.DebugTextNotBuilt;

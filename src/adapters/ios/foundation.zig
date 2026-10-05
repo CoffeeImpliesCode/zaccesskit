@@ -218,7 +218,10 @@ test "the geometry types carry the layout CoreGraphics declares" {
     try testing.expectEqual(@sizeOf(CGFloat), @sizeOf(f64));
     try testing.expectEqual(@as(usize, 16), @sizeOf(CGPoint));
     try testing.expectEqual(@as(usize, 32), @sizeOf(CGRect));
-    const rect = CGRect{ .origin = .{ .x = 1, .y = 2 }, .size = .{ .width = 3, .height = 4 } };
+    const rect: CGRect = .{
+        .origin = .{ .x = 1, .y = 2 },
+        .size = .{ .width = 3, .height = 4 },
+    };
     try testing.expectEqual(@as(CGFloat, 1), rect.origin.x);
     try testing.expectEqual(@as(CGFloat, 4), rect.size.height);
 }

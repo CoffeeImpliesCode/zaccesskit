@@ -59,7 +59,7 @@
 //!   should not move it.
 //! * `node.rs:1013-1030`, `first_filtered_child`, and `node.rs:1032-1049`,
 //!   `last_filtered_child`, are not declared here. `iterators/children.zig`
-//!   already carries them, because `filtered_children` is built from them, and
+//!   already carries them, because `filteredChildren` is built from them, and
 //!   this file imports them from there rather than keeping a second copy.
 //! * `node.rs:1076-1101`, `SpacePrefixingWriter`, is deleted and the record
 //!   lives in `node_ref/strings.zig`, where the write is.
@@ -149,7 +149,8 @@ pub fn isContainerWithSelectableChildren(node: NodeRef) bool {
 /// parent chain answers `error.TreeCycle`. An ancestor that is not on the chain
 /// is not reachable from here, because this always names the state root.
 pub fn indexPath(gpa: std.mem.Allocator, node: NodeRef) QueryError!std.ArrayList(usize) {
-    return try relativeIndexPath(gpa, node, node.tree_state.rootId());
+    const path = try relativeIndexPath(gpa, node, node.tree_state.rootId());
+    return path;
 }
 
 /// The index of `node` in every ancestor's `children` list between `ancestor_id`

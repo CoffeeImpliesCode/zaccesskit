@@ -467,10 +467,11 @@ pub fn slotOf(comptime name: [:0]const u8) comptime_int {
             }
             found = index;
         }
-        if (found == null) {
-            @compileError(std.fmt.comptimePrint("the JNI table has no slot named {s}", .{name}));
-        }
-        return found.? + reserved_slots;
+        const slot = found orelse @compileError(std.fmt.comptimePrint(
+            "the JNI table has no slot named {s}",
+            .{name},
+        ));
+        return slot + reserved_slots;
     }
 }
 
@@ -1517,7 +1518,8 @@ const TestRecorder = struct {
     last_name_len: usize = 0,
 
     fn findClass(env: JniEnv, name: [:0]const u8) JClass {
-        const self: *TestRecorder = @ptrCast(@alignCast(@constCast(env.?)));
+        const context = env orelse return null;
+        const self: *TestRecorder = @ptrCast(@alignCast(@constCast(context)));
         self.calls += 1;
         @memcpy(self.last_name[0..name.len], name);
         self.last_name_len = name.len;
@@ -1537,8 +1539,8 @@ test "a substituted function reaches its own context through the environment" {
     var template = inertTable(null);
     template.findClassFn = TestRecorder.findClass;
 
-    var first = TestRecorder{};
-    var second = TestRecorder{};
+    var first: TestRecorder = .{};
+    var second: TestRecorder = .{};
     const first_table = withRecorder(&template, &first);
     const second_table = withRecorder(&template, &second);
 
@@ -1687,11 +1689,12 @@ test "overriding one field of the inert table leaves the rest inert" {
             _ = obj;
             _ = method;
             _ = args;
-            const counter: *usize = @ptrCast(@alignCast(@constCast(env.?)));
+            const context = env orelse return;
+            const counter: *usize = @ptrCast(@alignCast(@constCast(context)));
             counter.* += 1;
         }
     };
-    var seen = Seen{};
+    var seen: Seen = .{};
     var table = inertTable(@ptrCast(&seen));
     table.callVoidMethodFn = Seen.callVoidMethod;
     table.callVoidMethod(null, null, &.{});
@@ -1713,7 +1716,7 @@ test "a JniNativeMethod is the C triple and nothing more" {
     // `jni.h:180-184` declares three pointers, and `registerNativeMethods`
     // takes a pointer and a count, so the row layout is fixed by the header.
     try testing.expectEqual(@as(usize, 24), @sizeOf(JNINativeMethod));
-    const row = JNINativeMethod{
+    const row: JNINativeMethod = .{
         .name = "runCallback",
         .signature = "(Landroid/view/View;J)V",
         .function = null,

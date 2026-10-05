@@ -133,7 +133,8 @@ pub fn textSelection(gpa: std.mem.Allocator, node: NodeRef) QueryError!?range.Ra
         return null;
     const focus = position_inner.clampedUpgrade(node.tree_state, stored.focus, node.id()) orelse
         return null;
-    return try range.init(gpa, node, anchor, focus);
+    const selected = try range.init(gpa, node, anchor, focus);
+    return selected;
 }
 
 /// The selection anchor as a position, or `null` when there is no selection or
@@ -186,7 +187,10 @@ pub fn textPositionAtPoint(
     var forward = try position_inner.textRuns(node);
     if (try forward.next()) |first_run| {
         if (try geometry.boundingBoxInCoordinateSpace(first_run, node)) |box| {
-            if (point.x < box.x0 or point.y < box.y0) return try documentStart(node);
+            if (point.x < box.x0 or point.y < box.y0) {
+                const start = try documentStart(node);
+                return start;
+            }
         }
     }
     var backward = try position_inner.textRuns(node);
@@ -214,7 +218,8 @@ pub fn textPositionAtPoint(
             };
         }
     }
-    return try documentEnd(node);
+    const end = try documentEnd(node);
+    return end;
 }
 
 /// The range covering line `line_index`, counting the first line as 0.
@@ -243,7 +248,8 @@ pub fn lineRangeFromIndex(
         current
     else
         try position_motion.forwardToLineEnd(current);
-    return try range.init(gpa, node, current.inner, line_end.inner);
+    const line_range = try range.init(gpa, node, current.inner, line_end.inner);
+    return line_range;
 }
 
 // --- Index conversions -------------------------------------------------------
@@ -270,11 +276,15 @@ pub fn textPositionFromGlobalUsvIndex(
         const run_length = std.unicode.utf8CountCodepoints(value) catch 0;
         const new_total_length = total_length + run_length;
         if (index >= total_length and index < new_total_length) {
-            return try usvPositionIn(node, run, value, index - total_length);
+            const found = try usvPositionIn(node, run, value, index - total_length);
+            return found;
         }
         total_length = new_total_length;
     }
-    if (index == total_length) return try documentEnd(node);
+    if (index == total_length) {
+        const end = try documentEnd(node);
+        return end;
+    }
     return null;
 }
 
@@ -298,11 +308,15 @@ pub fn textPositionFromGlobalUtf16Index(
         const value = runValue(run);
         const new_total_length = total_length + utf16Length(value);
         if (index >= total_length and index < new_total_length) {
-            return try utf16PositionIn(node, run, value, index - total_length);
+            const found = try utf16PositionIn(node, run, value, index - total_length);
+            return found;
         }
         total_length = new_total_length;
     }
-    if (index == total_length) return try documentEnd(node);
+    if (index == total_length) {
+        const end = try documentEnd(node);
+        return end;
+    }
     return null;
 }
 
@@ -410,8 +424,8 @@ pub fn upgrade(weak: WeakRange, state: *const TreeState) QueryError!?range.Range
 /// Stores `node` under `value` with `parent` as its parent id, so a test can
 /// build a tree without the update algorithm.
 fn insert(
-    state: *TreeState,
     gpa: std.mem.Allocator,
+    state: *TreeState,
     value: u64,
     parent: ?u64,
     node: schema.Node,
@@ -459,8 +473,8 @@ fn textRun(gpa: std.mem.Allocator, value: []const u8) !schema.Node {
 
 /// A `TextInput` over the runs built by `addRuns`.
 fn documentOver(
-    state: *TreeState,
     gpa: std.mem.Allocator,
+    state: *TreeState,
     values: []const []const u8,
 ) !void {
     var document = schema.Node.init(gpa, .text_input);
@@ -469,9 +483,9 @@ fn documentOver(
     defer gpa.free(children);
     for (values, 0..) |_, index| children[index] = .{ .value = @intCast(index + 1) };
     try schema.ids_props.setChildren(&document.properties, children);
-    try insert(state, gpa, 0, null, document);
+    try insert(gpa, state, 0, null, document);
     for (values, 0..) |value, index| {
-        try insert(state, gpa, @intCast(index + 1), 0, try textRun(gpa, value));
+        try insert(gpa, state, @intCast(index + 1), 0, try textRun(gpa, value));
     }
 }
 
@@ -479,14 +493,14 @@ test "supportsTextRanges needs an allowed role and at least one run" {
     var state: TreeState = .{};
     defer state.deinit(testing.allocator);
     const gpa = testing.allocator;
-    try documentOver(&state, gpa, &.{"hello"});
+    try documentOver(gpa, &state, &.{"hello"});
 
     try testing.expect(try supportsTextRanges(handle(&state, 0)));
     // A plain label with no runs is not a text node, which is the second half of
     // the condition at `text.rs:1405`.
     var empty_label = schema.Node.init(gpa, .label);
     errdefer empty_label.deinit();
-    try insert(&state, gpa, 9, 0, empty_label);
+    try insert(gpa, &state, 9, 0, empty_label);
     try testing.expect(!(try supportsTextRanges(handle(&state, 9))));
     // The run itself is not a text input either.
     try testing.expect(!(try supportsTextRanges(handle(&state, 1))));
@@ -499,8 +513,8 @@ test "a label with a run supports text ranges" {
     var label = schema.Node.init(gpa, .label);
     errdefer label.deinit();
     try schema.ids_props.setChildren(&label.properties, &.{.{ .value = 1 }});
-    try insert(&state, gpa, 0, null, label);
-    try insert(&state, gpa, 1, 0, try textRun(gpa, "hi"));
+    try insert(gpa, &state, 0, null, label);
+    try insert(gpa, &state, 1, 0, try textRun(gpa, "hi"));
 
     try testing.expect(try supportsTextRanges(handle(&state, 0)));
 }
@@ -509,7 +523,7 @@ test "the document range spans every run in order" {
     var state: TreeState = .{};
     defer state.deinit(testing.allocator);
     const gpa = testing.allocator;
-    try documentOver(&state, gpa, &.{ "hello", "world" });
+    try documentOver(gpa, &state, &.{ "hello", "world" });
 
     const whole = try documentRange(gpa, handle(&state, 0));
     try testing.expect(sameNode(whole.start.node, handle(&state, 1)));
@@ -522,7 +536,7 @@ test "a stored selection reads back as a range and as two positions" {
     var state: TreeState = .{};
     defer state.deinit(testing.allocator);
     const gpa = testing.allocator;
-    try documentOver(&state, gpa, &.{ "hello", "world" });
+    try documentOver(gpa, &state, &.{ "hello", "world" });
 
     const document_entry = entry(&state, 0);
     try schema.option.setTextSelection(&document_entry.data.properties, .{
@@ -543,7 +557,7 @@ test "a selection naming a run that is gone answers null instead of unwrapping" 
     var state: TreeState = .{};
     defer state.deinit(testing.allocator);
     const gpa = testing.allocator;
-    try documentOver(&state, gpa, &.{"hello"});
+    try documentOver(gpa, &state, &.{"hello"});
 
     const document_entry = entry(&state, 0);
     try schema.option.setTextSelection(&document_entry.data.properties, .{
@@ -563,7 +577,7 @@ test "a scalar index addresses the run that holds it" {
     var state: TreeState = .{};
     defer state.deinit(testing.allocator);
     const gpa = testing.allocator;
-    try documentOver(&state, gpa, &.{ "hello", "world" });
+    try documentOver(gpa, &state, &.{ "hello", "world" });
     const node_ref = handle(&state, 0);
 
     const at_zero = (try textPositionFromGlobalUsvIndex(node_ref, 0)).?;
@@ -584,7 +598,7 @@ test "a scalar index equal to the document length answers the document end" {
     var state: TreeState = .{};
     defer state.deinit(testing.allocator);
     const gpa = testing.allocator;
-    try documentOver(&state, gpa, &.{ "hello", "world" });
+    try documentOver(gpa, &state, &.{ "hello", "world" });
     const node_ref = handle(&state, 0);
 
     const at_end = (try textPositionFromGlobalUsvIndex(node_ref, 10)).?;
@@ -601,14 +615,14 @@ test "a scalar index past the run lengths is refused rather than unwrapped" {
     var document = schema.Node.init(gpa, .text_input);
     errdefer document.deinit();
     try schema.ids_props.setChildren(&document.properties, &.{.{ .value = 1 }});
-    try insert(&state, gpa, 0, null, document);
+    try insert(gpa, &state, 0, null, document);
     // The value holds three characters and the lengths list names two, so the
     // two properties of the run disagree and index 2 matches neither.
     var run_node = schema.Node.init(gpa, .text_run);
     errdefer run_node.deinit();
     try schema.strings.setValue(&run_node.properties, "abc");
     try schema.vectors.setCharacterLengths(&run_node.properties, &.{ 1, 1 });
-    try insert(&state, gpa, 1, 0, run_node);
+    try insert(gpa, &state, 1, 0, run_node);
 
     const second = (try textPositionFromGlobalUsvIndex(handle(&state, 0), 1)).?;
     try testing.expectEqual(@as(usize, 1), second.inner.character_index);
@@ -625,14 +639,14 @@ test "a UTF-16 index counts a supplementary code point as two units" {
     var document = schema.Node.init(gpa, .text_input);
     errdefer document.deinit();
     try schema.ids_props.setChildren(&document.properties, &.{.{ .value = 1 }});
-    try insert(&state, gpa, 0, null, document);
+    try insert(gpa, &state, 0, null, document);
     // "a" then U+1F600 is four UTF-8 bytes and two UTF-16 units, so the scalar
     // index and the UTF-16 index part company after the first character.
     var run_node = schema.Node.init(gpa, .text_run);
     errdefer run_node.deinit();
     try schema.strings.setValue(&run_node.properties, "a\xF0\x9F\x98\x80");
     try schema.vectors.setCharacterLengths(&run_node.properties, &.{ 1, 4 });
-    try insert(&state, gpa, 1, 0, run_node);
+    try insert(gpa, &state, 1, 0, run_node);
     const node_ref = handle(&state, 0);
 
     const scalar_second = (try textPositionFromGlobalUsvIndex(node_ref, 1)).?;
@@ -652,7 +666,7 @@ test "a UTF-16 index past the document length answers null" {
     var state: TreeState = .{};
     defer state.deinit(testing.allocator);
     const gpa = testing.allocator;
-    try documentOver(&state, gpa, &.{"hello"});
+    try documentOver(gpa, &state, &.{"hello"});
     const node_ref = handle(&state, 0);
 
     try testing.expectEqual(
@@ -668,12 +682,12 @@ test "a UTF-16 index past the run lengths is refused rather than unwrapped" {
     var document = schema.Node.init(gpa, .text_input);
     errdefer document.deinit();
     try schema.ids_props.setChildren(&document.properties, &.{.{ .value = 1 }});
-    try insert(&state, gpa, 0, null, document);
+    try insert(gpa, &state, 0, null, document);
     var run_node = schema.Node.init(gpa, .text_run);
     errdefer run_node.deinit();
     try schema.strings.setValue(&run_node.properties, "abc");
     try schema.vectors.setCharacterLengths(&run_node.properties, &.{ 1, 1 });
-    try insert(&state, gpa, 1, 0, run_node);
+    try insert(gpa, &state, 1, 0, run_node);
 
     try testing.expectError(
         error.IndexOutOfRange,
@@ -685,7 +699,7 @@ test "a weak range whose node and endpoints survive upgrades" {
     var state: TreeState = .{};
     defer state.deinit(testing.allocator);
     const gpa = testing.allocator;
-    try documentOver(&state, gpa, &.{ "hello", "world" });
+    try documentOver(gpa, &state, &.{ "hello", "world" });
 
     var weak = try range.downgrade(gpa, try range.init(
         gpa,
@@ -706,7 +720,7 @@ test "a weak range over a node that no longer supports text upgrades to null" {
     var state: TreeState = .{};
     defer state.deinit(testing.allocator);
     const gpa = testing.allocator;
-    try documentOver(&state, gpa, &.{"hello"});
+    try documentOver(gpa, &state, &.{"hello"});
 
     var weak = try range.downgrade(gpa, try range.init(
         gpa,
@@ -727,7 +741,7 @@ test "a point on the far edge of a run selects the position past its last charac
     var state: TreeState = .{};
     defer state.deinit(testing.allocator);
     const gpa = testing.allocator;
-    try documentOver(&state, gpa, &.{"abcd"});
+    try documentOver(gpa, &state, &.{"abcd"});
 
     const run_entry = entry(&state, 1);
     try schema.option.setBounds(&run_entry.data.properties, schema.rectInit(0, 0, 40, 20));
@@ -748,7 +762,7 @@ test "a property write through the map entry lands in the node the map holds" {
     var state: TreeState = .{};
     defer state.deinit(testing.allocator);
     const gpa = testing.allocator;
-    try documentOver(&state, gpa, &.{ "hello", "world" });
+    try documentOver(gpa, &state, &.{ "hello", "world" });
 
     // Every write below goes through `entry`, so the state owns exactly one
     // copy of each buffer and the `deinit` above releases it exactly once. A
@@ -778,7 +792,7 @@ test "a line range covers the only line and a line past it is absent" {
     var state: TreeState = .{};
     defer state.deinit(testing.allocator);
     const gpa = testing.allocator;
-    try documentOver(&state, gpa, &.{"hello"});
+    try documentOver(gpa, &state, &.{"hello"});
     const node_ref = handle(&state, 0);
 
     // "hello" has no hard line break, so the document is one line and line 0 is

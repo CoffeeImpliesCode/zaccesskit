@@ -195,8 +195,9 @@ pub const blocked = [blocked_count]Blocked{
 };
 
 comptime {
+    const Self = @This();
     for (blocked) |row| {
-        if (!@hasDecl(@This(), row.symbol)) {
+        if (!@hasDecl(Self, row.symbol)) {
             @compileError("a blocked symbol must still be declared");
         }
     }
@@ -2321,10 +2322,15 @@ const FactoryFixture = struct {
     /// Releases an answer no call took, which is every answer in a test where
     /// the factory never ran. A call that took the answer leaves nothing here.
     fn deinit(self: *FactoryFixture) void {
-        const built = self.answer orelse return;
-        var owned = built;
-        owned.deinit(self.gpa);
-        self.answer = null;
+        const gpa = self.gpa;
+        const built = self.answer;
+        // SAFETY: the lines below released the only buffer this value owned, and
+        // the reset is what a stale read sees. The allocator owns no memory and
+        // the counter is a scalar, so neither has anything to invalidate.
+        self.* = .{ .gpa = gpa };
+        const answer = built orelse return;
+        var owned = answer;
+        owned.deinit(gpa);
     }
 };
 
@@ -2450,6 +2456,7 @@ test "the census holds the figures the map measured" {
 }
 
 test "the blocked record names three symbols and each one is declared" {
+    const Self = @This();
     try testing.expectEqual(@as(usize, 3), blocked_count);
     try testing.expectEqualStrings("iosAdapterAccessibilityElements", blocked[0].symbol);
     try testing.expectEqualStrings("iosAdapterHitTest", blocked[1].symbol);
@@ -2458,7 +2465,7 @@ test "the blocked record names three symbols and each one is declared" {
         // `@hasDecl` needs a comptime name and the table rows are comptime, so
         // a symbol that stops being declared is a compile error rather than a
         // test that stops checking.
-        try testing.expect(@hasDecl(@This(), row.symbol));
+        try testing.expect(@hasDecl(Self, row.symbol));
         try testing.expect(row.today.len > 0);
         try testing.expect(row.unblocked_by.len > 0);
     }
@@ -3049,4 +3056,125 @@ test "the queued events handle is released by raising it" {
     // A second call is a use-after-free the header forbids, so the test proves
     // the release instead by letting the leak checker run.
     try testing.expectEqual(@as(usize, 1), state.posted.items.len);
+}
+
+test "every platform entry point answers its absent form with no context" {
+    // A `Platform` whose `context` is `null` is the table a caller that hands
+    // over no fixture gets. Each entry point below must answer its own absent
+    // form rather than dereference the null. The assertion is per entry point:
+    // the absent form is the false boolean, the null pointer, the zero scalar
+    // or the empty point, and a caller can read each one.
+    const table: objc.Platform = .{
+        .context = null,
+        .notification_tags = .{
+            .screen_changed = 0,
+            .layout_changed = 0,
+            .announcement = 0,
+        },
+        .any_assistive_tech_running = fakeAnyAssistiveTechRunning,
+        .observer_new = fakeObserverNew,
+        .add_status_observer = fakeAddStatusObserver,
+        .remove_status_observer = fakeRemoveStatusObserver,
+        .claim_object = fakeClaimObject,
+        .release_object = fakeReleaseObject,
+        .object_owner = fakeObjectOwner,
+        .view_window = fakeViewWindow,
+        .view_screen = fakeViewScreen,
+        .screen_coordinate_space = fakeScreenCoordinateSpace,
+        .view_convert_point = fakeViewConvertPoint,
+        .view_content_scale_factor = fakeViewContentScaleFactor,
+        .window_root_view = fakeWindowRootView,
+        .view_class = fakeViewClass,
+        .class_name = fakeClassName,
+        .class_superclass = fakeClassSuperclass,
+        .class_with_name = fakeClassWithName,
+        .build_observer_class = fakeBuildObserverClass,
+        .build_view_subclass = fakeBuildViewSubclass,
+        .set_view_class = fakeSetViewClass,
+        .post_notification = fakePostNotification,
+        .raise_announcement = fakeRaiseAnnouncement,
+        .empty_array = fakeEmptyArray,
+        .release = fakeReleasePlatform,
+    };
+    const ctx = table.context;
+
+    // The false boolean. An assistive technology running is a claim about the
+    // fixture, and a fixture that is not there has made no claim.
+    try testing.expectEqual(false, table.any_assistive_tech_running(ctx));
+    // The false boolean again, for the owner check.
+    try testing.expectEqual(false, table.object_owner(ctx, fakePointerFrom(0x10)));
+    // The null pointer. An observer with no fixture behind it is not allocated,
+    // and a class pair with no fixture is not registered.
+    try testing.expectEqual(
+        @as(?*runtime.AnyObject, null),
+        table.observer_new(ctx, fakeClassFrom(0x60), null),
+    );
+    try testing.expectEqual(
+        @as(?*runtime.ObjClass, null),
+        table.class_with_name(ctx, observer_class_name),
+    );
+    try testing.expectEqual(
+        @as(?*runtime.ObjClass, null),
+        table.build_observer_class(ctx, observer_class_name, fakeClassFrom(0x60)),
+    );
+    try testing.expectEqual(
+        @as(?*runtime.ObjClass, null),
+        table.build_view_subclass(ctx, observer_class_name, fakeClassFrom(0x60)),
+    );
+    try testing.expectEqual(@as(?*runtime.AnyObject, null), table.empty_array(ctx));
+    // The remaining null pointers, which are the getters.
+    try testing.expectEqual(
+        @as(?*runtime.AnyObject, null),
+        table.view_window(ctx, fakePointerFrom(1)),
+    );
+    try testing.expectEqual(
+        @as(?*runtime.AnyObject, null),
+        table.view_screen(ctx, fakePointerFrom(1)),
+    );
+    try testing.expectEqual(
+        @as(?*runtime.AnyObject, null),
+        table.screen_coordinate_space(ctx, fakePointerFrom(1)),
+    );
+    try testing.expectEqual(
+        @as(?*runtime.AnyObject, null),
+        table.window_root_view(ctx, fakePointerFrom(1)),
+    );
+    try testing.expectEqual(
+        @as(?*runtime.ObjClass, null),
+        table.view_class(ctx, fakePointerFrom(1)),
+    );
+    try testing.expectEqual(
+        @as(?*runtime.ObjClass, null),
+        table.class_superclass(ctx, fakeClassFrom(1)),
+    );
+    try testing.expectEqual(
+        @as(?[*:0]const u8, null),
+        table.class_name(ctx, fakeClassFrom(1)),
+    );
+    // The zero scalar, which is the content scale factor.
+    try testing.expectEqual(
+        @as(foundation.CGFloat, 0),
+        table.view_content_scale_factor(ctx, fakePointerFrom(1)),
+    );
+    // The empty point, which is the conversion of a view that has no fixture.
+    const converted = table.view_convert_point(
+        ctx,
+        fakePointerFrom(1),
+        .{ .x = 7, .y = 9 },
+        fakePointerFrom(2),
+    );
+    try testing.expectEqual(@as(foundation.CGFloat, 0), converted.x);
+    try testing.expectEqual(@as(foundation.CGFloat, 0), converted.y);
+    // The void entry points. Each one writes to the fixture or appends to one
+    // of its lists, so with no fixture each returns without touching memory.
+    // The test cannot observe the absence of a write, so what it proves is that
+    // none of them dereferences the null, which is a crash in Debug.
+    table.add_status_observer(ctx, fakePointerFrom(1), observer_class_name);
+    table.remove_status_observer(ctx, fakePointerFrom(1));
+    table.claim_object(ctx, fakePointerFrom(1), null);
+    table.release_object(ctx, fakePointerFrom(1));
+    table.set_view_class(ctx, fakePointerFrom(1), fakeClassFrom(1));
+    table.post_notification(ctx, 0x1001, null);
+    table.raise_announcement(ctx, "absent", true);
+    table.release(ctx);
 }

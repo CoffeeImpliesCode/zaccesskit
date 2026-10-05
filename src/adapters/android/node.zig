@@ -81,6 +81,7 @@ const FilterFn = consumer.filter.FilterFn;
 const FilterResult = consumer.filter.FilterResult;
 const FullNodeId = consumer.tree_index.FullNodeId;
 const NodeRef = consumer.node_id.NodeRef;
+const NodeState = consumer.tree_state.NodeState;
 const ParentAndIndex = consumer.tree_index.ParentAndIndex;
 const QueryError = consumer.tree.QueryError;
 const TreeState = consumer.tree_state.TreeState;
@@ -144,37 +145,37 @@ const JavaClass = struct {
 };
 
 /// The node info object the fill writes.
-const node_info_class = JavaClass{
+const node_info_class: JavaClass = .{
     .descriptor = "Landroid/view/accessibility/AccessibilityNodeInfo;",
     .internal_name = "android/view/accessibility/AccessibilityNodeInfo",
 };
 
 /// The host view every node hangs off.
-const view_class = JavaClass{
+const view_class: JavaClass = .{
     .descriptor = "Landroid/view/View;",
     .internal_name = "android/view/View",
 };
 
 /// The box the screen bounds go in.
-const rect_class = JavaClass{
+const rect_class: JavaClass = .{
     .descriptor = "Landroid/graphics/Rect;",
     .internal_name = "android/graphics/Rect",
 };
 
 /// The extras bag the target URL goes into.
-const bundle_class = JavaClass{
+const bundle_class: JavaClass = .{
     .descriptor = "Landroid/os/Bundle;",
     .internal_name = "android/os/Bundle",
 };
 
 /// The numeric range of a slider.
-const range_info_class = JavaClass{
+const range_info_class: JavaClass = .{
     .descriptor = "Landroid/view/accessibility/AccessibilityNodeInfo$RangeInfo;",
     .internal_name = "android/view/accessibility/AccessibilityNodeInfo$RangeInfo",
 };
 
 /// The action object `ACTION_SET_PROGRESS` is read from.
-const accessibility_action_class = JavaClass{
+const accessibility_action_class: JavaClass = .{
     .descriptor = "Landroid/view/accessibility/AccessibilityNodeInfo$AccessibilityAction;",
     .internal_name = "android/view/accessibility/AccessibilityNodeInfo$AccessibilityAction",
 };
@@ -192,196 +193,196 @@ const Lookup = struct {
 };
 
 /// `AccessibilityNodeInfo.addChild(View, int)`, `AK/android/src/node.rs:204`.
-const add_child = Lookup{
+const add_child: Lookup = .{
     .class = node_info_class,
     .name = "addChild",
     .signature = "(Landroid/view/View;I)V",
 };
 
 /// `AccessibilityNodeInfo.setParent(View)`, `AK/android/src/node.rs:214`.
-const set_parent_host = Lookup{
+const set_parent_host: Lookup = .{
     .class = node_info_class,
     .name = "setParent",
     .signature = "(Landroid/view/View;)V",
 };
 
 /// `AccessibilityNodeInfo.setParent(View, int)`, `AK/android/src/node.rs:222`.
-const set_parent_node = Lookup{
+const set_parent_node: Lookup = .{
     .class = node_info_class,
     .name = "setParent",
     .signature = "(Landroid/view/View;I)V",
 };
 
 /// `View.getLocationOnScreen(int[])`, `AK/android/src/node.rs:234`.
-const get_location_on_screen = Lookup{
+const get_location_on_screen: Lookup = .{
     .class = view_class,
     .name = "getLocationOnScreen",
     .signature = "([I)V",
 };
 
 /// `android.graphics.Rect.<init>(int, int, int, int)`, `AK/android/src/node.rs:241`.
-const rect_constructor = Lookup{
+const rect_constructor: Lookup = .{
     .class = rect_class,
     .name = "<init>",
     .signature = "(IIII)V",
 };
 
 /// `AccessibilityNodeInfo.setBoundsInScreen(Rect)`, `AK/android/src/node.rs:259`.
-const set_bounds_in_screen = Lookup{
+const set_bounds_in_screen: Lookup = .{
     .class = node_info_class,
     .name = "setBoundsInScreen",
     .signature = "(Landroid/graphics/Rect;)V",
 };
 
 /// `AccessibilityNodeInfo.setCheckable(boolean)`, `AK/android/src/node.rs:264`.
-const set_checkable = Lookup{
+const set_checkable: Lookup = .{
     .class = node_info_class,
     .name = "setCheckable",
     .signature = "(Z)V",
 };
 
 /// `AccessibilityNodeInfo.setChecked(boolean)`, `AK/android/src/node.rs:265`.
-const set_checked = Lookup{
+const set_checked: Lookup = .{
     .class = node_info_class,
     .name = "setChecked",
     .signature = "(Z)V",
 };
 
 /// `AccessibilityNodeInfo.setEditable(boolean)`, `AK/android/src/node.rs:276`.
-const set_editable = Lookup{
+const set_editable: Lookup = .{
     .class = node_info_class,
     .name = "setEditable",
     .signature = "(Z)V",
 };
 
 /// `AccessibilityNodeInfo.setEnabled(boolean)`, `AK/android/src/node.rs:280`.
-const set_enabled = Lookup{
+const set_enabled: Lookup = .{
     .class = node_info_class,
     .name = "setEnabled",
     .signature = "(Z)V",
 };
 
 /// `AccessibilityNodeInfo.setFocusable(boolean)`, `AK/android/src/node.rs:283`.
-const set_focusable = Lookup{
+const set_focusable: Lookup = .{
     .class = node_info_class,
     .name = "setFocusable",
     .signature = "(Z)V",
 };
 
 /// `AccessibilityNodeInfo.setFocused(boolean)`, `AK/android/src/node.rs:285`.
-const set_focused = Lookup{
+const set_focused: Lookup = .{
     .class = node_info_class,
     .name = "setFocused",
     .signature = "(Z)V",
 };
 
 /// `AccessibilityNodeInfo.setPassword(boolean)`, `AK/android/src/node.rs:287`.
-const set_password = Lookup{
+const set_password: Lookup = .{
     .class = node_info_class,
     .name = "setPassword",
     .signature = "(Z)V",
 };
 
 /// `AccessibilityNodeInfo.setScrollable(boolean)`, `AK/android/src/node.rs:292`.
-const set_scrollable = Lookup{
+const set_scrollable: Lookup = .{
     .class = node_info_class,
     .name = "setScrollable",
     .signature = "(Z)V",
 };
 
 /// `AccessibilityNodeInfo.setSelected(boolean)`, `AK/android/src/node.rs:298`.
-const set_selected = Lookup{
+const set_selected: Lookup = .{
     .class = node_info_class,
     .name = "setSelected",
     .signature = "(Z)V",
 };
 
 /// `AccessibilityNodeInfo.setVisibleToUser(boolean)`, `AK/android/src/node.rs:309`.
-const set_visible_to_user = Lookup{
+const set_visible_to_user: Lookup = .{
     .class = node_info_class,
     .name = "setVisibleToUser",
     .signature = "(Z)V",
 };
 
 /// `AccessibilityNodeInfo.setContentDescription(CharSequence)`, `:311`.
-const set_content_description = Lookup{
+const set_content_description: Lookup = .{
     .class = node_info_class,
     .name = "setContentDescription",
     .signature = "(Ljava/lang/CharSequence;)V",
 };
 
 /// `AccessibilityNodeInfo.setText(CharSequence)`, `AK/android/src/node.rs:322`.
-const set_text = Lookup{
+const set_text: Lookup = .{
     .class = node_info_class,
     .name = "setText",
     .signature = "(Ljava/lang/CharSequence;)V",
 };
 
 /// `AccessibilityNodeInfo.setTextSelection(int, int)`, `:332`.
-const set_text_selection = Lookup{
+const set_text_selection: Lookup = .{
     .class = node_info_class,
     .name = "setTextSelection",
     .signature = "(II)V",
 };
 
 /// `AccessibilityNodeInfo.getExtras()`, `AK/android/src/node.rs:344`.
-const get_extras = Lookup{
+const get_extras: Lookup = .{
     .class = node_info_class,
     .name = "getExtras",
     .signature = "()Landroid/os/Bundle;",
 };
 
 /// `android.os.Bundle.putString(String, String)`, `AK/android/src/node.rs:351`.
-const put_string = Lookup{
+const put_string: Lookup = .{
     .class = bundle_class,
     .name = "putString",
     .signature = "(Ljava/lang/String;Ljava/lang/String;)V",
 };
 
 /// `AccessibilityNodeInfo.setClassName(CharSequence)`, `:359`.
-const set_class_name = Lookup{
+const set_class_name: Lookup = .{
     .class = node_info_class,
     .name = "setClassName",
     .signature = "(Ljava/lang/CharSequence;)V",
 };
 
 /// `AccessibilityNodeInfo.addAction(int)`, `AK/android/src/node.rs:23`.
-const add_action = Lookup{
+const add_action: Lookup = .{
     .class = node_info_class,
     .name = "addAction",
     .signature = "(I)V",
 };
 
 /// `AccessibilityNodeInfo.setMovementGranularities(int)`, `AK/android/src/node.rs:390`.
-const set_movement_granularities = Lookup{
+const set_movement_granularities: Lookup = .{
     .class = node_info_class,
     .name = "setMovementGranularities",
     .signature = "(I)V",
 };
 
 /// `AccessibilityNodeInfo$RangeInfo.obtain(int, float, float, float)`, `:114`.
-const obtain_range_info = Lookup{
+const obtain_range_info: Lookup = .{
     .class = range_info_class,
     .name = "obtain",
     .signature = "(IFFF)Landroid/view/accessibility/AccessibilityNodeInfo$RangeInfo;",
 };
 
 /// `AccessibilityNodeInfo.setRangeInfo(RangeInfo)`, `AK/android/src/node.rs:412`.
-const set_range_info = Lookup{
+const set_range_info: Lookup = .{
     .class = node_info_class,
     .name = "setRangeInfo",
     .signature = "(Landroid/view/accessibility/AccessibilityNodeInfo$RangeInfo;)V",
 };
 
 /// `AccessibilityNodeInfo.addAction(AccessibilityAction)`, `AK/android/src/node.rs:432`.
-const add_action_object = Lookup{
+const add_action_object: Lookup = .{
     .class = node_info_class,
     .name = "addAction",
     .signature = "(Landroid/view/accessibility/AccessibilityNodeInfo$AccessibilityAction;)V",
 };
 
 /// `AccessibilityNodeInfo.setLiveRegion(int)`, `AK/android/src/node.rs:444`.
-const set_live_region = Lookup{
+const set_live_region: Lookup = .{
     .class = node_info_class,
     .name = "setLiveRegion",
     .signature = "(I)V",
@@ -460,7 +461,7 @@ pub const literal_lookup_count = literal_lookups.len;
 ///
 /// `methods.zig` records no row for it, because a static field is not a method
 /// lookup, so the field name and its type descriptor are asserted by a test.
-const action_set_progress_field = Lookup{
+const action_set_progress_field: Lookup = .{
     .class = accessibility_action_class,
     .name = "ACTION_SET_PROGRESS",
     .signature = "Landroid/view/accessibility/AccessibilityNodeInfo$AccessibilityAction;",
@@ -608,7 +609,8 @@ pub fn currentItemIndex(range: Range) JInt {
 pub fn scrollX(node: NodeRef) schema.NarrowError!?JInt {
     const value = properties.scrollX(node) orelse return null;
     const min = properties.scrollXMin(node) orelse 0.0;
-    return try schema.toI32Checked(value - min);
+    const checked = try schema.toI32Checked(value - min);
+    return checked;
 }
 
 /// The node's rightmost horizontal scroll offset, measured from its own minimum.
@@ -617,7 +619,8 @@ pub fn scrollX(node: NodeRef) schema.NarrowError!?JInt {
 pub fn maxScrollX(node: NodeRef) schema.NarrowError!?JInt {
     const value = properties.scrollXMax(node) orelse return null;
     const min = properties.scrollXMin(node) orelse 0.0;
-    return try schema.toI32Checked(value - min);
+    const checked = try schema.toI32Checked(value - min);
+    return checked;
 }
 
 /// The node's vertical scroll offset, measured from its own minimum.
@@ -626,7 +629,8 @@ pub fn maxScrollX(node: NodeRef) schema.NarrowError!?JInt {
 pub fn scrollY(node: NodeRef) schema.NarrowError!?JInt {
     const value = properties.scrollY(node) orelse return null;
     const min = properties.scrollYMin(node) orelse 0.0;
-    return try schema.toI32Checked(value - min);
+    const checked = try schema.toI32Checked(value - min);
+    return checked;
 }
 
 /// The node's bottommost vertical scroll offset, measured from its own minimum.
@@ -635,7 +639,8 @@ pub fn scrollY(node: NodeRef) schema.NarrowError!?JInt {
 pub fn maxScrollY(node: NodeRef) schema.NarrowError!?JInt {
     const value = properties.scrollYMax(node) orelse return null;
     const min = properties.scrollYMin(node) orelse 0.0;
-    return try schema.toI32Checked(value - min);
+    const checked = try schema.toI32Checked(value - min);
+    return checked;
 }
 
 /// The text Android shows for `node`, or `null` when the node shows none.
@@ -650,7 +655,8 @@ pub fn maxScrollY(node: NodeRef) schema.NarrowError!?JInt {
 pub fn nodeText(gpa: std.mem.Allocator, node: NodeRef) FillError!?std.ArrayList(u8) {
     if (!try set_state.hasValue(node)) return null;
     const document = try text_query.documentRange(gpa, node);
-    return try text_range.text(gpa, document);
+    const text = try text_range.text(gpa, document);
+    return text;
 }
 
 /// The two ends of the selection on `node` as global UTF-16 indices.
@@ -754,7 +760,7 @@ const android_filter: FilterFn = .{
 /// layer names for every other walk of a tree, and it is the bound the cursor
 /// `hierarchy.filteredChildren` answers carries. Reaching it is
 /// `error.TreeCycle`.
-fn filtered_child_step_bound(node: NodeRef) usize {
+fn filteredChildStepBound(node: NodeRef) usize {
     return consumer.tree_state.treeWalkStepBound(node.tree_state.nodes.count());
 }
 
@@ -961,7 +967,7 @@ fn addAction(jni_table: JniTable, node_info: JObject, action_id: JInt) FillError
 /// Adds one `addChild` edge per filtered child of `node`.
 ///
 /// `AK/android/src/node.rs:203-211`. The walk is bounded by
-/// `filtered_child_step_bound` and reaching the bound is `error.TreeCycle`.
+/// `filteredChildStepBound` and reaching the bound is `error.TreeCycle`.
 fn fillChildren(
     jni_table: JniTable,
     host: JObject,
@@ -969,7 +975,7 @@ fn fillChildren(
     node: NodeRef,
     node_info: JObject,
 ) FillError!void {
-    const bound = filtered_child_step_bound(node);
+    const bound = filteredChildStepBound(node);
     var children = try hierarchy.filteredChildren(node, android_filter);
     var seen: usize = 0;
     while (seen < bound) : (seen += 1) {
@@ -1681,6 +1687,11 @@ fn handleOf(state: *TreeState, id: FullNodeId) error{NodeMissingFromState}!NodeR
     return NodeRef.init(state, id) orelse error.NodeMissingFromState;
 }
 
+/// The state of the node `id`, which the fixture has already stored.
+fn stateOf(state: *TreeState, id: FullNodeId) error{NodeMissingFromState}!*NodeState {
+    return state.nodes.getPtr(id) orelse error.NodeMissingFromState;
+}
+
 /// One case of the class-name table: a role, whether it states a pressed state,
 /// and the name the fill must report.
 const ClassNameCase = struct {
@@ -1769,8 +1780,9 @@ test "className answers one name per role group and the default" {
         const id = fixtureId(index + 1);
         try putNode(gpa, &state, id, null, case.role);
         if (case.toggled) {
+            const node_state = try stateOf(&state, id);
             try schema.enums.setToggled(
-                &state.nodes.getPtr(id).?.data.properties,
+                &node_state.data.properties,
                 .true_,
             );
         }
@@ -1781,34 +1793,34 @@ test "className answers one name per role group and the default" {
 }
 
 test "rangeType answers INT for a whole range and FLOAT for a fractional one" {
-    const whole = Range{ .current = 5, .min = 0, .max = 10, .step = null };
+    const whole: Range = .{ .current = 5, .min = 0, .max = 10, .step = null };
     try testing.expectEqual(values.RANGE_TYPE_INT, rangeType(whole));
-    const whole_step = Range{ .current = 5, .min = 0, .max = 10, .step = 1 };
+    const whole_step: Range = .{ .current = 5, .min = 0, .max = 10, .step = 1 };
     try testing.expectEqual(values.RANGE_TYPE_INT, rangeType(whole_step));
-    const fractional_current = Range{ .current = 5.5, .min = 0, .max = 10, .step = null };
+    const fractional_current: Range = .{ .current = 5.5, .min = 0, .max = 10, .step = null };
     try testing.expectEqual(values.RANGE_TYPE_FLOAT, rangeType(fractional_current));
-    const fractional_min = Range{ .current = 5, .min = 0.5, .max = 10, .step = null };
+    const fractional_min: Range = .{ .current = 5, .min = 0.5, .max = 10, .step = null };
     try testing.expectEqual(values.RANGE_TYPE_FLOAT, rangeType(fractional_min));
-    const fractional_max = Range{ .current = 5, .min = 0, .max = 10.5, .step = null };
+    const fractional_max: Range = .{ .current = 5, .min = 0, .max = 10.5, .step = null };
     try testing.expectEqual(values.RANGE_TYPE_FLOAT, rangeType(fractional_max));
-    const fractional_step = Range{ .current = 5, .min = 0, .max = 10, .step = 0.5 };
+    const fractional_step: Range = .{ .current = 5, .min = 0, .max = 10, .step = 0.5 };
     try testing.expectEqual(values.RANGE_TYPE_FLOAT, rangeType(fractional_step));
 }
 
 test "currentItemIndex maps the range onto 0 to 100" {
-    const in_range = Range{ .current = 5, .min = 0, .max = 10, .step = null };
+    const in_range: Range = .{ .current = 5, .min = 0, .max = 10, .step = null };
     try testing.expectEqual(@as(JInt, 50), currentItemIndex(in_range));
-    const at_min = Range{ .current = 0, .min = 0, .max = 10, .step = null };
+    const at_min: Range = .{ .current = 0, .min = 0, .max = 10, .step = null };
     try testing.expectEqual(@as(JInt, 0), currentItemIndex(at_min));
-    const at_max = Range{ .current = 10, .min = 0, .max = 10, .step = null };
+    const at_max: Range = .{ .current = 10, .min = 0, .max = 10, .step = null };
     try testing.expectEqual(@as(JInt, 100), currentItemIndex(at_max));
-    const offset_range = Range{ .current = 15, .min = 10, .max = 20, .step = null };
+    const offset_range: Range = .{ .current = 15, .min = 10, .max = 20, .step = null };
     try testing.expectEqual(@as(JInt, 50), currentItemIndex(offset_range));
-    const inverted = Range{ .current = 5, .min = 10, .max = 0, .step = null };
+    const inverted: Range = .{ .current = 5, .min = 10, .max = 0, .step = null };
     try testing.expectEqual(@as(JInt, 0), currentItemIndex(inverted));
-    const below_min = Range{ .current = -5, .min = 0, .max = 10, .step = null };
+    const below_min: Range = .{ .current = -5, .min = 0, .max = 10, .step = null };
     try testing.expectEqual(@as(JInt, 0), currentItemIndex(below_min));
-    const above_max = Range{ .current = 15, .min = 0, .max = 10, .step = null };
+    const above_max: Range = .{ .current = 15, .min = 0, .max = 10, .step = null };
     try testing.expectEqual(@as(JInt, 100), currentItemIndex(above_max));
 }
 
@@ -1818,14 +1830,15 @@ test "rangeFromNode reads the four numeric properties of a range control" {
     defer state.deinit(gpa);
     const id = fixtureId(1);
     try putNode(gpa, &state, id, null, .slider);
-    const properties_ref = &state.nodes.getPtr(id).?.data.properties;
+    const properties_ref = &(try stateOf(&state, id)).data.properties;
     try schema.strings.setValue(properties_ref, "5");
     try schema.numbers.setNumericValue(properties_ref, 5);
     try schema.numbers.setMinNumericValue(properties_ref, 0);
     try schema.numbers.setMaxNumericValue(properties_ref, 10);
     try schema.numbers.setNumericValueStep(properties_ref, 1);
 
-    const range = (try rangeFromNode(try handleOf(&state, id))).?;
+    const maybe_range = try rangeFromNode(try handleOf(&state, id));
+    const range = maybe_range orelse return error.NoRangeStated;
     try testing.expectEqual(@as(f64, 5), range.current);
     try testing.expectEqual(@as(f64, 0), range.min);
     try testing.expectEqual(@as(f64, 10), range.max);
@@ -1848,7 +1861,7 @@ test "the four scroll readers subtract their own minimum" {
     defer state.deinit(gpa);
     const id = fixtureId(1);
     try putNode(gpa, &state, id, null, .group);
-    const props = &state.nodes.getPtr(id).?.data.properties;
+    const props = &(try stateOf(&state, id)).data.properties;
     try schema.numbers.setScrollX(props, 120);
     try schema.numbers.setScrollXMin(props, 20);
     try schema.numbers.setScrollXMax(props, 320);
@@ -1883,7 +1896,8 @@ test "the four scroll readers answer null when the node states only a maximum" {
     defer state.deinit(gpa);
     const id = fixtureId(1);
     try putNode(gpa, &state, id, null, .group);
-    try schema.numbers.setScrollXMax(&state.nodes.getPtr(id).?.data.properties, 50);
+    const node_state = try stateOf(&state, id);
+    try schema.numbers.setScrollXMax(&node_state.data.properties, 50);
     const node = try handleOf(&state, id);
 
     try testing.expectEqual(@as(?JInt, null), try scrollX(node));
@@ -2189,12 +2203,13 @@ test "the fill writes the properties of a node with bounds, a parent and one chi
     try putNode(gpa, &state, node_id, root_id, .group);
     try putNode(gpa, &state, child_id, node_id, .group);
     state.root_id = root_id;
+    const parent_state = try stateOf(&state, node_id);
     try schema.option.setBounds(
-        &state.nodes.getPtr(node_id).?.data.properties,
+        &parent_state.data.properties,
         schema.rectInit(1, 2, 3, 4),
     );
     try schema.ids_props.setChildren(
-        &state.nodes.getPtr(node_id).?.data.properties,
+        &parent_state.data.properties,
         &.{child_id.local},
     );
 
@@ -2246,7 +2261,8 @@ test "the fill writes the properties of a node with bounds, a parent and one chi
     // edge names the host because the filtered parent is the root.
     try testing.expectEqual(@as(usize, 2), recorder.calls[0].arg_count);
     try testing.expectEqual(@as(?*anyopaque, host), recorder.calls[0].args[0].l);
-    const mapped_child = id_map.getAccesskitId(recorder.calls[0].args[1].i).?;
+    const mapped_child = id_map.getAccesskitId(recorder.calls[0].args[1].i) orelse
+        return error.ChildIdNotMapped;
     try testing.expect(std.meta.eql(mapped_child, child_id));
     try testing.expectEqual(@as(usize, 1), recorder.calls[1].arg_count);
     try testing.expectEqual(@as(?*anyopaque, host), recorder.calls[1].args[0].l);

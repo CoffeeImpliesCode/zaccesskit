@@ -360,8 +360,8 @@ fn tokenize(
 const Cond = enum { none, want_open, want_guard, want_dot, want_name };
 
 fn report(
-    problems: *std.ArrayList(Problem),
     arena: Allocator,
+    problems: *std.ArrayList(Problem),
     file: []const u8,
     line: u32,
     message: []const u8,
@@ -448,8 +448,8 @@ fn scanSource(
                         pending = g;
                     } else {
                         try report(
-                            problems,
                             arena,
+                            problems,
                             file,
                             tok.line,
                             "a condition names a Guard member this sweep does not know;" ++
@@ -519,8 +519,8 @@ fn readExportFn(
 ) Allocator.Error!void {
     const name = peekIdent(toks, at + 2) orelse {
         try report(
-            problems,
             arena,
+            problems,
             file,
             toks[at].line,
             "`export fn` with no name; the symbol this declaration exports cannot be read",
@@ -549,8 +549,8 @@ fn readAtExport(
     const open = at + 2;
     if (open >= toks.len or toks[open].kind != .punct or toks[open].text[0] != '(') {
         try report(
-            problems,
             arena,
+            problems,
             file,
             toks[at].line,
             "`@export` with no argument list; the symbol it names cannot be read",
@@ -572,8 +572,8 @@ fn readAtExport(
     }
     if (depth != 0) {
         try report(
-            problems,
             arena,
+            problems,
             file,
             toks[at].line,
             "`@export(` with no closing parenthesis; the symbol it names cannot be read",
@@ -605,8 +605,8 @@ fn readAtExport(
 
     const name = symbol orelse {
         try report(
-            problems,
             arena,
+            problems,
             file,
             toks[at].line,
             "`@export(` with no `.name = \"…\"`; the symbol it exports cannot be read",
@@ -615,8 +615,8 @@ fn readAtExport(
     };
     if (name.len == 0 or !isIdentStart(name[0])) {
         try report(
-            problems,
             arena,
+            problems,
             file,
             toks[at].line,
             "`@export(` names a symbol that is not an identifier; the header cannot declare it",
@@ -626,8 +626,8 @@ fn readAtExport(
     if (referenced) |fn_name| {
         if (!std.mem.eql(u8, fn_name, name)) {
             try report(
-                problems,
                 arena,
+                problems,
                 file,
                 toks[at].line,
                 "`@export(` names a symbol its Zig function does not carry;" ++

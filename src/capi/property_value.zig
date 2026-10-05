@@ -64,8 +64,9 @@
 //!
 //! **The `comptime` bound.** Two loops run over a domain. The first is the
 //! sweep over `EnumDomain` in the `comptime` block, whose bound is
-//! `enumDomainCount`, which is nineteen and is read off the type. The second is
-//! the flattening that builds `tag_entries`, whose bound is `tagCount`, which is
+//! `enum_domain_count`, which is nineteen and is read off the type. The second
+//! is the flattening that builds `tag_entries`, whose bound is `tag_count`,
+//! which is
 //! 272 and is read off `enum_rows` rather than repeated. Nothing else in this
 //! file loops over a domain.
 //!
@@ -91,7 +92,7 @@ const testing = std.testing;
 /// The members are this file's key for a row, and the order is the order the
 /// declarations stand in `include/zaccesskit.h`: the seventeen wire enums at
 /// lines 220 to 876, then `accesskit_action_data_Tag` at 1606, then
-/// `accesskit_error` at 1774. `enumDomainCount` reads the count off this type,
+/// `accesskit_error` at 1774. `enum_domain_count` reads the count off this type,
 /// and the `comptime` block checks that `enum_rows` has one row per member in
 /// this order, so a twentieth enumeration is a build failure here.
 pub const EnumDomain = enum {
@@ -142,7 +143,7 @@ pub const EnumDomain = enum {
 ///
 /// This is the compile-time bound on every loop over the enumeration domain,
 /// read off the type so a member added to it is counted without an edit here.
-pub const enumDomainCount: u32 = @intCast(@typeInfo(EnumDomain).@"enum".fields.len);
+pub const enum_domain_count: u32 = @intCast(@typeInfo(EnumDomain).@"enum".fields.len);
 
 /// One C enumerator and the Zig variant it is the same wire byte as.
 ///
@@ -185,7 +186,7 @@ pub const EnumRow = struct {
 /// Nineteen rows and 272 tags between them. The table is the only copy of this
 /// data in the repository: nothing else in `src/capi/` writes an enumerator
 /// name, and nothing else in `src/capi/` lists an enumeration's width.
-pub const enum_rows: [enumDomainCount]EnumRow = .{
+pub const enum_rows: [enum_domain_count]EnumRow = .{
     .{
         .key = .action,
         .c_name = "accesskit_action",
@@ -675,7 +676,7 @@ pub fn rowFor(comptime key: EnumDomain) EnumRow {
 /// Read off the table rather than repeated, so a row that gains or loses a tag
 /// is counted here with no edit, and the `comptime` block pins the result
 /// against the number the header carries.
-pub const tagCount: u32 = blk: {
+pub const tag_count: u32 = blk: {
     var total: u32 = 0;
     for (enum_rows) |row| total += @intCast(row.tags.len);
     break :blk total;
@@ -714,25 +715,25 @@ pub const TagEntry = struct {
 /// Both come from one pass so the two cannot disagree: the entries and the
 /// verdicts are read off the same walk of the same table. The walk is the only
 /// loop in this file that runs over the tag domain, and its bound is
-/// `tagCount`, which is 272.
+/// `tag_count`, which is 272.
 const flat = flatten();
 
 /// The flattened table, one entry per tag, in row order.
 ///
 /// The result is `const` data in the binary image: a reader holds a `c_name`
 /// for as long as it likes and nothing here is released.
-pub const tag_entries: [tagCount]TagEntry = flat.entries;
+pub const tag_entries: [tag_count]TagEntry = flat.entries;
 
 /// The flattened table and the per-row verdicts, in one pass.
-fn flatten() struct { entries: [tagCount]TagEntry, rows_agree: [enumDomainCount]bool } {
+fn flatten() struct { entries: [tag_count]TagEntry, rows_agree: [enum_domain_count]bool } {
     // The walk is one evaluation over 272 entries, which is past the 1000
     // backwards branches the evaluator allows by default. The quota is raised
     // rather than the walk split, because a split would let the two halves
     // disagree and a disagreement here is the whole thing this file exists to
     // catch.
     @setEvalBranchQuota(200_000);
-    var collected: [tagCount]TagEntry = undefined;
-    var verdicts: [enumDomainCount]bool = undefined;
+    var collected: [tag_count]TagEntry = undefined;
+    var verdicts: [enum_domain_count]bool = undefined;
     var at: usize = 0;
     for (enum_rows, 0..) |row, position| {
         const fields = fieldsOf(row.zig_type);
@@ -763,7 +764,7 @@ fn flatten() struct { entries: [tagCount]TagEntry, rows_agree: [enumDomainCount]
 ///
 /// Computed once so the run-time test can read it, and recomputed here from the
 /// same pass `tag_entries` came from rather than asserted twice.
-pub const rows_agree: [enumDomainCount]bool = flat.rows_agree;
+pub const rows_agree: [enum_domain_count]bool = flat.rows_agree;
 
 /// Each row's C type name and tag count, in `EnumDomain` order.
 ///
@@ -771,22 +772,22 @@ pub const rows_agree: [enumDomainCount]bool = flat.rows_agree;
 /// run-time form, so a test that has to name the row it failed on, or count the
 /// row's tags, reads these instead. Built from the table rather than written
 /// out, so the two cannot disagree.
-pub const row_names: [enumDomainCount][]const u8 = row_facts.names;
+pub const row_names: [enum_domain_count][]const u8 = row_facts.names;
 
 /// How many tags each row carries, in `EnumDomain` order.
-pub const row_lengths: [enumDomainCount]u32 = row_facts.lengths;
+pub const row_lengths: [enum_domain_count]u32 = row_facts.lengths;
 
-const row_facts = struct {
-    names: [enumDomainCount][]const u8,
-    lengths: [enumDomainCount]u32,
-}{
+const row_facts: struct {
+    names: [enum_domain_count][]const u8,
+    lengths: [enum_domain_count]u32,
+} = .{
     .names = blk: {
-        var collected: [enumDomainCount][]const u8 = undefined;
+        var collected: [enum_domain_count][]const u8 = undefined;
         for (enum_rows, 0..) |row, index| collected[index] = row.c_name;
         break :blk collected;
     },
     .lengths = blk: {
-        var collected: [enumDomainCount]u32 = undefined;
+        var collected: [enum_domain_count]u32 = undefined;
         for (enum_rows, 0..) |row, index| collected[index] = @intCast(row.tags.len);
         break :blk collected;
     },
@@ -800,8 +801,8 @@ comptime {
     @setEvalBranchQuota(200_000);
     // The two bounds this file's loops run over, pinned against the header's
     // own numbers: nineteen enumerations, 272 enumerators between them.
-    if (enumDomainCount != 19) @compileError("the header declares nineteen enumerations");
-    if (tagCount != 272) @compileError("the header declares 272 enumerators");
+    if (enum_domain_count != 19) @compileError("the header declares nineteen enumerations");
+    if (tag_count != 272) @compileError("the header declares 272 enumerators");
 
     // `enum_rows` has one row per member of `EnumDomain`, in this order, so a
     // twentieth enumeration is a build failure here rather than a row nobody
@@ -967,10 +968,10 @@ fn assertGate(comptime key: EnumDomain, comptime decode: anytype) void {
 // --- tests ---------------------------------------------------------------------
 
 test "the table holds the nineteen enumerations the header declares" {
-    try testing.expectEqual(@as(u32, 19), enumDomainCount);
-    try testing.expectEqual(enumDomainCount, enum_rows.len);
-    try testing.expectEqual(@as(u32, 272), tagCount);
-    try testing.expectEqual(tagCount, tag_entries.len);
+    try testing.expectEqual(@as(u32, 19), enum_domain_count);
+    try testing.expectEqual(enum_domain_count, enum_rows.len);
+    try testing.expectEqual(@as(u32, 272), tag_count);
+    try testing.expectEqual(tag_count, tag_entries.len);
 }
 
 test "every C tag names exactly one Zig variant, at the byte the header numbers it" {
@@ -1119,7 +1120,7 @@ test "the seventeen gated rows and the two ungated rows are the whole table" {
     const ungated = [_]EnumDomain{ .action_data_tag, .error_tag };
     try testing.expectEqual(@as(u32, 17), gated.len);
     try testing.expectEqual(@as(u32, 2), ungated.len);
-    try testing.expectEqual(enumDomainCount, gated.len + ungated.len);
+    try testing.expectEqual(enum_domain_count, gated.len + ungated.len);
 
     // Every member appears exactly once across the two lists, so a new member
     // cannot slip past the seventeen and the two at the same time.

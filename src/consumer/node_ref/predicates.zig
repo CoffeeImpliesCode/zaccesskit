@@ -379,6 +379,9 @@ const Fixture = struct {
 
     fn deinit(self: *Fixture) void {
         self.state.deinit(self.gpa);
+        // SAFETY: `state.deinit` released every buffer the fixture owned, and
+        // no statement after it reads `self`.
+        self.* = undefined;
     }
 
     /// Puts a clone of `source` at `content`, under `parent` or at the root.

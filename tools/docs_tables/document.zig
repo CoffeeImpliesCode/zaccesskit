@@ -66,10 +66,15 @@ pub const Report = struct {
     /// The regions the markers define, in document order.
     regions: []const Region = &.{},
     /// A marker without its partner.
-    problems: std.ArrayListUnmanaged(Problem) = .empty,
+    problems: std.ArrayList(Problem) = .empty,
 
     pub fn deinit(self: *Report) void {
-        self.problems.deinit(self.gpa);
+        const gpa = self.gpa;
+        self.problems.deinit(gpa);
+        // SAFETY: the line above released the only list this report owns, and
+        // the reset is what a stale read sees. `regions` is a slice the caller
+        // owns, so the reset drops the borrow rather than releasing anything.
+        self.* = .{ .gpa = gpa };
     }
 
     /// The region for `key`, or null when the document has no marker pair for
@@ -85,13 +90,13 @@ pub const Report = struct {
 /// Reads the markers out of `source` and returns the regions between them.
 pub fn parse(gpa: Allocator, source: []const u8) !Report {
     var report: Report = .{ .gpa = gpa, .regions = &.{} };
-    var regions: std.ArrayListUnmanaged(Region) = .empty;
+    var regions: std.ArrayList(Region) = .empty;
     errdefer regions.deinit(gpa);
 
     var cursor: usize = 0;
-    while (std.mem.indexOfPos(u8, source, cursor, begin_prefix)) |begin_at| {
+    while (std.mem.findPos(u8, source, cursor, begin_prefix)) |begin_at| {
         const after_begin = begin_at + begin_prefix.len;
-        const key_end = std.mem.indexOfScalarPos(u8, source, after_begin, '\n') orelse {
+        const key_end = std.mem.findScalarPos(u8, source, after_begin, '\n') orelse {
             try report.problems.append(gpa, .{
                 .line = lineOf(source, begin_at),
                 .message = "a begin marker has no newline after it",
@@ -127,9 +132,9 @@ pub fn parse(gpa: Allocator, source: []const u8) !Report {
 /// The byte the closing marker for `key` starts at, or null when there is none.
 fn findEndMarker(source: []const u8, from: usize, key: []const u8) ?usize {
     var cursor = from;
-    while (std.mem.indexOfPos(u8, source, cursor, end_prefix)) |at| {
+    while (std.mem.findPos(u8, source, cursor, end_prefix)) |at| {
         const after = at + end_prefix.len;
-        const line_end = std.mem.indexOfScalarPos(u8, source, after, '\n') orelse source.len;
+        const line_end = std.mem.findScalarPos(u8, source, after, '\n') orelse source.len;
         if (std.mem.eql(u8, markerKey(source[after..line_end]), key)) return lineStart(source, at);
         cursor = at + end_prefix.len;
     }

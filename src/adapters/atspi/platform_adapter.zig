@@ -461,7 +461,7 @@ pub fn reasonFor(before: ?Rect, after: ?Rect) BoundsReason {
 fn onFocusMoved(ptr: *anyopaque, old: ?NodeRef, new: ?NodeRef) void {
     const self = PlatformAdapter.adapterOf(ptr);
     const target = new orelse return;
-    const address = events.AnyData{ .address = self.objectId(target.id()) };
+    const address: events.AnyData = .{ .address = self.objectId(target.id()) };
 
     self.record(.{
         .kind = .object,
@@ -487,7 +487,7 @@ const testing = std.testing;
 /// The root node's id is `1` and every child follows it, which is the shape a
 /// tree takes when an application pushes one button.
 fn chainUpdate(gpa: std.mem.Allocator, count: u64) !CTreeUpdate {
-    var update = CTreeUpdate{
+    var update: CTreeUpdate = .{
         .tree = schema.TreeInfo.init(.{ .value = 1 }),
         .focus = .{ .value = 1 },
     };
@@ -567,7 +567,7 @@ test "a node whose box moved raises BoundsChanged and names the reason" {
     var adapter = PlatformAdapter.init(gpa, 1, false);
     defer adapter.deinit();
 
-    var update = CTreeUpdate{
+    var update: CTreeUpdate = .{
         .tree = schema.TreeInfo.init(.{ .value = 1 }),
         .focus = .{ .value = 1 },
     };
@@ -581,7 +581,7 @@ test "a node whose box moved raises BoundsChanged and names the reason" {
 
     // The same box under a different node is an update that moves nothing, and
     // a `BoundsChanged` for it would make a client repaint for no reason.
-    var still = CTreeUpdate{ .focus = .{ .value = 1 } };
+    var still: CTreeUpdate = .{ .focus = .{ .value = 1 } };
     var same = schema.Node.init(gpa, .button);
     try schema.option.setBounds(&same.properties, schema.rectInit(0, 0, 10, 10));
     try still.pushNode(gpa, .{ .value = 1 }, same);
@@ -590,7 +590,7 @@ test "a node whose box moved raises BoundsChanged and names the reason" {
 
     // A different extent is a size change, and the new box rides in the variant
     // because `siiva{sv}` has no argument of type `(iiii)`.
-    var moved = CTreeUpdate{ .focus = .{ .value = 1 } };
+    var moved: CTreeUpdate = .{ .focus = .{ .value = 1 } };
     var wider = schema.Node.init(gpa, .button);
     try schema.option.setBounds(&wider.properties, schema.rectInit(0, 0, 20, 10));
     try moved.pushNode(gpa, .{ .value = 1 }, wider);

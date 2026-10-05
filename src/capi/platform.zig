@@ -2155,6 +2155,10 @@ comptime {
 
 const testing = std.testing;
 
+/// This module's own namespace under a name, so the tests below can ask it
+/// what it declares without an inline `@This()` at every use.
+const Self = @This();
+
 test "the census is fifty-eight, split six, sixteen, thirteen, thirteen, ten" {
     try testing.expectEqual(@as(usize, 58), export_record_count);
     try testing.expectEqual(@as(usize, 5), all_guards.len);
@@ -2181,7 +2185,7 @@ test "a Linux target declares the six unix exports and no other" {
 
     inline for (export_records) |record| {
         if (record.guard.declaresOn(linux_target)) {
-            try testing.expect(std.mem.startsWith(u8, record.symbol, guard_prefix(record.guard)));
+            try testing.expect(std.mem.startsWith(u8, record.symbol, guardPrefix(record.guard)));
         }
     }
     // A musl Linux is the same six. The unix guard reads the ABI for one reason
@@ -2204,7 +2208,7 @@ test "an Android target declares the thirteen android exports and no unix one" {
         try testing.expectEqual(@as(usize, 0), declaredCountFor(target, .unix));
         inline for (export_records) |record| {
             if (record.guard.declaresOn(target)) {
-                const family = guard_prefix(record.guard);
+                const family = guardPrefix(record.guard);
                 try testing.expect(std.mem.startsWith(u8, record.symbol, family));
             }
         }
@@ -2301,8 +2305,8 @@ test "every record names a declaration this module holds, under its own guard" {
     // that a row names a declaration this file holds and that the declaration
     // belongs to the family its guard is.
     inline for (export_records) |record| {
-        try testing.expect(@hasDecl(@This(), record.symbol));
-        try testing.expect(std.mem.startsWith(u8, record.symbol, guard_prefix(record.guard)));
+        try testing.expect(@hasDecl(Self, record.symbol));
+        try testing.expect(std.mem.startsWith(u8, record.symbol, guardPrefix(record.guard)));
     }
 }
 
@@ -2310,7 +2314,7 @@ test "every record names a declaration this module holds, under its own guard" {
 /// platform name, and the separator. It is one table for the five guards, and
 /// the five `comptime` blocks above can only be right about which symbols they
 /// emit if this table agrees with `export_records`.
-fn guard_prefix(guard: Guard) []const u8 {
+fn guardPrefix(guard: Guard) []const u8 {
     return switch (guard) {
         .unix => "accesskit_unix_",
         .macos => "accesskit_macos_",
@@ -2323,7 +2327,7 @@ fn guard_prefix(guard: Guard) []const u8 {
 test "every declared export is a C-callconv function" {
     inline for (export_records) |record| {
         if (record.guard.declaresOn(this_platform)) {
-            const declaration = @typeInfo(@TypeOf(@field(@This(), record.symbol)));
+            const declaration = @typeInfo(@TypeOf(@field(Self, record.symbol)));
             try testing.expect(declaration == .@"fn");
             try testing.expectEqual(
                 std.builtin.CallingConvention.c,

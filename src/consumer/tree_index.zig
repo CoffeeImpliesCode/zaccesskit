@@ -241,6 +241,9 @@ pub const TreeIndexMap = struct {
     pub fn deinit(self: *TreeIndexMap, gpa: std.mem.Allocator) void {
         self.id_to_index.deinit(gpa);
         self.index_to_id.deinit(gpa);
+        // SAFETY: the two maps above were released, which is everything the
+        // value owned, and no statement after them reads `self`.
+        self.* = undefined;
     }
 
     /// Replaces `self` with a copy of `source`, and leaves `source` alone. It

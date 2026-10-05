@@ -378,6 +378,10 @@ pub const Event = struct {
     /// **Errors.** This function does not fail.
     pub fn deinit(self: *Event, gpa: std.mem.Allocator) void {
         self.properties.deinit(gpa);
+        // SAFETY: the line above released the one buffer this value owned, and
+        // the reset is what a stale read sees. Nothing after it reads a
+        // released field, and no statement below this one reads `self`.
+        self.* = undefined;
     }
 
     /// Whether two events name the same signal about the same object.

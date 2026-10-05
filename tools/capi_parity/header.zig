@@ -604,7 +604,7 @@ fn evaluate(
         const parent_active = allActive(open.items);
         if (std.mem.eql(u8, d.name, "if")) {
             const tokens = try tokenizeText(arena, d.text);
-            var ev = Evaluator{ .tokens = tokens, .macros = &macros };
+            var ev: Evaluator = .{ .tokens = tokens, .macros = &macros };
             const taken = parent_active and try ev.parseOr();
             try open.append(arena, .{
                 .active = taken,
@@ -634,7 +634,7 @@ fn evaluate(
                 top.active = false;
             } else {
                 const tokens = try tokenizeText(arena, d.text);
-                var ev = Evaluator{ .tokens = tokens, .macros = &macros };
+                var ev: Evaluator = .{ .tokens = tokens, .macros = &macros };
                 top.active = try ev.parseOr();
                 top.seen_true = top.active;
             }
@@ -745,7 +745,7 @@ pub const TypeSpec = struct {
     /// A `TypeSpec` for one builtin or typedef name, with no pointer and no
     /// array on the declarator.
     pub fn named(name: []const u8) TypeSpec {
-        return TypeSpec{
+        return .{
             .kind = .builtin,
             .name = name,
             .pointers = 0,
@@ -815,27 +815,27 @@ fn builtinLayout(abi: Abi, name: []const u8) ?Layout {
     // the eight-byte table leaves it out and this one line answers for it.
     const long_size: u32 = if (abi == .msvc_x64) 4 else 8;
     for (one) |n| {
-        if (std.mem.eql(u8, name, n)) return Layout{ .size = 1, .alignment = 1, .known = true };
+        if (std.mem.eql(u8, name, n)) return .{ .size = 1, .alignment = 1, .known = true };
     }
     for (two) |n| {
-        if (std.mem.eql(u8, name, n)) return Layout{ .size = 2, .alignment = 2, .known = true };
+        if (std.mem.eql(u8, name, n)) return .{ .size = 2, .alignment = 2, .known = true };
     }
     for (four) |n| {
-        if (std.mem.eql(u8, name, n)) return Layout{ .size = 4, .alignment = 4, .known = true };
+        if (std.mem.eql(u8, name, n)) return .{ .size = 4, .alignment = 4, .known = true };
     }
     for (eight) |n| {
-        if (std.mem.eql(u8, name, n)) return Layout{ .size = 8, .alignment = 8, .known = true };
+        if (std.mem.eql(u8, name, n)) return .{ .size = 8, .alignment = 8, .known = true };
     }
     if (std.mem.eql(u8, name, "long")) {
-        return Layout{ .size = long_size, .alignment = long_size, .known = true };
+        return .{ .size = long_size, .alignment = long_size, .known = true };
     }
     if (std.mem.eql(u8, name, "wchar_t")) {
         const w: u32 = if (abi == .msvc_x64) 2 else 4;
-        return Layout{ .size = w, .alignment = w, .known = true };
+        return .{ .size = w, .alignment = w, .known = true };
     }
     if (std.mem.eql(u8, name, "long double")) {
         const d: u32 = if (abi == .msvc_x64) 8 else 16;
-        return Layout{ .size = d, .alignment = d, .known = true };
+        return .{ .size = d, .alignment = d, .known = true };
     }
     return null;
 }
@@ -1334,8 +1334,8 @@ const LayoutCtx = struct {
 
     /// The layout of `spec`, following typedef aliases to the record they name.
     fn ofType(ctx: *LayoutCtx, spec: TypeSpec) Layout {
-        if (spec.function_pointer) return Layout{ .size = 8, .alignment = 8, .known = true };
-        if (spec.pointers > 0) return Layout{ .size = 8, .alignment = 8, .known = true };
+        if (spec.function_pointer) return .{ .size = 8, .alignment = 8, .known = true };
+        if (spec.pointers > 0) return .{ .size = 8, .alignment = 8, .known = true };
         switch (spec.kind) {
             .@"struct" => {
                 const rec = ctx.by_tag.get(spec.name) orelse return .unknown;
@@ -1913,7 +1913,7 @@ test "an enum counts its variants and the alias after it resolves to a byte" {
     try std.testing.expectEqual(@as(usize, 1), doc.enums.len);
     try std.testing.expectEqual(@as(usize, 2), doc.enums[0].variants);
     try std.testing.expectEqualStrings("accesskit_toggled", doc.enums[0].tag);
-    const alias = LayoutCtx{
+    const alias: LayoutCtx = .{
         .abi = .sysv_x86_64,
         .by_tag = &doc.by_tag,
         .typedefs = doc.typedefs,

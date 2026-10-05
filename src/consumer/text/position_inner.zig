@@ -471,7 +471,7 @@ pub fn wordStartSlot(
     var high: usize = word_starts.len;
     var step: usize = 0;
     while (low < high) {
-        if (step == word_start_search_step_bound(word_starts.len)) {
+        if (step == wordStartSearchStepBound(word_starts.len)) {
             return .{ .index = high, .exact = false };
         }
         step += 1;
@@ -489,7 +489,7 @@ pub fn wordStartSlot(
 /// of `n` entries takes more than `n` steps. `docs/33` section 7 names nine
 /// bounded walks and this is not one of them, because the input is a finite list
 /// rather than a tree; the bound is still named here so the loop above has one.
-pub fn word_start_search_step_bound(word_start_count: usize) usize {
+pub fn wordStartSearchStepBound(word_start_count: usize) usize {
     return word_start_count;
 }
 
@@ -542,6 +542,9 @@ pub const ComparablePath = struct {
     /// afterwards and a second call is a double free.
     pub fn deinit(self: *ComparablePath) void {
         self.indices.deinit(self.gpa);
+        // SAFETY: `indices.deinit` released the only buffer the value owned,
+        // and no statement after it reads `self`.
+        self.* = undefined;
     }
 
     /// Whether `self` sorts before, with, or after `other`.
@@ -605,11 +608,6 @@ fn sameRun(a: NodeRef, b: NodeRef) bool {
 /// zero is both its start and its end.
 fn characterCount(node: NodeRef) usize {
     return schema.vectors.characterLengths(&node.data().properties).len;
-}
-
-/// The word starts of `node`'s run, as the `u8` list the property stores.
-fn wordStartsOf(node: NodeRef) []const u8 {
-    return schema.vectors.wordStarts(&node.data().properties);
 }
 
 /// Two optional `f32` values that agree or do not.
@@ -1109,7 +1107,7 @@ test "wordStartSlot returns the end of the list rather than looping past its bou
     // is what proves the loop stayed inside the bound rather than the bound never
     // being reached.
     try testing.expectEqual(
-        word_start_search_step_bound(word_starts.len),
+        wordStartSearchStepBound(word_starts.len),
         word_starts.len,
     );
     try testing.expectEqual(true, (wordStartSlot(&word_starts, 6)).exact);

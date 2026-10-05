@@ -280,6 +280,82 @@ Each item names the failure it prevents. Do not rediscover them.
     `// ziglint-ignore: Z001` to 498 lines, or by adding a second config.
     `docs/32-layout-and-naming-corrections.md:206-221` settles naming for the
     Zig half, and this settles it for the boundary.
+- **`identifier-style` is off in `.zwanzig.json`, and it stays off.** The rule
+  asks for `camelCase` on a function, `snake_case` on a constant and a payload,
+  and `PascalCase` on a type. 605 of its 637 findings are the same
+  vendor-mirror and C ABI class that Z001 already covers, and the same
+  reasoning applies: renaming them changes behaviour or breaks a foreign
+  boundary, not style. The config is `{"disabled_rules":["identifier-style"]}`.
+  - **The mechanism exists and is the same shape as `.ziglint.zon`.** zwanzig
+    reads `--config <path>`, default `.zwanzig.json`, resolved from the working
+    directory, which `zig-gate:7` sets to the project root. The keys are
+    `enabled_rules` and `disabled_rules` (`tools/zwanzig/src/config.zig:267-268`),
+    they are mutually exclusive (`config.zig:274-276`), and `Config.rule_filter`
+    (`config.zig:2`) is what the runner filters on. Verified by running the
+    tool on a scratch file, not by reading this paragraph: with no config a
+    deliberately bad name is reported, and with this config it is not, while
+    `unused-decl` and `optional-unwrap` on the same file still are.
+  - **It cannot be narrowed the way Z001 cannot be narrowed either.** The whole
+    config key set is `enabled_rules`, `disabled_rules`, `max_worklist_steps`,
+    `max_states_per_point`, `use_widening`, `escape_max_depth`,
+    `optional_unwrap_test_severity`, `resource_models` and `escape_models`
+    (`config.zig:267-340`, `Config` at `config.zig:2-14`). There is no
+    per-directory and no per-path key, so one root config cannot exempt
+    `src/capi/` alone. `{"exclude_paths":[...]}` parses as an unknown key and
+    is ignored, which is worse than useless: it reads like a narrowing and
+    narrows nothing.
+  - **The cost is stated, not hidden.** Turning the rule off also stops
+    reporting the **32 that are fixable**, listed per file below. Naming and
+    review own those, the same trade `.ziglint.zon` makes for its 48.
+  - **Do not "fix" this by renaming a C symbol, by adding a `zwanzig-disable`
+    comment to hundreds of lines, or by adding a second config.** zwanzig does
+    support `zwanzig-disable`, `zwanzig-disable-next-line` and
+    `zwanzig-enable` (`tools/zwanzig/src/suppression.zig`), and 605 of them is
+    the same mistake as the 498 `// ziglint-ignore` lines the rule above
+    already rules out.
+  - Its own blind spot, so nobody over-reads it: the rule exempts an alias whose
+    initialiser is a screaming-snake identifier or field access
+    (`identifier_style.zig:1054-1077`), which is why some vendor mirrors do not
+    appear. A name reached any other way is still reported, which is why the
+    count is 637 rather than 605.
+  - **The 32 that are fixable, by file.** From
+    `/tmp/scratch/shared/zw-identifier-style.txt`, which is a
+    pre-fix snapshot; the four `atspi` `SIGNATURE` entries in it are already
+    spelled `signature` in the tree, so the live number is lower. Each is a
+    plain rename with no vendor or ABI tie:
+
+    |File|Fixable names|
+    |---|---|
+    |`src/adapters/android/java_call.zig`|1|
+    |`src/adapters/android/node.zig`|1|
+    |`src/adapters/android/root.zig`|3|
+    |`src/adapters/windows/com.zig`|1|
+    |`src/adapters/windows/queued_events.zig`|1|
+    |`src/capi/marshal.zig`|4|
+    |`src/capi/node.zig`|4|
+    |`src/capi/node_properties.zig`|3|
+    |`src/capi/optionals.zig`|4|
+    |`src/capi/platform.zig`|1|
+    |`src/capi/property_value.zig`|2|
+    |`src/consumer/iterators/children.zig`|2|
+    |`src/consumer/iterators/following.zig`|2|
+    |`src/consumer/iterators/preceding.zig`|2|
+    |`src/consumer/text/position_inner.zig`|1|
+
+    Two of them are not renames at all. `src/capi/optionals.zig:562` and `:592`
+    flag `C`, a `comptime` loop binding holding a `type`, inside the
+    `inline for (optional_rows)` sweep whose comment above it says a `type` has
+    no run-time form. Read those two as the rule misreading a local and leave
+    them.
+
+    Three are `pub` and cross a module boundary, so a rename there is not a
+    one-line edit: `child_ids`, `filtered_children`
+    (`src/consumer/iterators/children.zig:179`, `:406`) and the sibling
+    `*_sibling_ids` pair have callers across `src/consumer/`. `position_inner.zig:492`
+    and `adapters/android/node.zig:757` are `pub fn ..._step_bound` next to the
+    existing `treeWalkStepBound` (`src/consumer/tree_state.zig:603`), so the
+    repo holds both spellings of that idea today; settle which one wins before
+    renaming, or the rename makes the split permanent.
 - **Bound the address space on native runs only.** `build.zig:22` sets four
   gibibytes and `addCeilingedRun` applies it through a `bash -c` launcher whose
   script is `ulimit -v 4194304; exec "$0"`. Keep it off `cross-test`. Under

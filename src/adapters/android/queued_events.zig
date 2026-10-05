@@ -67,7 +67,7 @@ const testing = std.testing;
 ///
 /// It is static, and `raise` reaches it through `callStaticObjectChecked` rather
 /// than `callObjectChecked`, which would look for an instance method.
-const event_obtain = java_call.Member{
+const event_obtain: java_call.Member = .{
     .class = .{
         .descriptor = "Landroid/view/accessibility/AccessibilityEvent;",
         .internal_name = "android/view/accessibility/AccessibilityEvent",
@@ -77,28 +77,28 @@ const event_obtain = java_call.Member{
 };
 
 /// `AccessibilityEvent.setPackageName(CharSequence)`, `docs/29` row 31.
-const event_set_package_name = java_call.Member{
+const event_set_package_name: java_call.Member = .{
     .class = event_obtain.class,
     .name = "setPackageName",
     .signature = "(Ljava/lang/CharSequence;)V",
 };
 
 /// `AccessibilityEvent.setSource(View, int)`, `docs/29` row 32.
-const event_set_source = java_call.Member{
+const event_set_source: java_call.Member = .{
     .class = event_obtain.class,
     .name = "setSource",
     .signature = "(Landroid/view/View;I)V",
 };
 
 /// `AccessibilityEvent.setContentChangeTypes(int)`, `docs/29` row 33.
-const event_set_content_change_types = java_call.Member{
+const event_set_content_change_types: java_call.Member = .{
     .class = event_obtain.class,
     .name = "setContentChangeTypes",
     .signature = "(I)V",
 };
 
 /// `View.getParent()`, `docs/29` row 35.
-const view_get_parent = java_call.Member{
+const view_get_parent: java_call.Member = .{
     .class = .{
         .descriptor = "Landroid/view/View;",
         .internal_name = "android/view/View",
@@ -110,7 +110,7 @@ const view_get_parent = java_call.Member{
 /// `View.getContext()`.
 ///
 /// **Unverified**: `methods.zig` records no descriptor for this row.
-const view_get_context = java_call.Member{
+const view_get_context: java_call.Member = .{
     .class = view_get_parent.class,
     .name = "getContext",
     .signature = "()Landroid/content/Context;",
@@ -120,7 +120,7 @@ const view_get_context = java_call.Member{
 ///
 /// `methods.zig` records this row as `.reached_by_name` with no descriptor, so
 /// the descriptor below is a literal this module supplies. **Unverified**.
-const parent_request_send = java_call.Member{
+const parent_request_send: java_call.Member = .{
     .class = .{
         .descriptor = "Landroid/view/ViewParent;",
         .internal_name = "android/view/ViewParent",
@@ -132,7 +132,7 @@ const parent_request_send = java_call.Member{
 /// `Context.getPackageName()`.
 ///
 /// **Unverified**: `methods.zig` records no descriptor for this row.
-const context_get_package_name = java_call.Member{
+const context_get_package_name: java_call.Member = .{
     .class = .{
         .descriptor = "Landroid/content/Context;",
         .internal_name = "android/content/Context",
@@ -747,6 +747,10 @@ const OneNodeTree = struct {
 
     fn deinit(self: *OneNodeTree, gpa: Allocator) void {
         self.state.deinit(gpa);
+        // SAFETY: the line above released every buffer the state owned, and the
+        // reset is what a stale read sees. The allocator owns no memory, so it
+        // is not a field and has nothing to invalidate.
+        self.* = .{ .state = .{} };
     }
 
     /// The handle to the one node.

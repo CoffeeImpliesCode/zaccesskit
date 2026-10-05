@@ -82,7 +82,7 @@
 const std = @import("std");
 const schema = @import("../../schema/root.zig");
 
-const hierarchy = @import("../node_ref/hierarchy.zig");
+const line_walk = @import("line_walk.zig");
 const node_ids = @import("../node_id.zig");
 const position_inner = @import("position_inner.zig");
 const tree_state = @import("../tree_state.zig");
@@ -470,7 +470,6 @@ pub fn toLineIndex(position: Position) QueryError!usize {
 /// the file. It is declared here because `toLineIndex` above calls it, and a
 /// module that needs a movement must not import the module above it.
 pub fn backwardToLineStart(position: Position) QueryError!Position {
-    const line_walk = @import("line_walk.zig");
     const biased = try position_inner.biasedToEnd(position.inner, position.root_node);
     return .{
         .root_node = position.root_node,
@@ -520,15 +519,21 @@ fn utf16Length(text: []const u8) usize {
     while (index < text.len) {
         const width = std.unicode.utf8ByteSequenceLength(text[index]) catch 1;
         const next = @min(index + width, text.len);
-        const scalar = std.unicode.utf8Decode(text[index..next]) catch {
-            total += 1;
-            index = next;
-            continue;
-        };
-        total += if (scalar >= 0x10000) 2 else 1;
+        total += utf16UnitsIn(text[index..next]);
         index = next;
     }
     return total;
+}
+
+/// The UTF-16 code units the one code point in `bytes` holds: two when the code
+/// point is outside the basic multilingual plane and one otherwise. Ill-formed
+/// `bytes` is one unit, which is what the walk in `utf16Length` above counts for
+/// a byte it cannot decode.
+fn utf16UnitsIn(bytes: []const u8) usize {
+    var view = std.unicode.Utf8View.init(bytes) catch return 1;
+    var iterator = view.iterator();
+    const codepoint = iterator.nextCodepointSlice() orelse return 1;
+    return if (codepoint.len == 4) 2 else 1;
 }
 
 // --- Tests ---------------------------------------------------------------------

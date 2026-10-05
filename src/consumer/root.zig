@@ -28,20 +28,30 @@
 
 const std = @import("std");
 
+// Every module in this namespace is imported at file scope, and the namespace
+// blocks below bind each import to the name a caller writes. Both halves are
+// needed: a caller writes `consumer.text.range`, and
+// `docs/36-consumer-call-graph.md` records the import table of this namespace.
+
 // --- iterators/ ------------------------------------------------------------
 // The lowest layer. Each cursor answers "which nodes come next", bounded by a
 // step count derived in its own module doc, so a cyclic tree stops with a tag.
 
+const iterators_children = @import("iterators/children.zig");
+const iterators_following = @import("iterators/following.zig");
+const iterators_preceding = @import("iterators/preceding.zig");
+const iterators_sibling_scan = @import("iterators/sibling_scan.zig");
+
 /// The iterators over children and siblings, both filtered and unfiltered.
 pub const iterators = struct {
     /// Child identifiers, children, and the filtered child cursors.
-    pub const children = @import("iterators/children.zig");
+    pub const children = iterators_children;
     /// Forward sibling cursors, and the shape a filtered cursor is declared in.
-    pub const following = @import("iterators/following.zig");
+    pub const following = iterators_following;
     /// Backward sibling cursors.
-    pub const preceding = @import("iterators/preceding.zig");
+    pub const preceding = iterators_preceding;
     /// The single step both sibling directions share.
-    pub const sibling_scan = @import("iterators/sibling_scan.zig");
+    pub const sibling_scan = iterators_sibling_scan;
 };
 
 // --- storage ---------------------------------------------------------------
@@ -71,42 +81,59 @@ pub const tree_grafts = @import("tree_grafts.zig");
 /// Whether a node is included, and by how much. Decided once per walk.
 pub const filter = @import("filter.zig");
 
+const node_ref_predicates = @import("node_ref/predicates.zig");
+const node_ref_geometry = @import("node_ref/geometry.zig");
+const node_ref_hierarchy = @import("node_ref/hierarchy.zig");
+const node_ref_strings = @import("node_ref/strings.zig");
+const node_ref_set_state = @import("node_ref/set_state.zig");
+const node_ref_properties = @import("node_ref/properties.zig");
+const node_ref_containers = @import("node_ref/containers.zig");
+
 /// The queries over a node: its role, its geometry, its labels, its values.
 pub const node_ref = struct {
     /// Role predicates and the predicates that read several nodes.
-    pub const predicates = @import("node_ref/predicates.zig");
+    pub const predicates = node_ref_predicates;
     /// Position, size, and the geometric transforms between them.
-    pub const geometry = @import("node_ref/geometry.zig");
+    pub const geometry = node_ref_geometry;
     /// Bounds, hit testing, and the bounding box of a subtree.
-    pub const hierarchy = @import("node_ref/hierarchy.zig");
+    pub const hierarchy = node_ref_hierarchy;
     /// Label, description, URL, placeholder and the value accessors.
-    pub const strings = @import("node_ref/strings.zig");
+    pub const strings = node_ref_strings;
     /// Setting a property, and setting a flag.
-    pub const set_state = @import("node_ref/set_state.zig");
+    pub const set_state = node_ref_set_state;
     /// Reading a raw or inherited property off a node.
-    pub const properties = @import("node_ref/properties.zig");
+    pub const properties = node_ref_properties;
     /// Item-likeness, container-ness, index paths and selection containers.
-    pub const containers = @import("node_ref/containers.zig");
+    pub const containers = node_ref_containers;
 };
+
+const text_position_inner = @import("text/position_inner.zig");
+const text_position = @import("text/position.zig");
+const text_position_motion = @import("text/position_motion.zig");
+const text_line_walk = @import("text/line_walk.zig");
+const text_range = @import("text/range.zig");
+const text_hit_test = @import("text/hit_test.zig");
+const text_inherited = @import("text/inherited.zig");
+const text_query = @import("text/query.zig");
 
 /// The text layer: positions, ranges, and the queries that produce them.
 pub const text = struct {
     /// The character index inside a run, and the slot searches over a run list.
-    pub const position_inner = @import("text/position_inner.zig");
+    pub const position_inner = text_position_inner;
     /// A position in the document, and the predicates that describe one.
-    pub const position = @import("text/position.zig");
+    pub const position = text_position;
     /// The movement methods, which are the bulk of the text API.
-    pub const position_motion = @import("text/position_motion.zig");
+    pub const position_motion = text_position_motion;
     /// The bounded line walks the movements share.
-    pub const line_walk = @import("text/line_walk.zig");
+    pub const line_walk = text_line_walk;
     /// A range over the document, and the property fold over the runs in it.
-    pub const range = @import("text/range.zig");
+    pub const range = text_range;
     /// The character index at a point, and the two filters the cursors need.
-    pub const hit_test = @import("text/hit_test.zig");
+    pub const hit_test = text_hit_test;
     /// The thirty-nine inherited text accessors, which share one walk.
-    pub const inherited = @import("text/inherited.zig");
+    pub const inherited = text_inherited;
     /// Selection, focus, and the string-driven entry points.
-    pub const query = @import("text/query.zig");
+    pub const query = text_query;
 };
 
 test "every module in this namespace is reachable and analysed" {

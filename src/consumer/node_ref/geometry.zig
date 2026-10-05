@@ -321,6 +321,9 @@ const Fixture = struct {
     /// Releases the map and every node's property buffers.
     fn deinit(self: *Fixture) void {
         self.state.deinit(self.gpa);
+        // SAFETY: `state.deinit` released every buffer the fixture owned, and
+        // no statement after it reads `self`.
+        self.* = undefined;
     }
 
     /// Stores one node and returns its id. `parent` is `null` for a root.

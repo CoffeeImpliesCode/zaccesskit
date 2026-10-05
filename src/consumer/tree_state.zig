@@ -810,7 +810,8 @@ fn chain(
     // The array is the bound on the loop below, and the assertion is what makes
     // it a named one instead of an out-of-bounds trap the caller reaches by
     // accident.
-    assert(count >= 1 and count <= ids.len);
+    assert(count >= 1);
+    assert(count <= ids.len);
     for (0..count) |position| {
         ids[position] = try putNode(gpa, state, @intCast(position + 1), .group);
     }

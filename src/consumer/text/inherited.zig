@@ -47,13 +47,11 @@ const Range = range.Range;
 const RangePropertyValue = range.RangePropertyValue;
 const TextAlign = schema.TextAlign;
 const VerticalOffset = schema.VerticalOffset;
-/// `?VerticalOffset` under a name. The alias exists because this compiler rejects
-/// the inline spelling `QueryError!?VerticalOffset`, and a reader should not
-/// have to rediscover that.
-const MaybeVerticalOffset = ?VerticalOffset;
 const TextDecoration = schema.TextDecoration;
 const TextDirection = schema.TextDirection;
 const Color = schema.Color;
+
+const Self = @This();
 
 const testing = std.testing;
 
@@ -322,14 +320,14 @@ pub fn rangeTextAlign(
 /// The subscript or superscript the node inherits.
 pub fn nodeVerticalOffset(
     node: NodeRef,
-) QueryError!MaybeVerticalOffset {
+) QueryError!?VerticalOffset {
     return inheritedValue(VerticalOffset, node, verticalOffsetOf);
 }
 
 /// The vertical offset the run at `position` inherits.
 pub fn positionVerticalOffset(
     position_value: Position,
-) QueryError!MaybeVerticalOffset {
+) QueryError!?VerticalOffset {
     return nodeVerticalOffset(position_value.inner.node);
 }
 
@@ -379,7 +377,7 @@ fn inheritedValue(
     node: NodeRef,
     getter: *const fn (*const schema.Node) ?T,
 ) QueryError!?T {
-    return properties.fetchInheritedProperty(node, T, getter);
+    return properties.fetchInheritedProperty(T, node, getter);
 }
 
 /// The one call to `node_ref/properties.zig`'s inherited-flag walk. See
@@ -442,7 +440,8 @@ fn verticalOffsetOf(node: *const schema.Node) ?VerticalOffset {
 /// The flag walk behind `rangeIsItalic`. `fetchProperty` folds an optional
 /// value, so the flag is lifted into one; the fold never sees a `null`.
 fn italicValue(node: NodeRef) QueryError!?bool {
-    return try nodeIsItalic(node);
+    const value = try nodeIsItalic(node);
+    return value;
 }
 
 fn isItalicOf(node: *const schema.Node) bool {
@@ -462,8 +461,8 @@ pub fn walkStepBound(node_count: usize) usize {
 /// build a tree without the update algorithm. Inserting moves the map, so a
 /// caller must insert every node before taking a handle.
 fn insert(
-    state: *tree_state.TreeState,
     gpa: std.mem.Allocator,
+    state: *tree_state.TreeState,
     value: u64,
     parent: ?u64,
     node: schema.Node,
@@ -506,8 +505,8 @@ fn textRun(gpa: std.mem.Allocator, text_value: []const u8) !schema.Node {
 /// A `TextInput` over two runs, with `first` and `second` set on the two runs
 /// when they are not null.
 fn twoRunDocument(
-    state: *tree_state.TreeState,
     gpa: std.mem.Allocator,
+    state: *tree_state.TreeState,
     first: ?[]const u8,
     second: ?[]const u8,
 ) !void {
@@ -521,21 +520,21 @@ fn twoRunDocument(
         .{ .value = 1 },
         .{ .value = 2 },
     });
-    insert(state, gpa, 0, null, document) catch |err| {
+    insert(gpa, state, 0, null, document) catch |err| {
         document.deinit();
         return err;
     };
     var run_one = try textRun(gpa, "text 1");
     errdefer run_one.deinit();
     if (first) |family| try schema.strings.setFontFamily(&run_one.properties, family);
-    insert(state, gpa, 1, 0, run_one) catch |err| {
+    insert(gpa, state, 1, 0, run_one) catch |err| {
         run_one.deinit();
         return err;
     };
     var run_two = try textRun(gpa, "text 2");
     errdefer run_two.deinit();
     if (second) |family| try schema.strings.setFontFamily(&run_two.properties, family);
-    insert(state, gpa, 2, 0, run_two) catch |err| {
+    insert(gpa, state, 2, 0, run_two) catch |err| {
         run_two.deinit();
         return err;
     };
@@ -545,7 +544,7 @@ test "a value set on the node itself is what the node reports" {
     var state: tree_state.TreeState = .{};
     defer state.deinit(testing.allocator);
     const gpa = testing.allocator;
-    try twoRunDocument(&state, gpa, "Noto", "Noto");
+    try twoRunDocument(gpa, &state, "Noto", "Noto");
 }
 
 test "a value set on the parent reaches the child that declares none" {
@@ -556,8 +555,8 @@ test "a value set on the parent reaches the child that declares none" {
     errdefer document.deinit();
     try schema.ids_props.setChildren(&document.properties, &.{.{ .value = 1 }});
     try schema.strings.setFontFamily(&document.properties, "Noto");
-    try insert(&state, gpa, 0, null, document);
-    try insert(&state, gpa, 1, 0, try textRun(gpa, "text"));
+    try insert(gpa, &state, 0, null, document);
+    try insert(gpa, &state, 1, 0, try textRun(gpa, "text"));
 
     // This is the whole point of the shared walk: the run declares nothing, so
     // the answer comes from one step up.
@@ -575,14 +574,14 @@ test "a child overrides the parent it would otherwise inherit from" {
         .{ .value = 2 },
     });
     try schema.strings.setFontFamily(&document.properties, "Noto");
-    try insert(&state, gpa, 0, null, document);
-    try insert(&state, gpa, 1, 0, try textRun(gpa, "text 1"));
+    try insert(gpa, &state, 0, null, document);
+    try insert(gpa, &state, 1, 0, try textRun(gpa, "text 1"));
     var overriding = try textRun(gpa, "text 2");
     errdefer overriding.deinit();
     try schema.strings.setFontFamily(&overriding.properties, "Inconsolata");
     // `insert` stores the node in the map and takes ownership, so the
     // `errdefer` must not outlive it.
-    insert(&state, gpa, 2, 0, overriding) catch |err| {
+    insert(gpa, &state, 2, 0, overriding) catch |err| {
         overriding.deinit();
         return err;
     };
@@ -599,7 +598,7 @@ test "a position reports the value its own run inherits" {
     var state: tree_state.TreeState = .{};
     defer state.deinit(testing.allocator);
     const gpa = testing.allocator;
-    try twoRunDocument(&state, gpa, "Noto", "Inconsolata");
+    try twoRunDocument(gpa, &state, "Noto", "Inconsolata");
 
     const position_value: Position = .{
         .root_node = handle(&state, 0),
@@ -614,7 +613,7 @@ test "a range folds to one value when every run agrees" {
     var state: tree_state.TreeState = .{};
     defer state.deinit(testing.allocator);
     const gpa = testing.allocator;
-    try twoRunDocument(&state, gpa, "Noto", "Noto");
+    try twoRunDocument(gpa, &state, "Noto", "Noto");
 
     const folded = try rangeFontFamily(gpa, try wholeRange(gpa, &state));
     // The two runs hold equal text in different buffers, so a fold that
@@ -626,7 +625,7 @@ test "a range is mixed when one run overrides the others" {
     var state: tree_state.TreeState = .{};
     defer state.deinit(testing.allocator);
     const gpa = testing.allocator;
-    try twoRunDocument(&state, gpa, "Noto", "Inconsolata");
+    try twoRunDocument(gpa, &state, "Noto", "Inconsolata");
 
     const folded = try rangeFontFamily(gpa, try wholeRange(gpa, &state));
     try testing.expect(folded == .mixed);
@@ -636,7 +635,7 @@ test "a range is mixed when one run declares nothing and the other does" {
     var state: tree_state.TreeState = .{};
     defer state.deinit(testing.allocator);
     const gpa = testing.allocator;
-    try twoRunDocument(&state, gpa, "Noto", null);
+    try twoRunDocument(gpa, &state, "Noto", null);
 
     const folded = try rangeFontFamily(gpa, try wholeRange(gpa, &state));
     // Absent and present are different answers, so the fold reports mixed
@@ -655,8 +654,8 @@ test "a range is mixed when one child overrides the document around both runs" {
         .{ .value = 2 },
     });
     try schema.strings.setFontFamily(&document.properties, "Noto");
-    try insert(&state, gpa, 0, null, document);
-    try insert(&state, gpa, 1, 0, try textRun(gpa, "text 1"));
+    try insert(gpa, &state, 0, null, document);
+    try insert(gpa, &state, 1, 0, try textRun(gpa, "text 1"));
     var overriding = try textRun(gpa, "text 2");
     errdefer overriding.deinit();
     try schema.strings.setFontFamily(&overriding.properties, "Inconsolata");
@@ -664,7 +663,7 @@ test "a range is mixed when one child overrides the document around both runs" {
     // ends here. The `errdefer` above still covers the two lines that run
     // before it, but it must not survive past this point: a later failed
     // assertion would fire it and free a node the map also owns.
-    insert(&state, gpa, 2, 0, overriding) catch |err| {
+    insert(gpa, &state, 2, 0, overriding) catch |err| {
         overriding.deinit();
         return err;
     };
@@ -704,7 +703,7 @@ test "a flag set on the run reaches the run and folds across a range" {
     var state: tree_state.TreeState = .{};
     defer state.deinit(testing.allocator);
     const gpa = testing.allocator;
-    try twoRunDocument(&state, gpa, null, null);
+    try twoRunDocument(gpa, &state, null, null);
     const second_run = state.nodes.getPtr(FullNodeId.init(.{ .value = 2 }, .init(0))).?;
     schema.flags.setItalic(&second_run.data.flags, true);
 
@@ -724,7 +723,7 @@ test "an unset flag is false everywhere and folds to a single false" {
     var state: tree_state.TreeState = .{};
     defer state.deinit(testing.allocator);
     const gpa = testing.allocator;
-    try twoRunDocument(&state, gpa, null, null);
+    try twoRunDocument(gpa, &state, null, null);
 
     // The flag walk answers `false` rather than "unset", so the range fold has
     // an answer for every run and never reports mixed for two quiet runs.
@@ -737,7 +736,7 @@ test "no ancestor declares the value and the family answers null" {
     var state: tree_state.TreeState = .{};
     defer state.deinit(testing.allocator);
     const gpa = testing.allocator;
-    try twoRunDocument(&state, gpa, null, null);
+    try twoRunDocument(gpa, &state, null, null);
 
     // The walk climbs to the document and stops there, which is what the doc
     // comment on `nodeFontFamily` promises.
@@ -762,7 +761,7 @@ test "the shared walk stops with TreeCycle at its bound" {
     // the parent's child list to compute the index and a parent that does not
     // exist yet is a null it unwraps. So all three go in parentless and the
     // relations are written afterwards.
-    for (1..4) |value| try insert(&state, gpa, value, null, try textRun(gpa, "text"));
+    for (1..4) |value| try insert(gpa, &state, value, null, try textRun(gpa, "text"));
     for (1..4) |value| {
         const id = FullNodeId.init(.{ .value = value }, .init(0));
         const parent_id = FullNodeId.init(.{ .value = value % 3 + 1 }, .init(0));
@@ -790,12 +789,12 @@ test "the same walk one step short of the bound still finds the value" {
     errdefer top.deinit();
     try schema.strings.setFontFamily(&top.properties, "Noto");
     // `insert` takes ownership, so the `errdefer` above must not outlive it.
-    insert(&state, gpa, 1, null, top) catch |err| {
+    insert(gpa, &state, 1, null, top) catch |err| {
         top.deinit();
         return err;
     };
-    try insert(&state, gpa, 2, 1, try textRun(gpa, "text"));
-    try insert(&state, gpa, 3, 2, try textRun(gpa, "text"));
+    try insert(gpa, &state, 2, 1, try textRun(gpa, "text"));
+    try insert(gpa, &state, 3, 2, try textRun(gpa, "text"));
     try testing.expectEqual(@as(usize, 3), walkStepBound(state.nodes.count()));
 
     // Both runs declare nothing, so both must reach the top node and find its
@@ -817,9 +816,9 @@ comptime {
     };
     std.debug.assert(property_names.len == 13);
     for (property_names) |property_name| {
-        _ = @field(@This(), "node" ++ property_name);
-        _ = @field(@This(), "position" ++ property_name);
-        _ = @field(@This(), "range" ++ property_name);
+        _ = @field(Self, "node" ++ property_name);
+        _ = @field(Self, "position" ++ property_name);
+        _ = @field(Self, "range" ++ property_name);
     }
     std.debug.assert(walkStepBound(0) == 0);
     std.debug.assert(walkStepBound(65_536) == 65_536);

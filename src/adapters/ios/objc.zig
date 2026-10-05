@@ -1051,17 +1051,6 @@ fn sendCString(
     return current.msg_send(receiver, command, argument);
 }
 
-/// Sends the message spelled `name` to `receiver` with one object argument.
-fn sendOne(
-    current: *Bindings,
-    receiver: ?*runtime.AnyObject,
-    name: [:0]const u8,
-    argument: ?*runtime.AnyObject,
-) ?*runtime.AnyObject {
-    const command = current.sel_register_name(name.ptr) orelse return null;
-    return current.msg_send(receiver, command, argument);
-}
-
 /// Sends the message spelled `name` to `receiver` with two object arguments.
 fn sendTwo(
     current: *Bindings,
@@ -1286,7 +1275,7 @@ fn viewConvertPoint(
     point: foundation.CGPoint,
     space: *runtime.AnyObject,
 ) foundation.CGPoint {
-    const zero = foundation.CGPoint{ .x = 0, .y = 0 };
+    const zero: foundation.CGPoint = .{ .x = 0, .y = 0 };
     const current = bindings(ctx) orelse return zero;
     const command = current.sel_register_name("convertPoint:fromCoordinateSpace:") orelse
         return zero;
@@ -1565,7 +1554,7 @@ fn didMoveToWindowImplementation(
     const previous = owner.callbacks.view_previous_class(owner.adapter) orelse return null;
     const moved = current.sel_register_name(did_move_to_window_selector.ptr) orelse return null;
     if (current.class_get_method_implementation(previous, moved) != null) {
-        var super = ObjcSuper{ .receiver = this, .super_class = previous };
+        var super: ObjcSuper = .{ .receiver = this, .super_class = previous };
         _ = current.msg_send_super2(@ptrCast(&super), moved);
     }
     if (send(current, this, "window") == null) return null;

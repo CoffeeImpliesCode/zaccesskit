@@ -63,11 +63,11 @@
 //!
 //! **The `comptime` bound.** Two loops run over a domain. The first is the
 //! sweep over `OptionalDomain` in the `comptime` block, whose bound is
-//! `optionalDomainCount`, which is twenty-five and is read off the type. The
+//! `optional_domain_count`, which is twenty-five and is read off the type. The
 //! second is the walk over `optional_rows` in the tests, whose bound is the same
-//! count, and the test that walks `pair_rows` is bounded by `pairCount`, which is
-//! twenty-five and is read off the table rather than repeated. Nothing else in
-//! this file loops over a domain.
+//! count, and the test that walks `pair_rows` is bounded by `pair_count`, which
+//! is twenty-five and is read off the table rather than repeated. Nothing else
+//! in this file loops over a domain.
 //!
 //! **What this file does not do.** It declares no type, because
 //! `src/capi/marshal.zig` declares all twenty-five and a second declaration of
@@ -88,8 +88,8 @@ const testing = std.testing;
 /// The members are this file's key for a row, and the order is the order the
 /// declarations stand in `include/zaccesskit.h`: twenty-four between lines 1082
 /// and 1586, and `accesskit_opt_action_data` at 1674.
-/// `optionalDomainCount` reads the count off this type, and the `comptime` block
-/// checks that `optional_rows` has one row per member in this order, so a
+/// `optional_domain_count` reads the count off this type, and the `comptime`
+/// block checks that `optional_rows` has one row per member in this order, so a
 /// twenty-sixth form is a build failure here.
 pub const OptionalDomain = enum {
     /// `accesskit_opt_node_id`, at `include/zaccesskit.h:1082`.
@@ -155,7 +155,7 @@ pub const OptionalDomain = enum {
 ///
 /// This is the compile-time bound on every loop over the optional domain, read
 /// off the type so a member added to it is counted without an edit here.
-pub const optionalDomainCount: u32 = @intCast(@typeInfo(OptionalDomain).@"enum".fields.len);
+pub const optional_domain_count: u32 = @intCast(@typeInfo(OptionalDomain).@"enum".fields.len);
 
 /// How the port spells "absent" for a form.
 pub const AbsentKind = enum {
@@ -197,7 +197,7 @@ pub const OptionalRow = struct {
 /// not restate the payload type or the payload offset, because
 /// `marshal.zig`'s own table already carries both and two tables for one form
 /// are two things to keep in step.
-pub const optional_rows: [optionalDomainCount]OptionalRow = .{
+pub const optional_rows: [optional_domain_count]OptionalRow = .{
     .{
         .key = .node_id,
         .c_name = "accesskit_opt_node_id",
@@ -390,8 +390,8 @@ pub fn rowFor(comptime key: OptionalDomain) OptionalRow {
 /// run-time form, so a test that has to name the form it failed on reads this
 /// instead. Built from the table rather than written out, so the two cannot
 /// disagree.
-pub const row_names: [optionalDomainCount][]const u8 = blk: {
-    var collected: [optionalDomainCount][]const u8 = undefined;
+pub const row_names: [optional_domain_count][]const u8 = blk: {
+    var collected: [optional_domain_count][]const u8 = undefined;
     for (optional_rows, 0..) |row, index| collected[index] = row.c_name;
     break :blk collected;
 };
@@ -446,7 +446,7 @@ pub const pair_rows = [_]PairRow{
 /// This is the compile-time bound on every loop over the pair domain, read off
 /// the table rather than repeated, and the `comptime` block pins it against the
 /// header's own count.
-pub const pairCount: u32 = @intCast(pair_rows.len);
+pub const pair_count: u32 = @intCast(pair_rows.len);
 
 comptime {
     // The distinctness sweeps below are quadratic in twenty-five, which is past
@@ -456,8 +456,8 @@ comptime {
     @setEvalBranchQuota(200_000);
     // The two bounds this file's loops run over, pinned against the header's
     // own numbers: twenty-five optional forms and twenty-five byte-pair setters.
-    if (optionalDomainCount != 25) @compileError("the header declares 25 optional forms");
-    if (pairCount != 25) @compileError("the header declares 25 byte-pair setters");
+    if (optional_domain_count != 25) @compileError("the header declares 25 optional forms");
+    if (pair_count != 25) @compileError("the header declares 25 byte-pair setters");
 
     // `optional_rows` has one row per member of `OptionalDomain`, in this order,
     // so a twenty-sixth form is a build failure here rather than a row nobody
@@ -543,9 +543,9 @@ fn payloadBytes(comptime C: type, value: C) *const [@sizeOf(C) - 1]u8 {
 // --- tests ----------------------------------------------------------------------
 
 test "the table holds the twenty-five optionals the header declares" {
-    try testing.expectEqual(@as(u32, 25), optionalDomainCount);
-    try testing.expectEqual(optionalDomainCount, optional_rows.len);
-    try testing.expectEqual(@as(u32, 25), pairCount);
+    try testing.expectEqual(@as(u32, 25), optional_domain_count);
+    try testing.expectEqual(optional_domain_count, optional_rows.len);
+    try testing.expectEqual(@as(u32, 25), pair_count);
 }
 
 test "a legitimate zero is distinguishable from absent, for every optional" {
@@ -559,9 +559,9 @@ test "a legitimate zero is distinguishable from absent, for every optional" {
     // run-time form: this sweep can only resolve while the module is analysed,
     // and what it resolves is the whole twenty-five.
     inline for (optional_rows) |row| {
-        const C = row.c_type;
-        const absent = absentValue(C, row.absent_kind);
-        const present = presentZero(C, row.absent_kind);
+        const c_type = row.c_type;
+        const absent = absentValue(c_type, row.absent_kind);
+        const present = presentZero(c_type, row.absent_kind);
 
         // The comparison is over the raw bytes and not through `std.meta.eql`,
         // for two reasons. One of the twenty-five wraps an untagged
@@ -576,8 +576,8 @@ test "a legitimate zero is distinguishable from absent, for every optional" {
         try testing.expect(present.has_value);
         try testing.expectEqualSlices(
             u8,
-            payloadBytes(C, absent),
-            payloadBytes(C, present),
+            payloadBytes(c_type, absent),
+            payloadBytes(c_type, present),
         );
     }
 }
@@ -589,9 +589,9 @@ test "an absent optional's payload is a defined zero, never uninitialised storag
     // is an empty list with a non-null pointer, which the test below pins.
     inline for (optional_rows) |row| {
         if (row.absent_kind == .empty_list) continue;
-        const C = row.c_type;
-        const absent = absentValue(C, row.absent_kind);
-        var zeroed: C = std.mem.zeroes(C);
+        const c_type = row.c_type;
+        const absent = absentValue(c_type, row.absent_kind);
+        var zeroed: c_type = std.mem.zeroes(c_type);
         zeroed.has_value = false;
         try testing.expectEqualSlices(u8, std.mem.asBytes(&absent), std.mem.asBytes(&zeroed));
     }
@@ -620,7 +620,7 @@ test "the twenty-five byte-pair setters are twenty-five distinct declarations" {
     // The count and the distinctness, which is the part of the record a table
     // can prove about itself. Whether each has an export is a different
     // question, and this module's doc says which files answer it.
-    try testing.expectEqual(@as(u32, 25), pairCount);
+    try testing.expectEqual(@as(u32, 25), pair_count);
     for (pair_rows, 0..) |row, index| {
         try testing.expect(row.header_line > 0);
         try testing.expect(std.mem.endsWith(u8, row.c_name, "_with_length"));

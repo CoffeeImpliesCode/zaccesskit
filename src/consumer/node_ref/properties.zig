@@ -314,8 +314,8 @@ pub fn scrollYMax(node: NodeRef) ?f64 {
 /// chain repeated a node, and `error.NoSuchNode` means `parent_and_index` names
 /// a node the state does not hold.
 pub fn fetchInheritedProperty(
-    node: NodeRef,
     comptime T: type,
+    node: NodeRef,
     getter: *const fn (data: *const Node) ?T,
 ) QueryError!?T {
     const bound = treeWalkStepBound(node.tree_state.nodes.count());
@@ -386,6 +386,9 @@ const Fixture = struct {
 
     fn deinit(self: *Fixture) void {
         self.state.deinit(self.gpa);
+        // SAFETY: `state.deinit` released every buffer the fixture owned, and
+        // no statement after it reads `self`.
+        self.* = undefined;
     }
 
     /// Puts a clone of `source` at `content`, under `parent` or at the root.
@@ -422,7 +425,7 @@ fn readLevel(data: *const Node) ?usize {
 /// The value `fetchInheritedProperty` finds for the node at `content`, so a test
 /// line stays short enough to read.
 fn inheritedLevel(fixture: *const Fixture, content: u64) QueryError!?usize {
-    return fetchInheritedProperty(nodeAt(fixture, content), usize, readLevel);
+    return fetchInheritedProperty(usize, nodeAt(fixture, content), readLevel);
 }
 
 /// The flag getter that answers `false` for every node, so a flag walk runs the

@@ -247,7 +247,7 @@ export fn accesskit_custom_action_set_description(
     action: CustomActionHandle,
     description: [*:0]const u8,
 ) callconv(.c) void {
-    setDescription(action, allocation.allocator(), marshal.c_string_to_slice(description)) catch {
+    setDescription(allocation.allocator(), action, marshal.c_string_to_slice(description)) catch {
         allocation.failWith(.out_of_memory);
     };
 }
@@ -272,7 +272,7 @@ export fn accesskit_custom_action_set_description_with_length(
     length: usize,
 ) callconv(.c) void {
     const stored = marshal.c_bytes_to_slice(description, length);
-    setDescription(action, allocation.allocator(), stored) catch {
+    setDescription(allocation.allocator(), action, stored) catch {
         allocation.failWith(.out_of_memory);
     };
 }
@@ -382,11 +382,12 @@ pub fn customActionClone(
 /// and nothing is half written, because the replacement is built before the
 /// old buffer is released.
 ///
-/// The receiver comes first because this operates on the action, and `gpa` is
-/// the allocator the action already owns.
+/// `gpa` comes first because this allocates, and `AGENTS.md` gives every
+/// allocating function its allocator as the first parameter. The receiver
+/// follows it because the action is what is being written.
 fn setDescription(
-    action: *CustomAction,
     gpa: std.mem.Allocator,
+    action: *CustomAction,
     stored: []const u8,
 ) CustomAction.InitError!void {
     // `init` allocates from `gpa` and returns only on success, so `stored`
@@ -614,13 +615,13 @@ test "every refused description copy leaves the previous one in place" {
     while (fail_index <= first_success_index) : (fail_index += 1) {
         const action = try customActionCreate(testing.allocator, 1, "");
         defer releaseCustomAction(testing.allocator, action);
-        try setDescription(action, testing.allocator, "first");
+        try setDescription(testing.allocator, action, "first");
 
         var failing: std.testing.FailingAllocator = .init(
             testing.allocator,
             .{ .fail_index = fail_index },
         );
-        const outcome = setDescription(action, failing.allocator(), "second");
+        const outcome = setDescription(failing.allocator(), action, "second");
         if (fail_index == 0) {
             try testing.expectError(error.OutOfMemory, outcome);
             try testing.expectEqualStrings("first", action.description.items);
@@ -639,13 +640,13 @@ test "the setters store at most the bytes before the first 0 byte" {
     const action = try customActionCreate(testing.allocator, 1, "");
     defer releaseCustomAction(testing.allocator, action);
 
-    try setDescription(action, testing.allocator, marshal.c_bytes_to_slice("keep\x00drop", 9));
+    try setDescription(testing.allocator, action, marshal.c_bytes_to_slice("keep\x00drop", 9));
     try testing.expectEqualStrings("keep", action.description.items);
 
-    try setDescription(action, testing.allocator, marshal.c_bytes_to_slice("keep", 4));
+    try setDescription(testing.allocator, action, marshal.c_bytes_to_slice("keep", 4));
     try testing.expectEqualStrings("keep", action.description.items);
 
-    try setDescription(action, testing.allocator, "");
+    try setDescription(testing.allocator, action, "");
     try testing.expectEqualStrings("", action.description.items);
 }
 

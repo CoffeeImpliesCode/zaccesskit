@@ -350,8 +350,13 @@ pub const EventGenerator = struct {
         const live = try consumer.node_ref.set_state.live(node);
         if (live != .off) {
             if (try consumer.node_ref.strings.label(self.gpa, node)) |label_list| {
-                defer self.gpa.free(label_list.items);
-                try self.pushAnnouncement(label_list.items, live);
+                // `strings.label` answers a list whose capacity exceeds its
+                // length, so the release must go through `deinit`. A
+                // `gpa.free` of `items` would hand the allocator a slice
+                // shorter than the block it took.
+                var list = label_list;
+                defer list.deinit(self.gpa);
+                try self.pushAnnouncement(list.items, live);
             }
         }
     }
@@ -407,17 +412,22 @@ pub const EventGenerator = struct {
             try self.pushGeneric(node_id, notificationFor(.selected_text_changed) orelse return);
         }
         if (try strings.label(self.gpa, new)) |new_label| {
-            defer self.gpa.free(new_label.items);
+            // Both releases go through `deinit`. `strings.label` answers a list
+            // whose capacity exceeds its length, so a `gpa.free` of `items`
+            // hands the allocator a slice shorter than the block it took.
+            var new_list = new_label;
+            defer new_list.deinit(self.gpa);
             const live = try set_state.live(new);
             const old_live = try set_state.live(old);
             const old_label = try strings.label(self.gpa, old);
-            defer if (old_label) |list| self.gpa.free(list.items);
-            const changed = if (old_label) |list|
-                !std.mem.eql(u8, list.items, new_label.items)
+            var old_list = old_label;
+            defer if (old_list) |*list| list.deinit(self.gpa);
+            const changed = if (old_list) |list|
+                !std.mem.eql(u8, list.items, new_list.items)
             else
                 true;
             if (live != .off and (changed or live != old_live or old_filtered != .include)) {
-                try self.pushAnnouncement(new_label.items, live);
+                try self.pushAnnouncement(new_list.items, live);
             }
         }
         if (properties.isSelected(new) != properties.isSelected(old) or
@@ -553,7 +563,11 @@ fn textSelectionDiffers(a: NodeRef, b: NodeRef) !bool {
     if (left == null and right == null) return false;
     const left_range = left orelse return true;
     const right_range = right orelse return true;
-    return !std.meta.eql(left_range, right_range);
+    // `rawTextSelection` answers a pointer into each node's own property
+    // store, so comparing the pointers compares addresses. Two nodes holding
+    // the same selection sit at different addresses, and the comparison has to
+    // read the two selections instead.
+    return !left_range.eql(right_range.*);
 }
 
 /// The filter the generator's walks read, upstream
@@ -689,4 +703,484 @@ test "the four handler slots are the ones the tree calls" {
     try testing.expect(handler.node_removed != null);
     const fields = @typeInfo(consumer.tree.TreeChangeHandler).@"struct".fields;
     try testing.expectEqual(@as(usize, 4), fields.len - 1);
+}
+
+/// One node of the fixture tree the arms tests below drive.
+const ArmSpec = struct {
+    /// The identifier inside the root tree.
+    local: u64,
+    /// The role the node declares.
+    role: schema.Role,
+    /// The children of the node, in order.
+    children: []const u64 = &.{},
+    /// The raw value the node carries, or none.
+    value: ?[]const u8 = null,
+    /// The label the node carries, or none.
+    label: ?[]const u8 = null,
+    /// The live setting the node carries, or none.
+    live: ?schema.Live = null,
+    /// The selection state the node carries, or none.
+    is_selected: ?bool = null,
+    /// The text selection the node carries, or none.
+    text_selection: ?schema.TextSelection = null,
+};
+
+/// Builds the tree `specs` describes.
+///
+/// `Tree.init` takes the update by value and releases it on every path, so the
+/// binding is spent and there is no `deinit` to pair with this call.
+fn buildArmTree(gpa: Allocator, root_local: u64, specs: []const ArmSpec) !consumer.tree.Tree {
+    var update: schema.TreeUpdate = .{};
+    for (specs) |spec| {
+        var node = schema.Node.init(gpa, spec.role);
+        if (spec.value) |text| try schema.strings.setValue(&node.properties, text);
+        if (spec.label) |text| try schema.strings.setLabel(&node.properties, text);
+        if (spec.live) |value| try schema.enums.setLive(&node.properties, value);
+        if (spec.is_selected) |value| try schema.enums.setSelected(&node.properties, value);
+        if (spec.text_selection) |value| {
+            try schema.option.setTextSelection(&node.properties, value);
+        }
+        var child_ids: ArrayList(schema.NodeId) = .empty;
+        defer child_ids.deinit(gpa);
+        for (spec.children) |child| {
+            try child_ids.append(gpa, .{ .value = child });
+        }
+        try schema.ids_props.setChildren(&node.properties, child_ids.items);
+        try update.pushNode(gpa, .{ .value = spec.local }, node);
+    }
+    update.tree = schema.TreeInfo.init(.{ .value = root_local });
+    update.focus = .{ .value = root_local };
+    return consumer.tree.Tree.init(gpa, update, true) catch |err| switch (err) {
+        error.OutOfMemory => error.OutOfMemory,
+        else => error.TreeRejectedTheUpdate,
+    };
+}
+
+/// The node `local` in `tree`, or an error rather than a trap.
+fn armNode(tree: *const consumer.tree.Tree, local: u64) !NodeRef {
+    const state = tree.stateOf();
+    const id = state.rootId().withSameTree(.{ .value = local });
+    return state.nodeById(id) orelse error.MissingNode;
+}
+
+/// A selection over one byte, which is enough to tell one from another.
+fn armSelection(offset: usize) schema.TextSelection {
+    const position: schema.TextPosition = .{
+        .node_id = .{ .value = 0 },
+        .character_index = offset,
+    };
+    return .{ .anchor = position, .focus = position };
+}
+
+test "two absent raw values are equal and one absent value is a change" {
+    // `rawValueEquals` at `:515` has two arms that only an absent value reaches:
+    // the left `orelse` asks whether the right is also absent, and the right
+    // `orelse` answers `false`. A node that carries no value is ordinary, so
+    // both halves of the half-absent case need a tree of their own.
+    const gpa = testing.allocator;
+    const specs = [_]ArmSpec{
+        .{ .local = 1, .role = .window, .children = &.{ 2, 3, 4 } },
+        .{ .local = 2, .role = .label },
+        .{ .local = 3, .role = .label, .value = "same" },
+        .{ .local = 4, .role = .label, .value = "same" },
+    };
+    var tree = try buildArmTree(gpa, 1, &specs);
+    defer tree.deinit();
+
+    const bare = try armNode(&tree, 2);
+    const bare_again = try armNode(&tree, 2);
+    const valued = try armNode(&tree, 3);
+    const valued_again = try armNode(&tree, 4);
+
+    // Both absent: the left `orelse` runs and reads `rawValue(b) == null`.
+    try testing.expect(rawValueEquals(bare, bare_again));
+    // Left absent, right present: the same `orelse` answers `false`.
+    try testing.expect(!rawValueEquals(bare, valued));
+    // Left present, right absent: the second `orelse` at `:516` answers false.
+    try testing.expect(!rawValueEquals(valued, bare));
+    // Both present and equal: the `std.mem.eql` arm.
+    try testing.expect(rawValueEquals(valued, valued_again));
+    // `optionalValueEquals` is the port's own spelling of the same question.
+    try testing.expectEqual(rawValueEquals(bare, valued), optionalValueEquals(bare, valued));
+}
+
+test "two absent texts are equal and one absent text is a change" {
+    // `optionalTextEquals` at `:522-523` carries the same two arms on plain
+    // slices, so this reaches them without a tree. A `null` on one side and a
+    // string on the other is the half-absent case in both directions.
+    try testing.expect(optionalTextEquals(null, null));
+    try testing.expect(!optionalTextEquals(null, "text"));
+    try testing.expect(!optionalTextEquals("text", null));
+    try testing.expect(optionalTextEquals("text", "text"));
+    try testing.expect(!optionalTextEquals("text", "other"));
+}
+
+test "one absent text selection is a change in either direction" {
+    // `textSelectionDiffers` at `:553-555` has three arms after the both-absent
+    // early return: left absent, right absent, and the `std.meta.eql` compare.
+    // Only the two half-absent ones and the compare need a tree.
+    const gpa = testing.allocator;
+    const specs = [_]ArmSpec{
+        .{ .local = 1, .role = .window, .children = &.{ 2, 3, 4, 5 } },
+        .{ .local = 2, .role = .document },
+        .{ .local = 3, .role = .document, .text_selection = armSelection(1) },
+        .{ .local = 4, .role = .document, .text_selection = armSelection(1) },
+        .{ .local = 5, .role = .document, .text_selection = armSelection(2) },
+    };
+    var tree = try buildArmTree(gpa, 1, &specs);
+    defer tree.deinit();
+
+    const bare = try armNode(&tree, 2);
+    const selected = try armNode(&tree, 3);
+    const same = try armNode(&tree, 4);
+    const other = try armNode(&tree, 5);
+
+    // Both absent: the early return at `:553` answers false.
+    try testing.expect(!try textSelectionDiffers(bare, bare));
+    // Left absent, right present: the `orelse` at `:554` answers true.
+    try testing.expect(try textSelectionDiffers(bare, selected));
+    // Left present, right absent: the `orelse` at `:555` answers true.
+    try testing.expect(try textSelectionDiffers(selected, bare));
+    // Both present and the same: `std.meta.eql` answers true, so it differs is
+    // false.
+    try testing.expect(!try textSelectionDiffers(selected, same));
+    // Both present and different: the same compare answers differs.
+    try testing.expect(try textSelectionDiffers(selected, other));
+}
+
+test "a node that is not a text run queues no text change" {
+    // `insertTextChangeIfNeeded` at `:288` returns on the role test before it
+    // walks a parent, so a plain node contributes nothing and the generator is
+    // left empty. This is the arm a run's parent walk never reaches.
+    const gpa = testing.allocator;
+    const specs = [_]ArmSpec{
+        .{ .local = 1, .role = .window, .children = &.{2} },
+        .{ .local = 2, .role = .label, .value = "text" },
+    };
+    var tree = try buildArmTree(gpa, 1, &specs);
+    defer tree.deinit();
+
+    var generator = EventGenerator.init(gpa);
+    defer generator.deinit();
+    const label = try armNode(&tree, 2);
+    try generator.insertTextChangeIfNeeded(label);
+    try testing.expectEqual(@as(usize, 0), generator.count());
+    try testing.expectEqual(@as(usize, 0), generator.text_changed.count());
+}
+
+test "a text run with no parent queues no text change" {
+    // `insertTextChangeIfNeeded` at `:289` answers `null` from
+    // `filteredParent` when the run is the root, and the `if` body does not
+    // run. A run whose parent exists is the other arm, and both are here
+    // because a run with no parent is the half-absent case.
+    const gpa = testing.allocator;
+    const specs = [_]ArmSpec{
+        .{ .local = 1, .role = .text_run },
+    };
+    var tree = try buildArmTree(gpa, 1, &specs);
+    defer tree.deinit();
+
+    var generator = EventGenerator.init(gpa);
+    defer generator.deinit();
+    const root_run = try armNode(&tree, 1);
+    try generator.insertTextChangeIfNeeded(root_run);
+    try testing.expectEqual(@as(usize, 0), generator.count());
+    try testing.expectEqual(@as(usize, 0), generator.text_changed.count());
+}
+
+test "a selected item names the container above it" {
+    // `enqueueSelectedRowsChangeIfNeeded` at `:308` walks up for the nearest
+    // ancestor that both passes the filter and is a container with selectable
+    // children. `list_box` is on that role list, at
+    // `consumer/node_ref/containers.zig:125`, and the window above it is not,
+    // so the walk answers the `list_box` and not the root.
+    const gpa = testing.allocator;
+    const specs = [_]ArmSpec{
+        .{ .local = 1, .role = .window, .children = &.{2} },
+        .{ .local = 2, .role = .list_box, .children = &.{3} },
+        .{ .local = 3, .role = .list_item, .is_selected = true },
+    };
+    var tree = try buildArmTree(gpa, 1, &specs);
+    defer tree.deinit();
+
+    var generator = EventGenerator.init(gpa);
+    defer generator.deinit();
+    const item = try armNode(&tree, 3);
+    try generator.enqueueSelectedRowsChangeIfNeeded(item);
+    try testing.expectEqual(@as(usize, 1), generator.count());
+    const only = generator.events.items[0];
+    try testing.expectEqualStrings(
+        notificationFor(.selected_rows_changed) orelse return error.NoSuchNotification,
+        only.generic.notification,
+    );
+    // The container is named, not the item.
+    try testing.expect(std.meta.eql((try armNode(&tree, 2)).id(), only.generic.node_id));
+}
+
+test "a selected item with no selection container queues nothing" {
+    // The reject case for the walk above. The only ancestor is the window,
+    // which is not on the container list, so `selectionContainer` answers
+    // `null` and the `if` body at `:309` does not run. This is the
+    // half-absent container against the present container above.
+    const gpa = testing.allocator;
+    const specs = [_]ArmSpec{
+        .{ .local = 1, .role = .window, .children = &.{2} },
+        .{ .local = 2, .role = .list_item, .is_selected = true },
+    };
+    var tree = try buildArmTree(gpa, 1, &specs);
+    defer tree.deinit();
+
+    var generator = EventGenerator.init(gpa);
+    defer generator.deinit();
+    const item = try armNode(&tree, 2);
+    try testing.expectEqual(
+        @as(?NodeRef, null),
+        try consumer.node_ref.containers.selectionContainer(item, parent_filter),
+    );
+    try generator.enqueueSelectedRowsChangeIfNeeded(item);
+    try testing.expectEqual(@as(usize, 0), generator.count());
+}
+
+test "an item that is not selected queues no selected-rows change" {
+    // `slotNodeAdded` at `:347` tests `isSelected` for equality with `true`,
+    // so a node that carries no selection state takes the arm that queues
+    // nothing even though a container is above it.
+    const gpa = testing.allocator;
+    const specs = [_]ArmSpec{
+        .{ .local = 1, .role = .window, .children = &.{2} },
+        .{ .local = 2, .role = .list_box, .children = &.{3} },
+        .{ .local = 3, .role = .list_item },
+    };
+    var tree = try buildArmTree(gpa, 1, &specs);
+    defer tree.deinit();
+
+    var generator = EventGenerator.init(gpa);
+    defer generator.deinit();
+    const item = try armNode(&tree, 3);
+    try testing.expectEqual(
+        @as(?bool, null),
+        consumer.node_ref.properties.isSelected(item),
+    );
+    try generator.slotNodeAdded(item);
+    try testing.expectEqual(@as(usize, 0), generator.count());
+}
+
+test "a node the filter drops as a node and not a subtree loses one node" {
+    // `slotNodeUpdated` at `:380-384` has two arms on `new_filtered`: the
+    // `exclude_subtree` arm takes the subtree, and every other non-include
+    // answer destroys this node alone. `generic_container` is the role the
+    // common filter answers `exclude_node` for, at
+    // `consumer/filter.zig:172`, so this drives the second arm.
+    const gpa = testing.allocator;
+    const specs = [_]ArmSpec{
+        .{ .local = 1, .role = .window, .children = &.{2} },
+        .{ .local = 2, .role = .generic_container },
+    };
+    var tree = try buildArmTree(gpa, 1, &specs);
+    defer tree.deinit();
+
+    var generator = EventGenerator.init(gpa);
+    defer generator.deinit();
+    const container = try armNode(&tree, 2);
+    try testing.expectEqual(
+        consumer.filter.FilterResult.exclude_node,
+        try consumer.filter.commonFilter(container),
+    );
+
+    try generator.slotNodeUpdated(container, container);
+    try testing.expectEqual(@as(usize, 1), generator.count());
+    const only = generator.events.items[0];
+    try testing.expectEqual(@as(FullNodeId, container.id()), only.node_destroyed);
+}
+
+test "a selected node that drops out of the filter queues its container change" {
+    // `slotNodeUpdated` at `:377` runs only when the **new** node is not
+    // `include` while the **old** one was and was selected. The filter is a
+    // pure function of the node, so one `NodeRef` cannot carry both answers:
+    // the arm needs two nodes whose filter answers differ, which is why this
+    // hands the slot an included selected item and an excluded container.
+    const gpa = testing.allocator;
+    const specs = [_]ArmSpec{
+        .{ .local = 1, .role = .window, .children = &.{2} },
+        .{ .local = 2, .role = .list_box, .children = &.{3} },
+        .{ .local = 3, .role = .list_item, .is_selected = true },
+    };
+    var tree = try buildArmTree(gpa, 1, &specs);
+    defer tree.deinit();
+
+    var generator = EventGenerator.init(gpa);
+    defer generator.deinit();
+    const item = try armNode(&tree, 3);
+    // A `generic_container` is what the common filter drops, so it stands in
+    var dropped = try buildArmTree(gpa, 1, &[_]ArmSpec{
+        .{ .local = 1, .role = .window, .children = &.{2} },
+        .{ .local = 2, .role = .generic_container },
+    });
+    defer dropped.deinit();
+    const leaving = try armNode(&dropped, 2);
+
+    try testing.expectEqual(true, consumer.node_ref.properties.isSelected(item));
+    try testing.expectEqual(
+        consumer.filter.FilterResult.include,
+        try consumer.filter.commonFilter(item),
+    );
+    try testing.expectEqual(
+        consumer.filter.FilterResult.exclude_node,
+        try consumer.filter.commonFilter(leaving),
+    );
+
+    // The old node is `include` and selected, so the guard at `:377` holds and
+    // the container change is queued before the destruction at `:383`.
+    try generator.slotNodeUpdated(item, leaving);
+    try testing.expectEqual(@as(usize, 2), generator.count());
+    try testing.expectEqual(
+        notificationFor(.selected_rows_changed) orelse return error.NoSuchNotification,
+        generator.events.items[0].generic.notification,
+    );
+    try testing.expectEqual(
+        @as(FullNodeId, (try armNode(&tree, 2)).id()),
+        generator.events.items[0].generic.node_id,
+    );
+    try testing.expectEqual(
+        @as(FullNodeId, leaving.id()),
+        generator.events.items[1].node_destroyed,
+    );
+}
+
+test "a node already outside the filter queues no container change" {
+    // The reject case for the guard above. The old node is not `include`, so
+    // `:377` does not run and the only event is the destruction.
+    const gpa = testing.allocator;
+    const specs = [_]ArmSpec{
+        .{ .local = 1, .role = .window, .children = &.{2} },
+        .{ .local = 2, .role = .generic_container, .is_selected = true },
+    };
+    var tree = try buildArmTree(gpa, 1, &specs);
+    defer tree.deinit();
+
+    var generator = EventGenerator.init(gpa);
+    defer generator.deinit();
+    const leaving = try armNode(&tree, 2);
+    try testing.expectEqual(
+        consumer.filter.FilterResult.exclude_node,
+        try consumer.filter.commonFilter(leaving),
+    );
+
+    try generator.slotNodeUpdated(leaving, leaving);
+    try testing.expectEqual(@as(usize, 1), generator.count());
+    try testing.expectEqual(
+        @as(FullNodeId, leaving.id()),
+        generator.events.items[0].node_destroyed,
+    );
+}
+
+test "a node whose live region is off announces nothing" {
+    // `slotNodeAdded` at `:351` guards the announcement on `live != .off`, and
+    // `priorityFor` maps `off` to the medium arm. A node that carries no live
+    // setting at all is the half-absent case for that guard.
+    const gpa = testing.allocator;
+    const specs = [_]ArmSpec{
+        .{ .local = 1, .role = .window, .children = &.{ 2, 3 } },
+        .{ .local = 2, .role = .label, .label = "plain" },
+        .{ .local = 3, .role = .label, .label = "loud", .live = .assertive },
+    };
+    var tree = try buildArmTree(gpa, 1, &specs);
+    defer tree.deinit();
+
+    var generator = EventGenerator.init(gpa);
+    defer generator.deinit();
+    const plain = try armNode(&tree, 2);
+    try generator.slotNodeAdded(plain);
+    try testing.expectEqual(@as(usize, 0), generator.count());
+
+    // The same node with a live setting announces, which is the other arm.
+    var loud_generator = EventGenerator.init(gpa);
+    defer loud_generator.deinit();
+    try loud_generator.slotNodeAdded(try armNode(&tree, 3));
+    try testing.expectEqual(@as(usize, 1), loud_generator.count());
+    try testing.expectEqualStrings("loud", loud_generator.events.items[0].announcement.text);
+}
+
+test "a node with no label announces nothing" {
+    // `slotNodeAdded` at `:352` reads the label and returns on `null`, so the
+    // `pushAnnouncement` line is unreachable for a node that carries no label
+    // even when it is a live region. This is the `null` arm of that `if`.
+    const gpa = testing.allocator;
+    const specs = [_]ArmSpec{
+        .{ .local = 1, .role = .window, .children = &.{2} },
+        .{ .local = 2, .role = .label, .live = .assertive },
+    };
+    var tree = try buildArmTree(gpa, 1, &specs);
+    defer tree.deinit();
+
+    var generator = EventGenerator.init(gpa);
+    defer generator.deinit();
+    try generator.slotNodeAdded(try armNode(&tree, 2));
+    try testing.expectEqual(@as(usize, 0), generator.count());
+}
+
+test "the focus slot answers nothing when the focus is gone" {
+    // `slotFocusMoved` at `:438` returns on `new == null`, and a `null` new
+    // node is the half-absent case against a present old node. Both are driven
+    // here because the old node is discarded at `:437` and cannot be the
+    // reason nothing is queued.
+    const gpa = testing.allocator;
+    const specs = [_]ArmSpec{
+        .{ .local = 1, .role = .window },
+    };
+    var tree = try buildArmTree(gpa, 1, &specs);
+    defer tree.deinit();
+
+    var generator = EventGenerator.init(gpa);
+    defer generator.deinit();
+    const root_node = try armNode(&tree, 1);
+    try generator.slotFocusMoved(root_node, null);
+    try testing.expectEqual(@as(usize, 0), generator.count());
+
+    // The present arm, for contrast.
+    try generator.slotFocusMoved(null, root_node);
+    try testing.expectEqual(@as(usize, 1), generator.count());
+    try testing.expectEqualStrings(
+        notificationFor(.focus_moved) orelse return error.NoSuchNotification,
+        generator.events.items[0].generic.notification,
+    );
+}
+
+test "the focus slot answers nothing for a node the filter drops" {
+    // `slotFocusMoved` at `:439` returns when the filter does not include the
+    // node that gained the focus, so a present node that is dropped produces
+    // no event even though the focus did move.
+    const gpa = testing.allocator;
+    const specs = [_]ArmSpec{
+        .{ .local = 1, .role = .window, .children = &.{2} },
+        .{ .local = 2, .role = .generic_container },
+    };
+    var tree = try buildArmTree(gpa, 1, &specs);
+    defer tree.deinit();
+
+    var generator = EventGenerator.init(gpa);
+    defer generator.deinit();
+    try generator.slotFocusMoved(null, try armNode(&tree, 2));
+    try testing.expectEqual(@as(usize, 0), generator.count());
+}
+
+test "the removal slot queues a destruction for a node that was never selected" {
+    // `slotNodeRemoved` at `:448` guards the container change on
+    // `isSelected == true`, and the destruction at `:451` runs either way.
+    // A node that carries no selection state takes the guard's false arm and
+    // still loses its node.
+    const gpa = testing.allocator;
+    const specs = [_]ArmSpec{
+        .{ .local = 1, .role = .window, .children = &.{2} },
+        .{ .local = 2, .role = .label },
+    };
+    var tree = try buildArmTree(gpa, 1, &specs);
+    defer tree.deinit();
+
+    var generator = EventGenerator.init(gpa);
+    defer generator.deinit();
+    const label = try armNode(&tree, 2);
+    try generator.slotNodeRemoved(label);
+    try testing.expectEqual(@as(usize, 1), generator.count());
+    try testing.expectEqual(@as(FullNodeId, label.id()), generator.events.items[0].node_destroyed);
 }

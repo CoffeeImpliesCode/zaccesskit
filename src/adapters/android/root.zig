@@ -77,16 +77,18 @@ const boundary = @import("../../capi/boundary.zig");
 const schema = @import("../../schema/root.zig");
 
 const adapter_module = @import("adapter.zig");
-const classes = @import("classes.zig");
-const constants = @import("constants.zig");
+const classes_module = @import("classes.zig");
+const constants_module = @import("constants.zig");
 const injecting_module = @import("injecting.zig");
-const jni = @import("jni_table.zig");
+const java_call_module = @import("java_call.zig");
+const jni_table_module = @import("jni_table.zig");
 const jni_census = @import("jni.zig");
-const methods = @import("methods.zig");
-const node = @import("node.zig");
-const platform_action = @import("platform_action.zig");
+const methods_module = @import("methods.zig");
+const node_module = @import("node.zig");
+const node_id_map_module = @import("node_id_map.zig");
+const platform_action_module = @import("platform_action.zig");
 const queued_events_module = @import("queued_events.zig");
-const values = @import("values.zig");
+const values_module = @import("values.zig");
 
 const ActionHandler = boundary.ActionHandler;
 const ActivationHandler = boundary.ActivationHandler;
@@ -105,19 +107,19 @@ const testing = std.testing;
 
 /// `JNIEnv *`, `jni.h:197` in C mode: a pointer to the function table, so an
 /// opaque pointer is the whole contract.
-pub const JniEnv = jni.JniEnv;
+pub const JniEnv = jni_table_module.JniEnv;
 
 /// `jobject`, `jni.h:101`: a pointer to an opaque Java object. `jclass`,
 /// `jstring`, `jarray`, `jintArray` and `jobjectArray` are all typedefs of it,
 /// so one type names the whole family.
-pub const JObject = jni.JObject;
+pub const JObject = jni_table_module.JObject;
 
 /// `jint`, `jni_md.h:33`, a C `int` and therefore 32 bits on every target the
 /// port claims for Android.
-pub const JInt = values.JInt;
+pub const JInt = values_module.JInt;
 
 /// `jfloat`, `jni.h:60`, a C `float` and therefore 32 bits.
-pub const JFloat = jni.JFloat;
+pub const JFloat = jni_table_module.JFloat;
 
 // --- the four handle types --------------------------------------------------
 
@@ -127,7 +129,7 @@ pub const JFloat = jni.JFloat;
 /// `accesskit_android_platform_action_free`, exactly once. **The `arguments`
 /// object belongs to the Java call and is not retained**, so nothing in the
 /// handle points into Java.
-pub const AndroidPlatformAction = platform_action.AndroidPlatformAction;
+pub const AndroidPlatformAction = platform_action_module.AndroidPlatformAction;
 
 /// The events one adapter call produced, boxed so a C handle can name them.
 ///
@@ -188,7 +190,7 @@ pub fn androidPlatformActionFromJava(
     action: JInt,
     arguments: JObject,
 ) ?*AndroidPlatformAction {
-    return platform_action.fromJava(env, action, arguments);
+    return platform_action_module.fromJava(env, action, arguments);
 }
 
 /// Releases a platform action and everything it owns, exactly once.
@@ -201,7 +203,7 @@ pub fn androidPlatformActionFromJava(
 pub fn androidPlatformActionFree(
     platform_action_handle: *AndroidPlatformAction,
 ) void {
-    platform_action.free(platform_action_handle);
+    platform_action_module.free(platform_action_handle);
 }
 
 /// Raises the queued events on the platform and releases the handle.
@@ -219,7 +221,7 @@ pub fn androidQueuedEventsRaise(
     env: JniEnv,
     host: JObject,
 ) void {
-    _ = events.raise(jni.realTable(env), host);
+    _ = events.raise(jni_table_module.realTable(env), host);
     events.deinit();
     allocation.release(@ptrCast(@alignCast(events)));
 }
@@ -305,7 +307,7 @@ pub fn androidAdapterCreateAccessibilityNodeInfo(
     const answer = adapter.createNodeInfo(
         activation_handler,
         activation_handler_userdata,
-        jni.realTable(env),
+        jni_table_module.realTable(env),
         host,
         virtual_view_id,
     ) catch |err| {
@@ -339,7 +341,7 @@ pub fn androidAdapterFindFocus(
     const answer = adapter.findFocus(
         activation_handler,
         activation_handler_userdata,
-        jni.realTable(env),
+        jni_table_module.realTable(env),
         host,
     ) catch |err| {
         adapter.last_error = err;
@@ -437,7 +439,7 @@ pub fn androidInjectingAdapterNew(
     const gpa = allocation.allocator();
     return AndroidInjectingAdapter.create(
         gpa,
-        jni.realTable(env),
+        jni_table_module.realTable(env),
         host,
         activation_handler,
         activation_handler_userdata,
@@ -460,7 +462,7 @@ pub fn androidInjectingAdapterNew(
 /// takes the host's delegate back through the environment the constructor
 /// stored, and a `JNIEnv *` is valid only on its own thread.
 pub fn androidInjectingAdapterFree(adapter: *AndroidInjectingAdapter) void {
-    adapter.free(jni.realTable(adapter.env));
+    adapter.free(jni_table_module.realTable(adapter.env));
 }
 
 /// Asks `update_factory` for a tree and hands it to the adapter.
@@ -538,46 +540,50 @@ pub const entry_point_names = [entry_point_count][:0]const u8{
 /// Every module of the boundary, re-exported so a caller reaches one namespace.
 pub const modules = struct {
     /// The 20 Java class descriptors.
-    pub const classes = @import("classes.zig");
+    pub const classes = classes_module;
     /// The 43 Android SDK constant names.
-    pub const constants = @import("constants.zig");
+    pub const constants = constants_module;
     /// The `JNIEnv` and `JavaVM` entry points, handle types and scalars.
-    pub const jni = @import("jni.zig");
+    pub const jni = jni_census;
     /// The 68 Java method names and the 27 lookups.
-    pub const methods = @import("methods.zig");
+    pub const methods = methods_module;
     /// The 24 injectable JNI entry points.
-    pub const jni_table = @import("jni_table.zig");
+    pub const jni_table = jni_table_module;
     /// The checked lookup and call helpers.
-    pub const java_call = @import("java_call.zig");
+    pub const java_call = java_call_module;
     /// The two-way virtual id map.
-    pub const node_id_map = @import("node_id_map.zig");
+    pub const node_id_map = node_id_map_module;
     /// The node fill.
-    pub const node = @import("node.zig");
+    pub const node = node_module;
     /// The 38 integers behind the constant names.
-    pub const values = @import("values.zig");
+    pub const values = values_module;
     /// The decoded Java action.
-    pub const platform_action = @import("platform_action.zig");
+    pub const platform_action = platform_action_module;
     /// The event queue and its raise.
-    pub const queued_events = @import("queued_events.zig");
+    pub const queued_events = queued_events_module;
     /// The plain adapter.
-    pub const adapter = @import("adapter.zig");
+    pub const adapter = adapter_module;
     /// The adapter that installs itself.
-    pub const injecting = @import("injecting.zig");
+    pub const injecting = injecting_module;
 };
 
 comptime {
     // Map section 1.4.5 totals.
-    if (constants.constant_count != 43) @compileError("the map gives 43 integer constants");
-    if (methods.method_name_count != 68) @compileError("the map gives 68 method names");
-    if (classes.descriptor_count != 20) @compileError("the map's table lists 20 descriptors");
+    if (constants_module.constant_count != 43) {
+        @compileError("the map gives 43 integer constants");
+    }
+    if (methods_module.method_name_count != 68) @compileError("the map gives 68 method names");
+    if (classes_module.descriptor_count != 20) {
+        @compileError("the map's table lists 20 descriptors");
+    }
     if (jni_census.jni_env_method_count != 13) {
         @compileError("the map gives 13 JNIEnv entry points");
     }
     if (jni_census.handle_type_count + jni_census.scalar_type_count != 10) {
         @compileError("the map gives 10 handle and scalar types");
     }
-    if (methods.method_name_count - methods.pinned_signature_count !=
-        methods.unpinned_name_count)
+    if (methods_module.method_name_count - methods_module.pinned_signature_count !=
+        methods_module.unpinned_name_count)
     {
         @compileError("the unpinned count must be 68 minus 22");
     }
@@ -594,7 +600,7 @@ comptime {
     // Every handle type has exactly one declaration, because `platform.zig`
     // writes four of them in its signatures and a duplicate would be two shapes
     // for one type.
-    if (AndroidPlatformAction != platform_action.AndroidPlatformAction) {
+    if (AndroidPlatformAction != platform_action_module.AndroidPlatformAction) {
         @compileError("the platform action alias must name the declaration");
     }
     if (AndroidQueuedEvents != queued_events_module.AndroidQueuedEvents) {
@@ -612,11 +618,11 @@ comptime {
     // and a module that catches one and misses the other is a module that
     // mishandles a failed lookup, so the two sets are compared here where both
     // are visible.
-    const decode_errors = @typeInfo(platform_action.DecodeError).error_set.?;
-    const fill_errors = @typeInfo(node.FillError).error_set.?;
-    for (decode_errors) |tag| {
+    const DecodeErrors = @typeInfo(platform_action_module.DecodeError).error_set.?;
+    const FillErrors = @typeInfo(node_module.FillError).error_set.?;
+    for (DecodeErrors) |tag| {
         var found = false;
-        for (fill_errors) |other| {
+        for (FillErrors) |other| {
             if (std.mem.eql(u8, tag.name, other.name)) found = true;
         }
         if (!found) {
@@ -712,7 +718,7 @@ const ActiveAdapter = struct {
     /// request then builds is `null` here, because there is no VM behind the
     /// inert environment, and that is the honest answer.
     fn init(gpa: Allocator) !ActiveAdapter {
-        const adapter = (try AndroidAdapter.create(gpa)).?;
+        const adapter = try AndroidAdapter.create(gpa) orelse return error.NoAdapterBuilt;
         var probe: Probe = .{ .gpa = gpa, .build_root = true };
         _ = androidAdapterCreateAccessibilityNodeInfo(
             adapter,
@@ -720,7 +726,7 @@ const ActiveAdapter = struct {
             &probe,
             null,
             null,
-            values.HOST_VIEW_ID,
+            values_module.HOST_VIEW_ID,
         );
         if (!adapter.isActive()) return error.AdapterDidNotActivate;
         return .{ .adapter = adapter, .probe = probe };
@@ -728,6 +734,10 @@ const ActiveAdapter = struct {
 
     fn deinit(self: *ActiveAdapter) void {
         androidAdapterFree(self.adapter);
+        // SAFETY: the line above released every resource this fixture owns, and
+        // the reset is what a stale read sees. The allocator owns no memory and
+        // the probe owns none either, so neither has anything to invalidate.
+        self.* = undefined;
     }
 };
 
@@ -748,24 +758,27 @@ test "every module of the boundary is reachable" {
 }
 
 test "the census holds the figures the map measured" {
-    try testing.expectEqual(@as(usize, 43), constants.constant_count);
-    try testing.expectEqual(@as(usize, 68), methods.method_name_count);
-    try testing.expectEqual(@as(usize, 20), classes.descriptor_count);
-    try testing.expectEqual(@as(usize, 19), classes.map_descriptor_count);
+    try testing.expectEqual(@as(usize, 43), constants_module.constant_count);
+    try testing.expectEqual(@as(usize, 68), methods_module.method_name_count);
+    try testing.expectEqual(@as(usize, 20), classes_module.descriptor_count);
+    try testing.expectEqual(@as(usize, 19), classes_module.map_descriptor_count);
     try testing.expectEqual(@as(usize, 13), jni_census.jni_env_method_count);
     try testing.expectEqual(@as(usize, 5), registeredNativeCount());
 }
 
 test "22 of the 68 method names have a lookup row and 46 do not" {
-    // The walk is over the 68 rows of `methods.method_names`, so the bound is
-    // `methods.method_name_count`.
+    // The walk is over the 68 rows of `methods_module.method_names`, so the bound
+    // is `methods_module.method_name_count`.
     var covered: usize = 0;
-    for (methods.method_names) |name| {
-        if (methods.findByName(name) != null) covered += 1;
+    for (methods_module.method_names) |name| {
+        if (methods_module.findByName(name) != null) covered += 1;
     }
-    try testing.expectEqual(methods.pinned_name_count, covered);
+    try testing.expectEqual(methods_module.pinned_name_count, covered);
     try testing.expectEqual(@as(usize, 22), covered);
-    try testing.expectEqual(methods.unpinned_name_count, methods.method_name_count - covered);
+    try testing.expectEqual(
+        methods_module.unpinned_name_count,
+        methods_module.method_name_count - covered,
+    );
 }
 
 test "the thirteen C symbols are the ones the header declares" {
@@ -807,10 +820,10 @@ test "the four JNI types are the ones platform.zig names" {
     // `src/capi/platform.zig:154-165` declares these four for the same purpose.
     // They are the same types `jni_table.zig` declares, and that is the point of
     // the assertion: a second declaration is a second thing to keep in step.
-    try testing.expectEqual(jni.JniEnv, JniEnv);
-    try testing.expectEqual(jni.JObject, JObject);
-    try testing.expectEqual(jni.JInt, JInt);
-    try testing.expectEqual(jni.JFloat, JFloat);
+    try testing.expectEqual(jni_table_module.JniEnv, JniEnv);
+    try testing.expectEqual(jni_table_module.JObject, JObject);
+    try testing.expectEqual(jni_table_module.JInt, JInt);
+    try testing.expectEqual(jni_table_module.JFloat, JFloat);
 }
 
 test "a new adapter is inactive and its id map is empty" {
@@ -885,7 +898,7 @@ test "an action on an inactive adapter answers null and raises nothing" {
     const adapter = androidAdapterNew() orelse return error.NoAdapterBuilt;
     defer androidAdapterFree(adapter);
 
-    const action = androidPlatformActionFromJava(null, values.ACTION_CLICK, null) orelse
+    const action = androidPlatformActionFromJava(null, values_module.ACTION_CLICK, null) orelse
         return error.NoActionBuilt;
     defer androidPlatformActionFree(action);
 
@@ -902,7 +915,7 @@ test "an action on an active adapter with no such node answers an empty queue" {
     var active = try ActiveAdapter.init(gpa);
     defer active.deinit();
 
-    const action = androidPlatformActionFromJava(null, values.ACTION_CLICK, null) orelse
+    const action = androidPlatformActionFromJava(null, values_module.ACTION_CLICK, null) orelse
         return error.NoActionBuilt;
     defer androidPlatformActionFree(action);
 
@@ -918,19 +931,18 @@ test "an action on an active adapter with no such node answers an empty queue" {
 }
 
 test "an action on the tree root reaches the application" {
-    // The root is what `values.HOST_VIEW_ID` names, so this is the one virtual
-    // id a caller can use before the fill has minted any.
+    // The root is what `values_module.HOST_VIEW_ID` names, so this is the one
+    // virtual id a caller can use before the fill has minted any.
     const gpa = allocation.allocator();
     var active = try ActiveAdapter.init(gpa);
     defer active.deinit();
 
     // The id is minted for the root, and the request that reaches the handler
     // names the same node the tree holds.
-    _ = try active.adapter.idMap().getOrCreateJavaId(
-        active.adapter.treeOf().?.stateOf().root(),
-    );
+    const tree = active.adapter.treeOf() orelse return error.NoTree;
+    _ = try active.adapter.idMap().getOrCreateJavaId(tree.stateOf().root());
 
-    const action = androidPlatformActionFromJava(null, values.ACTION_CLICK, null) orelse
+    const action = androidPlatformActionFromJava(null, values_module.ACTION_CLICK, null) orelse
         return error.NoActionBuilt;
     defer androidPlatformActionFree(action);
 
@@ -938,7 +950,7 @@ test "an action on the tree root reaches the application" {
         active.adapter,
         unusedAction,
         null,
-        values.HOST_VIEW_ID,
+        values_module.HOST_VIEW_ID,
         action,
     ) orelse return error.NoQueueBuilt;
     androidQueuedEventsRaise(events, null, null);
@@ -953,7 +965,7 @@ test "a hover on an inactive adapter answers null" {
         adapter,
         probedActivation,
         null,
-        values.MOTION_ACTION_HOVER_ENTER,
+        values_module.MOTION_ACTION_HOVER_ENTER,
         1,
         2,
     );
@@ -969,7 +981,7 @@ test "a hover on an active adapter answers a releasable handle" {
         active.adapter,
         probedActivation,
         null,
-        values.MOTION_ACTION_HOVER_EXIT,
+        values_module.MOTION_ACTION_HOVER_EXIT,
         1,
         2,
     ) orelse return error.NoQueueBuilt;
@@ -990,7 +1002,7 @@ test "a node info request on an inactive adapter answers null for no tree" {
         &probe,
         null,
         null,
-        values.HOST_VIEW_ID,
+        values_module.HOST_VIEW_ID,
     );
     try testing.expect(info == null);
     try testing.expectEqual(@as(usize, 1), probe.calls);
@@ -1009,7 +1021,7 @@ test "the activation handler is asked once and a null answer is not retried" {
         &probe,
         null,
         null,
-        values.HOST_VIEW_ID,
+        values_module.HOST_VIEW_ID,
     );
     _ = androidAdapterCreateAccessibilityNodeInfo(
         adapter,
@@ -1017,9 +1029,16 @@ test "the activation handler is asked once and a null answer is not retried" {
         &probe,
         null,
         null,
-        values.HOST_VIEW_ID,
+        values_module.HOST_VIEW_ID,
     );
-    _ = androidAdapterFindFocus(adapter, probedActivation, &probe, null, null, values.FOCUS_INPUT);
+    _ = androidAdapterFindFocus(
+        adapter,
+        probedActivation,
+        &probe,
+        null,
+        null,
+        values_module.FOCUS_INPUT,
+    );
     // Upstream calls `request_initial_tree` once per adapter.
     try testing.expectEqual(@as(usize, 1), probe.calls);
 }
@@ -1038,7 +1057,7 @@ test "a find-focus on an active tree answers for the focused node" {
         null,
         null,
         null,
-        values.FOCUS_ACCESSIBILITY,
+        values_module.FOCUS_ACCESSIBILITY,
     );
     try testing.expect(info == null);
     try testing.expect(active.adapter.isActive());
@@ -1046,21 +1065,21 @@ test "a find-focus on an active tree answers for the focused node" {
 
 test "a platform action over an unattached environment answers the simple form" {
     allocation.clearError();
-    const action = androidPlatformActionFromJava(null, values.ACTION_FOCUS, null) orelse
+    const action = androidPlatformActionFromJava(null, values_module.ACTION_FOCUS, null) orelse
         return error.NoActionBuilt;
     defer androidPlatformActionFree(action);
-    try testing.expectEqual(@as(JInt, values.ACTION_FOCUS), action.decoded().simple);
+    try testing.expectEqual(@as(JInt, values_module.ACTION_FOCUS), action.decoded().simple);
     try testing.expectEqual(allocation.Tag.none, allocation.lastError());
 }
 
 test "every failure an adapter call can report is named" {
     // The walk is over the tags of `adapter.Error`, so the error set's own length
     // is the bound. A tag added without a decision behind it is the finding.
-    const errors = @typeInfo(adapter_module.Error).error_set.?;
+    const Errors = @typeInfo(adapter_module.Error).error_set.?;
     var seen_null_update = false;
     var seen_tree_rejected = false;
     var seen_queue_failure = false;
-    for (errors) |tag| {
+    for (Errors) |tag| {
         if (std.mem.eql(u8, tag.name, "NullTreeUpdate")) seen_null_update = true;
         if (std.mem.eql(u8, tag.name, "TreeRejected")) seen_tree_rejected = true;
         if (std.mem.eql(u8, tag.name, "TreeEventQueueFailed")) seen_queue_failure = true;
@@ -1075,16 +1094,16 @@ test "the five injecting natives agree with what methods.zig records" {
     // file the C symbols are declared in.
     try testing.expectEqual(
         injecting_module.registered_native_count,
-        methods.method_id_count - (methods.method_id_count - 5),
+        methods_module.method_id_count - (methods_module.method_id_count - 5),
     );
     try testing.expectEqual(@as(usize, 5), registeredNativeCount());
 }
 
 /// How many of the 27 lookup rows are registered native methods. The walk is
-/// over the 27 rows, so the bound is `methods.method_id_count`.
+/// over the 27 rows, so the bound is `methods_module.method_id_count`.
 fn registeredNativeCount() usize {
     var total: usize = 0;
-    for (methods.method_ids) |row| {
+    for (methods_module.method_ids) |row| {
         if (row.kind == .registered_native) total += 1;
     }
     return total;

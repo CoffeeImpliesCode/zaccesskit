@@ -42,7 +42,6 @@
 
 const std = @import("std");
 
-const action_request = @import("../../capi/action_request.zig");
 const allocation = @import("../../capi/allocation.zig");
 const boundary = @import("../../capi/boundary.zig");
 const classes = @import("classes.zig");
@@ -79,7 +78,7 @@ const testing = std.testing;
 /// It is not in the 20 rows of `classes.zig`, because the map's table lists
 /// `find_class` arguments rather than descriptors, and `classes.zig` derives the
 /// descriptor from the name.
-const delegate_class = java_call.Class{
+const delegate_class: java_call.Class = .{
     .descriptor = classes.delegate_class_descriptor,
     .internal_name = "dev/accesskit/android/Delegate",
 };
@@ -89,7 +88,7 @@ const delegate_class = java_call.Class{
 /// `methods.zig` records `newCallback` as `.reached_by_name` with no descriptor,
 /// so the descriptor below is a literal this module supplies. **Unverified**: no
 /// document under `docs/` records it.
-const delegate_new_callback = java_call.Member{
+const delegate_new_callback: java_call.Member = .{
     .class = delegate_class,
     .name = "newCallback",
     .signature = "(J)Ljava/lang/Runnable;",
@@ -103,14 +102,14 @@ const delegate_new_callback = java_call.Member{
 /// its only constructor, so a subclass that overrides it must use
 /// `(Landroid/view/View;)V`. **Unverified**, and it is the one string in this
 /// module that no recorded source backs.
-const delegate_constructor = java_call.Member{
+const delegate_constructor: java_call.Member = .{
     .class = delegate_class,
     .name = "<init>",
     .signature = "(Landroid/view/View;)V",
 };
 
 /// `View.getAccessibilityDelegate()`, `docs/29` row 29.
-const view_get_accessibility_delegate = java_call.Member{
+const view_get_accessibility_delegate: java_call.Member = .{
     .class = .{
         .descriptor = "Landroid/view/View;",
         .internal_name = "android/view/View",
@@ -123,14 +122,14 @@ const view_get_accessibility_delegate = java_call.Member{
 ///
 /// The parameter is the supertype, so passing `null` clears the delegate, which
 /// is how `free` takes the host back.
-const view_set_accessibility_delegate = java_call.Member{
+const view_set_accessibility_delegate: java_call.Member = .{
     .class = view_get_accessibility_delegate.class,
     .name = "setAccessibilityDelegate",
     .signature = "(Landroid/view/View$AccessibilityDelegate;)V",
 };
 
 /// `View.setOnHoverListener(OnHoverListener)`, `docs/29` row 30.
-const view_set_on_hover_listener = java_call.Member{
+const view_set_on_hover_listener: java_call.Member = .{
     .class = view_get_accessibility_delegate.class,
     .name = "setOnHoverListener",
     .signature = "(Landroid/view/View$OnHoverListener;)V",
@@ -138,7 +137,7 @@ const view_set_on_hover_listener = java_call.Member{
 
 /// `View.post(Runnable)`, `docs/29` row 34, which is how work reaches the UI
 /// thread from any other.
-const view_post = java_call.Member{
+const view_post: java_call.Member = .{
     .class = view_get_accessibility_delegate.class,
     .name = "post",
     .signature = "(Ljava/lang/Runnable;)Z",
@@ -451,7 +450,7 @@ pub const AndroidInjectingAdapter = struct {
             host,
             view_set_on_hover_listener,
             &.{.{ .l = null }},
-        ) catch {};
+        ) catch return;
     }
 
     /// Asks `update_factory` for a tree, hands it to the inner adapter and
@@ -1175,7 +1174,7 @@ test "a global reference the VM refuses stops the construction" {
 
 test "an update on an inactive adapter posts nothing" {
     const gpa = testing.allocator;
-    const inner = (try AndroidAdapter.create(gpa)).?;
+    const inner = try AndroidAdapter.create(gpa) orelse return error.NoAdapterBuilt;
     defer inner.free();
 
     var recorder: Recorder = .{};

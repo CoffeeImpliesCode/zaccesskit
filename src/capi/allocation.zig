@@ -656,9 +656,11 @@ test "an error written on this thread reads back through the slot" {
 
 test "the error slot is per thread, not one global" {
     const Seen = struct {
+        const Self = @This();
+
         value: Tag = .none,
 
-        fn body(self: *@This()) void {
+        fn body(self: *Self) void {
             clearError();
             failWith(.out_of_memory);
             self.value = lastError();

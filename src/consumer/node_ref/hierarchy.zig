@@ -29,8 +29,8 @@
 //!   `last_filtered_child` at `node.rs:1032`. `docs/33` section 1.3 puts them in
 //!   `node_ref/containers.zig`, which is layer L6, and a L5 module cannot import
 //!   it. `iterators/children.zig` is L4 and already walks children for
-//!   `filtered_children`, so it holds both as `firstFilteredChild` and
-//!   `lastFilteredChild`, and this file calls them. That leaves `filtered_children`
+//!   `filteredChildren`, so it holds both as `firstFilteredChild` and
+//!   `lastFilteredChild`, and this file calls them. That leaves `filteredChildren`
 //!   and the two filtered-child walks reading one implementation, which is the
 //!   point of the split.
 //! - **The hit test is not here.** `node.rs:344-395` and the `Rect` geometry it
@@ -69,7 +69,6 @@ const children_iterators = @import("../iterators/children.zig");
 const following_iterators = @import("../iterators/following.zig");
 const preceding_iterators = @import("../iterators/preceding.zig");
 
-const Affine = schema.Affine;
 const FullNodeId = tree_index.FullNodeId;
 const NodeRef = node_id.NodeRef;
 const TreeState = tree_state.TreeState;
@@ -179,7 +178,7 @@ fn graftChildId(node: NodeRef) ?FullNodeId {
 pub fn childIds(node: NodeRef) ChildIdsIterator {
     // The graft arm is decided here because `isGraft` lives in
     // `node_ref/properties.zig` at L5 and the cursor lives at L4.
-    return children_iterators.child_ids(
+    return children_iterators.childIds(
         node,
         properties.isGraft(node),
         graftChildId(node),
@@ -205,7 +204,7 @@ pub fn children(node: NodeRef) ChildrenIterator {
 /// is the constructor's: it walks to both ends of the walk before it answers,
 /// and either walk can overrun its bound.
 pub fn filteredChildren(node: NodeRef, filter: FilterFn) QueryError!FilteredChildrenIterator {
-    return children_iterators.filtered_children(node, filter);
+    return children_iterators.filteredChildren(node, filter);
 }
 
 /// The ids of the siblings that follow `node`. Upstream `node.rs:196-200`.
@@ -214,7 +213,7 @@ pub fn filteredChildren(node: NodeRef, filter: FilterFn) QueryError!FilteredChil
 /// either sibling cursor, which is upstream `iterators.rs:92-94`. A node with no
 /// parent yields nothing for the same reason.
 pub fn followingSiblingIds(node: NodeRef) FollowingSiblingIdsIterator {
-    return following_iterators.following_sibling_ids(parent(node), node.id());
+    return following_iterators.followingSiblingIds(parent(node), node.id());
 }
 
 /// The nodes of the siblings that follow `node`. Upstream `node.rs:202-208`,
@@ -235,12 +234,12 @@ pub fn followingFilteredSiblings(
     node: NodeRef,
     filter: FilterFn,
 ) QueryError!FilteredSiblingsIterator {
-    return following_iterators.following_filtered_siblings(node, filter);
+    return following_iterators.followingFilteredSiblings(node, filter);
 }
 
 /// The ids of the siblings that precede `node`. Upstream `node.rs:217-221`.
 pub fn precedingSiblingIds(node: NodeRef) PrecedingSiblingIdsIterator {
-    return preceding_iterators.preceding_sibling_ids(parent(node), node.id());
+    return preceding_iterators.precedingSiblingIds(parent(node), node.id());
 }
 
 /// The nodes of the siblings that precede `node`. Upstream `node.rs:223-229`.
@@ -257,7 +256,7 @@ pub fn precedingFilteredSiblings(
     node: NodeRef,
     filter: FilterFn,
 ) QueryError!FilteredSiblingsIterator {
-    return preceding_iterators.preceding_filtered_siblings(node, filter);
+    return preceding_iterators.precedingFilteredSiblings(node, filter);
 }
 
 /// The node at the bottom of `node`'s first-child chain: the first child, then
@@ -392,6 +391,9 @@ const Fixture = struct {
     /// Releases the map and every node's property buffers.
     fn deinit(self: *Fixture) void {
         self.state.deinit(self.gpa);
+        // SAFETY: `state.deinit` released every buffer the fixture owned, and
+        // no statement after it reads `self`.
+        self.* = undefined;
     }
 
     /// Stores one node and returns its id. `parent_id` is `null` for a root.

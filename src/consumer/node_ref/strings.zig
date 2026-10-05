@@ -236,7 +236,8 @@ pub fn labelledNode(node: NodeRef, index: usize) QueryError!?NodeRef {
     while (seen < index) : (seen += 1) {
         _ = try it.next() orelse return null;
     }
-    return try it.next();
+    const labelled = try it.next();
+    return labelled;
 }
 
 /// The stored label of the `index`-th node `labelledBy` resolves to, or `null`

@@ -648,7 +648,7 @@ fn commonFilterThunk(context: ?*anyopaque, node: NodeRef) QueryError!FilterResul
 /// yields an empty array. That is the one selector among the 54 that returns a
 /// non-optional empty value, and a port that returns `nil` here crashes a client
 /// that indexes the array.
-pub const no_action_names = [_][:0]const u8{};
+pub const no_action_names: [0][:0]const u8 = .{};
 
 /// The one action name the adapter publishes.
 pub const action_names_one = [1][:0]const u8{"AXScrollToVisible"};

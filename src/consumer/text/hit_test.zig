@@ -121,7 +121,7 @@ pub fn characterIndexAtPoint(node: NodeRef, point: Point) QueryError!?usize {
 /// The direction a node lays its text out in, read from the nearest ancestor
 /// that declares one.
 pub fn inheritedTextDirection(node: NodeRef) QueryError!?TextDirection {
-    return properties.fetchInheritedProperty(node, TextDirection, textDirectionOf);
+    return properties.fetchInheritedProperty(TextDirection, node, textDirectionOf);
 }
 
 fn textDirectionOf(data: *const schema.Node) ?TextDirection {
@@ -134,8 +134,8 @@ fn textDirectionOf(data: *const schema.Node) ?TextDirection {
 /// build a tree without the update algorithm. Inserting moves the map, so a
 /// caller must insert every node before taking a handle.
 fn insert(
-    state: *tree_state.TreeState,
     gpa: std.mem.Allocator,
+    state: *tree_state.TreeState,
     value: u64,
     parent: ?u64,
     node: schema.Node,
@@ -178,8 +178,8 @@ test "textRunFilter includes a text run and excludes every other role" {
     var state: tree_state.TreeState = .{};
     defer state.deinit(testing.allocator);
     const gpa = testing.allocator;
-    try insert(&state, gpa, 1, null, try fourCharRun(gpa));
-    try insert(&state, gpa, 2, null, schema.Node.init(gpa, .button));
+    try insert(gpa, &state, 1, null, try fourCharRun(gpa));
+    try insert(gpa, &state, 2, null, schema.Node.init(gpa, .button));
 
     try testing.expectEqual(
         FilterResult.include,
@@ -195,8 +195,8 @@ test "textNodeFilter adds the root that the stateless filter excludes" {
     var state: tree_state.TreeState = .{};
     defer state.deinit(testing.allocator);
     const gpa = testing.allocator;
-    try insert(&state, gpa, 1, null, try fourCharRun(gpa));
-    try insert(&state, gpa, 2, null, schema.Node.init(gpa, .text_input));
+    try insert(gpa, &state, 1, null, try fourCharRun(gpa));
+    try insert(gpa, &state, 2, null, schema.Node.init(gpa, .text_input));
 
     // The root is not a text run, so only the root clause includes it. A text
     // run is never a candidate that could be the root, which is why the
@@ -213,7 +213,7 @@ test "a point on the shared edge of two characters names the one that starts the
     var state: tree_state.TreeState = .{};
     defer state.deinit(testing.allocator);
     const gpa = testing.allocator;
-    try insert(&state, gpa, 1, null, try fourCharRun(gpa));
+    try insert(gpa, &state, 1, null, try fourCharRun(gpa));
     const run_node = handle(&state, 1);
 
     // x = 9 is inside character 0, and x = 10 sits exactly on the edge the
@@ -241,7 +241,7 @@ test "a point on the far edge of the last character is the character count" {
     var state: tree_state.TreeState = .{};
     defer state.deinit(testing.allocator);
     const gpa = testing.allocator;
-    try insert(&state, gpa, 1, null, try fourCharRun(gpa));
+    try insert(gpa, &state, 1, null, try fourCharRun(gpa));
     const run_node = handle(&state, 1);
 
     try testing.expectEqual(
@@ -263,7 +263,7 @@ test "a right-to-left run measures the point from the right edge" {
     var run_node = try fourCharRun(gpa);
     errdefer run_node.deinit();
     try schema.enums.setTextDirection(&run_node.properties, .right_to_left);
-    try insert(&state, gpa, 1, null, run_node);
+    try insert(gpa, &state, 1, null, run_node);
     const node_ref = handle(&state, 1);
 
     // Measured from the right edge, x = 31 is 9 units in and so is inside the
@@ -287,7 +287,7 @@ test "a run with no bounds reports no character index instead of unwrapping" {
     try schema.strings.setValue(&run_node.properties, "abcd");
     try schema.vectors.setCharacterLengths(&run_node.properties, &.{ 1, 1, 1, 1 });
     try schema.enums.setTextDirection(&run_node.properties, .left_to_right);
-    try insert(&state, gpa, 1, null, run_node);
+    try insert(gpa, &state, 1, null, run_node);
 
     try testing.expectEqual(
         @as(?usize, null),
@@ -305,7 +305,7 @@ test "a run with no text direction reports character zero" {
     try schema.vectors.setCharacterPositions(&run_node.properties, &.{ 0, 10, 20, 30 });
     try schema.vectors.setCharacterWidths(&run_node.properties, &.{ 10, 10, 10, 10 });
     try schema.option.setBounds(&run_node.properties, schema.rectInit(0, 0, 40, 20));
-    try insert(&state, gpa, 1, null, run_node);
+    try insert(gpa, &state, 1, null, run_node);
 
     // No declared direction and no ancestor declares one, so upstream returns 0
     // at `text.rs:957-961` and the port returns the same value.
@@ -322,7 +322,7 @@ test "a direction on the parent reaches the run that declares none" {
     var document = schema.Node.init(gpa, .text_input);
     errdefer document.deinit();
     try schema.enums.setTextDirection(&document.properties, .right_to_left);
-    try insert(&state, gpa, 0, null, document);
+    try insert(gpa, &state, 0, null, document);
 
     var run_node = schema.Node.init(gpa, .text_run);
     errdefer run_node.deinit();
@@ -330,7 +330,7 @@ test "a direction on the parent reaches the run that declares none" {
     try schema.vectors.setCharacterPositions(&run_node.properties, &.{ 0, 10, 20, 30 });
     try schema.vectors.setCharacterWidths(&run_node.properties, &.{ 10, 10, 10, 10 });
     try schema.option.setBounds(&run_node.properties, schema.rectInit(0, 0, 40, 20));
-    try insert(&state, gpa, 1, 0, run_node);
+    try insert(gpa, &state, 1, 0, run_node);
 
     // The run declares no direction, so the inherited walk answers from the
     // document one step up and the run is measured from its right edge.

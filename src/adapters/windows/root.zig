@@ -43,6 +43,7 @@ const boundary = @import("../../capi/boundary.zig");
 const adapter = @import("adapter.zig");
 const subclass = @import("subclass.zig");
 const syscalls = @import("syscalls.zig");
+const schema = @import("../../schema/root.zig");
 
 const ActionHandler = boundary.ActionHandler;
 const ActivationHandler = boundary.ActivationHandler;
@@ -321,7 +322,6 @@ const testing = std.testing;
 /// A factory that answers one whole tree, so a test can activate an adapter.
 fn wholeTreeFactory(context: ?*anyopaque) callconv(.c) ?*boundary.CTreeUpdate {
     _ = context;
-    const schema = @import("../../schema/root.zig");
     // The nodes must be built with the allocator the adapter releases them with.
     const gpa = allocation.allocator();
     var update: schema.TreeUpdate = .{};
@@ -342,7 +342,6 @@ fn nullFactory(context: ?*anyopaque) callconv(.c) ?*boundary.CTreeUpdate {
 /// An activation handler that answers one whole tree.
 fn activateWithTree(context: ?*anyopaque) callconv(.c) ?*boundary.CTreeUpdate {
     _ = context;
-    const schema = @import("../../schema/root.zig");
     var update: schema.TreeUpdate = .{};
     const gpa = allocation.allocator();
     update.pushNode(gpa, .{ .value = 1 }, schema.Node.init(gpa, .window)) catch return null;
@@ -362,7 +361,6 @@ fn activateWithNothing(context: ?*anyopaque) callconv(.c) ?*boundary.CTreeUpdate
 /// An action handler that releases the request it is handed.
 fn releaseAction(request: *boundary.CActionRequest, context: ?*anyopaque) callconv(.c) void {
     _ = context;
-    const schema = @import("../../schema/root.zig");
     schema.cActionRequestDeinit(allocation.allocator(), request);
     allocation.release(request);
 }
@@ -451,7 +449,7 @@ test "a WM_GETOBJECT for the root builds the placeholder and answers a value" {
     const answer = windowsAdapterHandleWmGetobject(
         target,
         0,
-        @as(LParam, syscalls.uia_root_object_id),
+        syscalls.uia_root_object_id,
         &activateWithNothing,
         null,
     );
@@ -470,7 +468,7 @@ test "a WM_GETOBJECT for another object identifier answers false" {
     const answer = windowsAdapterHandleWmGetobject(
         target,
         0,
-        @as(LParam, -5),
+        -5,
         &activateWithNothing,
         null,
     );
@@ -490,7 +488,7 @@ test "a WM_GETOBJECT with a tree from the activation handler answers the root" {
     const answer = windowsAdapterHandleWmGetobject(
         target,
         0,
-        @as(LParam, syscalls.objid_client),
+        syscalls.objid_client,
         &activateWithTree,
         &state,
     );
@@ -512,7 +510,7 @@ test "an update after activation reaches the active arm and answers events" {
     _ = windowsAdapterHandleWmGetobject(
         target,
         0,
-        @as(LParam, syscalls.objid_client),
+        syscalls.objid_client,
         &activateWithNothing,
         null,
     );
@@ -589,7 +587,6 @@ test "an action request reaches the installed handler and the handler owns it" {
         return error.AdapterNotBuilt;
     defer windowsAdapterFree(target);
 
-    const schema = @import("../../schema/root.zig");
     // The handler releases the request with the same allocator the adapter used,
     // so this is one allocation and one release.
     target.dispatchAction(.{
@@ -666,7 +663,7 @@ test "the whole lifecycle runs under the testing allocator and leaks nothing" {
     const answered = windowsAdapterHandleWmGetobject(
         target,
         0,
-        @as(LParam, syscalls.uia_root_object_id),
+        syscalls.uia_root_object_id,
         &activateWithNothing,
         null,
     );
@@ -686,7 +683,6 @@ test "the whole lifecycle runs under the testing allocator and leaks nothing" {
     const text = windowsAdapterDebug(target) orelse return error.NoDebugText;
     allocation.release(text);
 
-    const schema = @import("../../schema/root.zig");
     target.dispatchAction(.{
         .action = .click,
         .target_tree = schema.tree_id_root,

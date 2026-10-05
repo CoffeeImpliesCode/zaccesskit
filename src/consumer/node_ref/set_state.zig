@@ -153,7 +153,9 @@ pub fn value(
 /// the repeat. A cyclic parent chain answers `error.TreeCycle` instead of
 /// recursing until the stack runs out.
 pub fn live(node: NodeRef) QueryError!Live {
-    return try liveWithin(node, tree_state.treeWalkStepBound(node.tree_state.nodes.count()));
+    const bound = tree_state.treeWalkStepBound(node.tree_state.nodes.count());
+    const answer = try liveWithin(node, bound);
+    return answer;
 }
 
 /// One step of `live`, with the budget it has left.
@@ -161,7 +163,8 @@ fn liveWithin(node: NodeRef, budget: usize) QueryError!Live {
     if (schema.enums.live(&node.data().properties)) |stored| return stored;
     const parent = hierarchy.parent(node) orelse return .off;
     if (budget == 0) return error.TreeCycle;
-    return try liveWithin(parent, budget - 1);
+    const answer = try liveWithin(parent, budget - 1);
+    return answer;
 }
 
 // --- controls, node.rs:957-964 ---------------------------------------------------

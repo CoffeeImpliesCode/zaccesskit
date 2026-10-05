@@ -58,7 +58,7 @@
 //! It does not open a filter of its own: `FilterFn` and `FilterResult` are
 //! `../filter.zig`, and this module calls the filter it is given.
 //!
-//! **`child_ids` takes its graft decision as a parameter.** `isGraft` and
+//! **`childIds` takes its graft decision as a parameter.** `isGraft` and
 //! `graftChildId` are `node_ref/properties.zig` and `node_ref/hierarchy.zig`,
 //! both at L5, so the caller that already has them passes them in.
 
@@ -176,7 +176,7 @@ pub const ChildIdsIterator = union(enum) {
 /// `is_graft` is `node_ref/properties.zig`'s `isGraft` and `graft_child_id`
 /// is `node_ref/hierarchy.zig`'s `graftChildId`; both are at L5 and this
 /// module is L4. `graft_child_id` is ignored unless `is_graft` is true.
-pub fn child_ids(
+pub fn childIds(
     node: NodeRef,
     is_graft: bool,
     graft_child_id: ?FullNodeId,
@@ -288,7 +288,7 @@ fn firstFilteredDescendant(
     steps: *usize,
     bound: usize,
 ) QueryError!?NodeRef {
-    var ids = child_ids(node, setsTreeId(node), graftChildOf(node));
+    var ids = childIds(node, setsTreeId(node), graftChildOf(node));
     while (ids.next()) |id| {
         steps.* += 1;
         if (steps.* > bound) return error.TreeCycle;
@@ -312,7 +312,7 @@ fn lastFilteredDescendant(
     steps: *usize,
     bound: usize,
 ) QueryError!?NodeRef {
-    var ids = child_ids(node, setsTreeId(node), graftChildOf(node));
+    var ids = childIds(node, setsTreeId(node), graftChildOf(node));
     while (ids.nextBack()) |id| {
         steps.* += 1;
         if (steps.* > bound) return error.TreeCycle;
@@ -403,7 +403,7 @@ pub const FilteredChildrenIterator = struct {
 /// Returns `error.TreeCycle` when either endpoint walk overruns its bound, and
 /// `error.NoSuchNode` when the state holds no entry for an id a `children`
 /// list names.
-pub fn filtered_children(
+pub fn filteredChildren(
     node: NodeRef,
     filter: FilterFn,
 ) QueryError!FilteredChildrenIterator {
@@ -485,6 +485,9 @@ const Fixture = struct {
     /// Releases the map and every node's property buffers.
     fn deinit(self: *Fixture) void {
         self.state.deinit(self.gpa);
+        // SAFETY: `state.deinit` released every buffer the fixture owned, and
+        // no statement after it reads `self`.
+        self.* = undefined;
     }
 
     /// Stores one node with `role` and returns its id. `parent` is `null` for
@@ -583,7 +586,7 @@ test "a node with no children yields nothing from either end" {
     defer fixture.deinit();
 
     const leaf = try fixture.add(1, null, 0, .button);
-    var ids = child_ids(try fixture.ref(leaf), false, null);
+    var ids = childIds(try fixture.ref(leaf), false, null);
     try testing.expect(ids.next() == null);
     try testing.expect(ids.nextBack() == null);
     try testing.expectEqual(@as(usize, 0), ids.len());
@@ -591,7 +594,7 @@ test "a node with no children yields nothing from either end" {
     // The unfiltered node cursor answers the same on a tree whose root is the
     // only node, so the empty case is not a property of the graft arm alone.
     const only = try fixture.add(2, null, 0, .group);
-    var nodes = children(child_ids(try fixture.ref(only), false, null), &fixture.state);
+    var nodes = children(childIds(try fixture.ref(only), false, null), &fixture.state);
     try testing.expect(nodes.next() == null);
     try testing.expect(nodes.nextBack() == null);
 }
@@ -607,13 +610,13 @@ test "child ids cover every listed child once, from either end" {
     }
     try fixture.setChildren(root, &.{ 1, 2, 3, 4 });
 
-    var front = try collectFront(gpa, child_ids(try fixture.ref(root), false, null));
+    var front = try collectFront(gpa, childIds(try fixture.ref(root), false, null));
     defer front.deinit(gpa);
     try testing.expectEqualSlices(u64, &.{ 1, 2, 3, 4 }, front.items);
 
     var back: std.ArrayList(u64) = .empty;
     defer back.deinit(gpa);
-    var reversed_ids = child_ids(try fixture.ref(root), false, null);
+    var reversed_ids = childIds(try fixture.ref(root), false, null);
     const bound = reversed_ids.len();
     var reversed = reversed_ids;
     var taken: usize = 0;
@@ -625,7 +628,7 @@ test "child ids cover every listed child once, from either end" {
 
     // Two ends on one cursor meet in the middle without repeating an item,
     // which is the invariant the `front` and `back` indices carry.
-    var meeting = child_ids(try fixture.ref(root), false, null);
+    var meeting = childIds(try fixture.ref(root), false, null);
     try testing.expectEqual(@as(u64, 1), (meeting.next() orelse return error.NoChild).local.value);
     const fourth = meeting.nextBack() orelse return error.NoChild;
     try testing.expectEqual(@as(u64, 4), fourth.local.value);
@@ -651,14 +654,14 @@ test "a graft node yields its subtree root instead of its children list" {
         .focus = subtree_root,
     });
 
-    var ids = child_ids(try fixture.ref(graft), true, subtree_root);
+    var ids = childIds(try fixture.ref(graft), true, subtree_root);
     try testing.expectEqual(subtree_root, (ids.next() orelse return error.NoChild));
     try testing.expect(ids.next() == null);
     try testing.expectEqual(@as(usize, 0), ids.len());
 
     // The same node read as a normal node lists `2`, so a cursor that read the
     // children property first reports the wrong child.
-    var as_normal = child_ids(try fixture.ref(graft), false, null);
+    var as_normal = childIds(try fixture.ref(graft), false, null);
     const listed = as_normal.next() orelse return error.NoChild;
     try testing.expectEqual(@as(u64, 2), listed.local.value);
 }
@@ -675,7 +678,7 @@ test "the children cursor answers nodes and skips an id with no entry" {
 
     var nodes: std.ArrayList(u64) = .empty;
     defer nodes.deinit(gpa);
-    var ids = child_ids(try fixture.ref(root), false, null);
+    var ids = childIds(try fixture.ref(root), false, null);
     const bound = ids.len();
     var cursor = children(ids, &fixture.state);
     var taken: usize = 0;
@@ -706,7 +709,7 @@ test "the filtered children cursor opens an excluded node and closes a subtree" 
     const bound = treeWalkStepBound(fixture.state.nodes.count());
     var collected: std.ArrayList(u64) = .empty;
     defer collected.deinit(gpa);
-    var cursor = try filtered_children(try fixture.ref(root), roleFilter());
+    var cursor = try filteredChildren(try fixture.ref(root), roleFilter());
     var taken: usize = 0;
     while (taken < bound) : (taken += 1) {
         const node = (try cursor.next()) orelse break;
@@ -719,7 +722,7 @@ test "the filtered children cursor opens an excluded node and closes a subtree" 
 
     var backwards: std.ArrayList(u64) = .empty;
     defer backwards.deinit(gpa);
-    var reversed = try filtered_children(try fixture.ref(root), roleFilter());
+    var reversed = try filteredChildren(try fixture.ref(root), roleFilter());
     taken = 0;
     while (taken < bound) : (taken += 1) {
         const node = (try reversed.nextBack()) orelse break;
@@ -744,7 +747,7 @@ test "a filter that includes everything and one that excludes everything" {
     const bound = treeWalkStepBound(fixture.state.nodes.count());
     var all: std.ArrayList(u64) = .empty;
     defer all.deinit(gpa);
-    var inclusive = try filtered_children(try fixture.ref(root), includeAllFilter());
+    var inclusive = try filteredChildren(try fixture.ref(root), includeAllFilter());
     var taken: usize = 0;
     while (taken < bound) : (taken += 1) {
         const node = (try inclusive.next()) orelse break;
@@ -756,7 +759,7 @@ test "a filter that includes everything and one that excludes everything" {
     // because a filter that excludes everything is a choice, not a cycle.
     var none: std.ArrayList(u64) = .empty;
     defer none.deinit(gpa);
-    var exclusive = try filtered_children(try fixture.ref(root), excludeEveryFilter());
+    var exclusive = try filteredChildren(try fixture.ref(root), excludeEveryFilter());
     taken = 0;
     while (taken < bound) : (taken += 1) {
         const node = (try exclusive.next()) orelse break;
@@ -798,7 +801,7 @@ test "an abandoned iteration writes nothing and a later read sees the write" {
     // Take one item and drop the cursor on the floor. Nothing below releases
     // anything, because nothing below allocated.
     {
-        var abandoned = try filtered_children(try fixture.ref(root), includeAllFilter());
+        var abandoned = try filteredChildren(try fixture.ref(root), includeAllFilter());
         _ = try abandoned.next();
     }
 
@@ -812,7 +815,7 @@ test "an abandoned iteration writes nothing and a later read sees the write" {
 
     var after: std.ArrayList(u64) = .empty;
     defer after.deinit(gpa);
-    var rebuilt = try filtered_children(try fixture.ref(root), includeAllFilter());
+    var rebuilt = try filteredChildren(try fixture.ref(root), includeAllFilter());
     var taken: usize = 0;
     while (taken < treeWalkStepBound(fixture.state.nodes.count())) : (taken += 1) {
         const node = (try rebuilt.next()) orelse break;

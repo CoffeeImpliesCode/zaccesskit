@@ -148,7 +148,7 @@ pub const simple_actions = [simple_action_count]SimpleAction{
 };
 
 /// `AccessibilityNodeInfo.obtain(View, int)`, `docs/29` row 34.
-const node_info_obtain = java_call.Member{
+const node_info_obtain: java_call.Member = .{
     .class = .{
         .descriptor = "Landroid/view/accessibility/AccessibilityNodeInfo;",
         .internal_name = "android/view/accessibility/AccessibilityNodeInfo",
@@ -250,10 +250,13 @@ pub const AndroidAdapter = struct {
     /// the empty adapter rather than an address that no longer holds one.
     pub fn deinit(self: *AndroidAdapter) void {
         if (self.tree) |*tree| tree.deinit();
-        self.tree = null;
-        self.activation_asked = false;
         self.id_map.deinit(self.gpa);
-        self.last_error = null;
+        // SAFETY: every release this value owns has run above, so the reset is
+        // the empty adapter a stale read sees. `gpa` keeps its value because the
+        // allocator owns no memory, and `free` reads it after this call to
+        // release the block.
+        const gpa = self.gpa;
+        self.* = .{ .gpa = gpa, .tree = null, .id_map = .{ .gpa = gpa } };
     }
 
     /// Whether an activation handler has answered with a tree.
@@ -325,7 +328,7 @@ pub const AndroidAdapter = struct {
         update_factory: TreeUpdateFactory,
         update_factory_userdata: ?*anyopaque,
     ) Error!?QueuedEvents {
-        if (self.tree == null) return null;
+        const active_tree = if (self.tree) |*tree| tree else return null;
 
         const produced = update_factory(update_factory_userdata) orelse
             return error.NullTreeUpdate;
@@ -345,7 +348,7 @@ pub const AndroidAdapter = struct {
             .node_removed = nodeRemovedSlot,
             .focus_moved = focusMovedSlot,
         };
-        self.tree.?.updateAndProcessChanges(produced.*, &handler) catch |err| {
+        active_tree.updateAndProcessChanges(produced.*, &handler) catch |err| {
             // A slot that ran out of memory leaves the committed state as it
             // stands; the update is already consumed and cannot be replayed.
             if (context.out_of_memory) return error.OutOfMemory;
@@ -373,7 +376,8 @@ pub const AndroidAdapter = struct {
         try self.ensureActive(activation_handler, activation_handler_userdata);
         const tree = self.tree orelse return null;
         const node = self.nodeFor(tree.stateOf(), virtual_view_id) orelse return null;
-        return try self.fillNodeInfo(table, host, virtual_view_id, node);
+        const answer = try self.fillNodeInfo(table, host, virtual_view_id, node);
+        return answer;
     }
 
     /// The `AccessibilityNodeInfo` the focus belongs to, or `null` when the
@@ -393,7 +397,8 @@ pub const AndroidAdapter = struct {
         const tree = self.tree orelse return null;
         const node = tree.stateOf().focus() orelse return null;
         const virtual_id = try self.id_map.getOrCreateJavaId(node);
-        return try self.fillNodeInfo(table, host, virtual_id, node);
+        const answer = try self.fillNodeInfo(table, host, virtual_id, node);
+        return answer;
     }
 
     /// Obtains one node info for `node`, fills it and answers it.
@@ -435,12 +440,12 @@ pub const AndroidAdapter = struct {
         virtual_view_id: JInt,
         action: PlatformAction,
     ) Error!?QueuedEvents {
-        if (self.tree == null) return null;
+        const active_tree = if (self.tree) |*tree| tree else return null;
 
         var events = QueuedEvents.init(self.gpa, self);
         errdefer events.deinit();
 
-        const state = self.tree.?.stateOf();
+        const state = active_tree.stateOf();
         const node = self.nodeFor(state, virtual_view_id) orelse return events;
         const request = try self.buildRequest(state, node, action) orelse return events;
         try self.dispatch(request, action_handler, action_handler_userdata);
@@ -466,14 +471,13 @@ pub const AndroidAdapter = struct {
         y: JFloat,
     ) Error!?QueuedEvents {
         try self.ensureActive(activation_handler, activation_handler_userdata);
-        if (self.tree == null) return null;
+        const tree = if (self.tree) |*active| active else return null;
 
         var events = QueuedEvents.init(self.gpa, self);
         errdefer events.deinit();
 
         switch (action) {
             values.MOTION_ACTION_HOVER_ENTER, values.MOTION_ACTION_HOVER_MOVE => {
-                const tree = self.tree.?;
                 const point = schema.pointInit(@floatCast(x), @floatCast(y));
                 const root = tree.stateOf().root();
                 const hit = try geometry.hitTest(
@@ -523,7 +527,7 @@ pub const AndroidAdapter = struct {
         action: PlatformAction,
     ) Error!?schema.ActionRequest {
         const located = state.locateNode(node.id()) orelse return null;
-        const target = schema.ActionRequest{
+        const target: schema.ActionRequest = .{
             .action = .click,
             .target_tree = located.tree_id,
             .target_node = located.local_id,
@@ -748,7 +752,8 @@ fn moveByGranularity(
         if (step.granularity != traverse.granularity) continue;
         const forward = traverse.direction > 0;
         const moved = if (forward) step.forward(current) else step.backward(current);
-        return try moved;
+        const answer = try moved;
+        return answer;
     }
     return null;
 }
@@ -904,6 +909,17 @@ fn activeAdapter(gpa: Allocator) consumer.tree.UpdateError!AndroidAdapter {
     return adapter;
 }
 
+/// The state of the tree `adapter` holds, which the fixture has already filled.
+fn activeState(adapter: *AndroidAdapter) error{NoActiveTree}!*const TreeState {
+    const tree = adapter.treeOf() orelse return error.NoActiveTree;
+    return tree.stateOf();
+}
+
+/// The queue one call answered, which an active fixture always produces.
+fn queueOrFail(maybe_events: ?QueuedEvents) error{NoQueueBuilt}!QueuedEvents {
+    return maybe_events orelse error.NoQueueBuilt;
+}
+
 test "an adapter with no tree reports itself inactive" {
     const gpa = testing.allocator;
     var adapter = try AndroidAdapter.init(gpa);
@@ -920,10 +936,8 @@ test "an adapter holding a tree reports itself active and answers it" {
 
     try testing.expect(adapter.isActive());
     try testing.expect(adapter.treeOf() != null);
-    try testing.expectEqual(
-        @as(u64, 1),
-        adapter.treeOf().?.stateOf().rootId().local.value,
-    );
+    const state = try activeState(&adapter);
+    try testing.expectEqual(@as(u64, 1), state.rootId().local.value);
 }
 
 test "every simple action id becomes the AccessKit action the table names" {
@@ -942,17 +956,19 @@ test "every simple action id becomes the AccessKit action the table names" {
     const gpa = testing.allocator;
     var adapter = try activeAdapter(gpa);
     defer adapter.deinit();
-    const node = adapter.treeOf().?.stateOf().root();
+    const state = try activeState(&adapter);
+    const node = state.root();
 
     for (simple_actions, expected) |row, want| {
-        const request = try adapter.buildRequest(
-            adapter.treeOf().?.stateOf(),
+        const maybe_request = try adapter.buildRequest(
+            state,
             node,
             .{ .simple = row.android },
         );
-        try testing.expectEqual(want, request.?.action);
-        try testing.expectEqual(@as(u64, 1), request.?.target_node.value);
-        try testing.expectEqual(schema.tree_id_root, request.?.target_tree);
+        const request = maybe_request orelse return error.NoRequestBuilt;
+        try testing.expectEqual(want, request.action);
+        try testing.expectEqual(@as(u64, 1), request.target_node.value);
+        try testing.expectEqual(schema.tree_id_root, request.target_tree);
     }
 }
 
@@ -960,13 +976,14 @@ test "an action id the port does not map becomes no request at all" {
     const gpa = testing.allocator;
     var adapter = try activeAdapter(gpa);
     defer adapter.deinit();
-    const node = adapter.treeOf().?.stateOf().root();
+    const state = try activeState(&adapter);
+    const node = state.root();
 
     // `null` is not a failure: the application is told nothing, which is the
     // contract at `include/zaccesskit.h:1016-1018`.
     try testing.expectEqual(
         @as(?schema.ActionRequest, null),
-        try adapter.buildRequest(adapter.treeOf().?.stateOf(), node, .{ .simple = 0x4242 }),
+        try adapter.buildRequest(state, node, .{ .simple = 0x4242 }),
     );
 }
 
@@ -974,7 +991,8 @@ test "a scroll action follows the node's own scroll properties" {
     const gpa = testing.allocator;
     var adapter = try activeAdapter(gpa);
     defer adapter.deinit();
-    const node = adapter.treeOf().?.stateOf().root();
+    const state = try activeState(&adapter);
+    const node = state.root();
 
     // A node that states no scroll property scrolls down, which is the direction
     // a page moves when nothing in the tree says otherwise.
@@ -993,15 +1011,16 @@ test "a scroll action carries the page unit the platform means" {
     var adapter = try activeAdapter(gpa);
     defer adapter.deinit();
     var probe: ActionProbe = .{ .gpa = gpa };
-    const node = adapter.treeOf().?.stateOf().root();
+    const state = try activeState(&adapter);
+    const node = state.root();
     _ = try adapter.idMap().getOrCreateJavaId(node);
 
-    var events = (try adapter.performAction(
+    var events = try queueOrFail(try adapter.performAction(
         recordingActionHandler,
         &probe,
         values.HOST_VIEW_ID,
         .{ .simple = values.ACTION_SCROLL_FORWARD },
-    )).?;
+    ));
     defer events.deinit();
 
     try testing.expectEqual(@as(usize, 1), probe.calls);
@@ -1015,15 +1034,16 @@ test "a set-progress action becomes a numeric value on the target node" {
     var adapter = try activeAdapter(gpa);
     defer adapter.deinit();
     var probe: ActionProbe = .{ .gpa = gpa };
-    const node = adapter.treeOf().?.stateOf().root();
+    const state = try activeState(&adapter);
+    const node = state.root();
     _ = try adapter.idMap().getOrCreateJavaId(node);
 
-    var events = (try adapter.performAction(
+    var events = try queueOrFail(try adapter.performAction(
         recordingActionHandler,
         &probe,
         values.HOST_VIEW_ID,
         .{ .set_progress = 0.5 },
-    )).?;
+    ));
     defer events.deinit();
 
     try testing.expectEqual(@as(usize, 1), probe.calls);
@@ -1036,15 +1056,16 @@ test "a selection action carries the two endpoints the bundle named" {
     var adapter = try activeAdapter(gpa);
     defer adapter.deinit();
     var probe: ActionProbe = .{ .gpa = gpa };
-    const node = adapter.treeOf().?.stateOf().root();
+    const state = try activeState(&adapter);
+    const node = state.root();
     _ = try adapter.idMap().getOrCreateJavaId(node);
 
-    var events = (try adapter.performAction(
+    var events = try queueOrFail(try adapter.performAction(
         recordingActionHandler,
         &probe,
         values.HOST_VIEW_ID,
         .{ .set_text_selection = .{ .start = 3, .end = 7 } },
-    )).?;
+    ));
     defer events.deinit();
 
     try testing.expectEqual(schema.Action.set_text_selection, probe.action);
@@ -1057,15 +1078,16 @@ test "a collapse becomes a caret at the start of the document" {
     var adapter = try activeAdapter(gpa);
     defer adapter.deinit();
     var probe: ActionProbe = .{ .gpa = gpa };
-    const node = adapter.treeOf().?.stateOf().root();
+    const state = try activeState(&adapter);
+    const node = state.root();
     _ = try adapter.idMap().getOrCreateJavaId(node);
 
-    var events = (try adapter.performAction(
+    var events = try queueOrFail(try adapter.performAction(
         recordingActionHandler,
         &probe,
         values.HOST_VIEW_ID,
         .collapse_text_selection,
-    )).?;
+    ));
     defer events.deinit();
 
     try testing.expectEqual(schema.Action.set_text_selection, probe.action);
@@ -1090,10 +1112,11 @@ test "a traversal on a node that states no value raises nothing" {
     var adapter = try activeAdapter(gpa);
     defer adapter.deinit();
     var probe: ActionProbe = .{ .gpa = gpa };
-    const node = adapter.treeOf().?.stateOf().root();
+    const state = try activeState(&adapter);
+    const node = state.root();
     _ = try adapter.idMap().getOrCreateJavaId(node);
 
-    var events = (try adapter.performAction(
+    var events = try queueOrFail(try adapter.performAction(
         recordingActionHandler,
         &probe,
         values.HOST_VIEW_ID,
@@ -1102,7 +1125,7 @@ test "a traversal on a node that states no value raises nothing" {
             .direction = 1,
             .extend = false,
         } },
-    )).?;
+    ));
     defer events.deinit();
 
     try testing.expectEqual(@as(usize, 0), probe.calls);
@@ -1114,12 +1137,12 @@ test "an action on a node the map never named raises nothing" {
     defer adapter.deinit();
     var probe: ActionProbe = .{ .gpa = gpa };
 
-    var events = (try adapter.performAction(
+    var events = try queueOrFail(try adapter.performAction(
         recordingActionHandler,
         &probe,
         99,
         .{ .simple = values.ACTION_CLICK },
-    )).?;
+    ));
     defer events.deinit();
 
     try testing.expectEqual(@as(usize, 0), probe.calls);
@@ -1133,13 +1156,13 @@ test "a hover that names no motion action raises nothing" {
     var adapter = try activeAdapter(gpa);
     defer adapter.deinit();
 
-    var events = (try adapter.onHoverEvent(
+    var events = try queueOrFail(try adapter.onHoverEvent(
         unreachableActivation,
         null,
         0,
         0,
         0,
-    )).?;
+    ));
     defer events.deinit();
     try testing.expectEqual(@as(usize, 0), events.len());
 }
@@ -1149,13 +1172,13 @@ test "a hover exit raises one event about the host view" {
     var adapter = try activeAdapter(gpa);
     defer adapter.deinit();
 
-    var events = (try adapter.onHoverEvent(
+    var events = try queueOrFail(try adapter.onHoverEvent(
         unreachableActivation,
         null,
         values.MOTION_ACTION_HOVER_EXIT,
         0,
         0,
-    )).?;
+    ));
     defer events.deinit();
 
     try testing.expectEqual(@as(usize, 1), events.len());

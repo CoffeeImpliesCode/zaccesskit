@@ -186,6 +186,9 @@ pub const GraftScratch = struct {
         self.unreachable_ids.deinit(self.gpa);
         self.pending_grafts.deinit(self.gpa);
         self.grafts_to_remove.deinit(self.gpa);
+        // SAFETY: the four maps above were released, which is everything the
+        // value owned, and no statement after them reads `self`.
+        self.* = undefined;
     }
 
     /// Records that `graft_node_id` claims `subtree_id`, replacing nothing:
@@ -297,6 +300,9 @@ const WalkBuffers = struct {
     fn deinit(self: *WalkBuffers, gpa: std.mem.Allocator) void {
         self.stack.deinit(gpa);
         self.queue.deinit(gpa);
+        // SAFETY: the two arrays above were released, which is everything the
+        // value owned, and no statement after them reads `self`.
+        self.* = undefined;
     }
 };
 

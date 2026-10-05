@@ -765,7 +765,7 @@ const placeholder_root_id: schema.NodeId = .{ .value = 0 };
 /// **Returns.** `error.OutOfMemory` from `pushNode`. The update is transferred
 /// to the call and released by `Context.init`, so the caller must not release it.
 fn blankPlaceholderUpdate(allocator: Allocator) !schema.TreeUpdate {
-    var update = schema.TreeUpdate{};
+    var update: schema.TreeUpdate = .{};
     update.tree = .{ .root = placeholder_root_id, .toolkit_name = null, .toolkit_version = null };
     update.focus = placeholder_root_id;
     try update.pushNode(allocator, placeholder_root_id, schema.Node.init(allocator, .window));
@@ -1520,6 +1520,19 @@ comptime {
 
 // --- tests -------------------------------------------------------------------
 
+test "the attribute and role tables are reachable and analysed" {
+    // `attributes.zig` and `roles.zig` are reached only through this file, and
+    // the one reference each carries sits inside a function nothing calls:
+    // `hostViewSelectors` is the only reader of `attributes_mod`, and nothing
+    // calls it. An import alone analyses nothing, so both files declare tests
+    // that no run executes, which is the defect `AGENTS.md` section 5 records
+    // for `src/root.zig` and which a link confirms: a test binary built from
+    // `src/root.zig` collects 0 tests from these two files and every one from
+    // the three beside them. `refAllDecls` on each is what forces them.
+    std.testing.refAllDecls(attributes_mod);
+    std.testing.refAllDecls(roles_mod);
+}
+
 /// An activation handler that answers with a two-node tree, or with nothing.
 ///
 /// It is `callconv(.c)` because `boundary.ActivationHandler` is, and a handler
@@ -1593,7 +1606,7 @@ test "an inactive adapter produces no events and no tree" {
     // update calls, because nothing has asked for a tree yet.
     var recorder = RecordingHost.init(std.testing.allocator);
     defer recorder.deinit();
-    var action = RecordingAction{};
+    var action: RecordingAction = .{};
     const adapter = newAdapter(null, false, recordingAction, &action, recorder.host()) orelse
         return error.NoAdapter;
     defer macosAdapterFree(adapter);
@@ -1609,7 +1622,7 @@ test "a focus update before the first tree is kept for the tree that arrives" {
     // so a focus change that arrives before any tree is not lost.
     var recorder = RecordingHost.init(std.testing.allocator);
     defer recorder.deinit();
-    var action = RecordingAction{};
+    var action: RecordingAction = .{};
     const adapter = newAdapter(null, false, recordingAction, &action, recorder.host()) orelse
         return error.NoAdapter;
     defer macosAdapterFree(adapter);
@@ -1626,8 +1639,8 @@ test "a null answer from an activation handler installs the placeholder" {
     // with a one-node placeholder window rather than a failure.
     var recorder = RecordingHost.init(std.testing.allocator);
     defer recorder.deinit();
-    var action = RecordingAction{};
-    var activation = AnsweringActivation{ .tree = null, .calls = 0 };
+    var action: RecordingAction = .{};
+    var activation: AnsweringActivation = .{ .tree = null, .calls = 0 };
     const adapter = newAdapter(null, false, recordingAction, &action, recorder.host()) orelse
         return error.NoAdapter;
     defer macosAdapterFree(adapter);
@@ -1646,9 +1659,9 @@ test "a null answer from an activation handler installs the placeholder" {
 test "a tree from an activation handler makes the adapter active" {
     var recorder = RecordingHost.init(std.testing.allocator);
     defer recorder.deinit();
-    var action = RecordingAction{};
+    var action: RecordingAction = .{};
     const tree = try boxTwoNodeTree(allocation.allocator(), child_id);
-    var activation = AnsweringActivation{ .tree = tree, .calls = 0 };
+    var activation: AnsweringActivation = .{ .tree = tree, .calls = 0 };
     const adapter = newAdapter(null, true, recordingAction, &action, recorder.host()) orelse
         return error.NoAdapter;
     defer macosAdapterFree(adapter);
@@ -1667,8 +1680,8 @@ test "the first update over a placeholder yields the focus event" {
     // real tree and returns a focus event when the new tree has a focus.
     var recorder = RecordingHost.init(std.testing.allocator);
     defer recorder.deinit();
-    var action = RecordingAction{};
-    var activation = AnsweringActivation{ .tree = null, .calls = 0 };
+    var action: RecordingAction = .{};
+    var activation: AnsweringActivation = .{ .tree = null, .calls = 0 };
     const adapter = newAdapter(null, true, recordingAction, &action, recorder.host()) orelse
         return error.NoAdapter;
     defer macosAdapterFree(adapter);
@@ -1694,8 +1707,8 @@ test "raising the handle posts the event and the handle is then spent" {
     // did post what the list held.
     var recorder = RecordingHost.init(std.testing.allocator);
     defer recorder.deinit();
-    var action = RecordingAction{};
-    var activation = AnsweringActivation{ .tree = null, .calls = 0 };
+    var action: RecordingAction = .{};
+    var activation: AnsweringActivation = .{ .tree = null, .calls = 0 };
     const adapter = newAdapter(null, true, recordingAction, &action, recorder.host()) orelse
         return error.NoAdapter;
     defer macosAdapterFree(adapter);
@@ -1717,9 +1730,9 @@ test "dropping a context posts one destroyed notification per live node" {
     // Upstream `context.rs:91-102`. The count and the name are the whole claim.
     var recorder = RecordingHost.init(std.testing.allocator);
     defer recorder.deinit();
-    var action = RecordingAction{};
+    var action: RecordingAction = .{};
     const tree = try boxTwoNodeTree(allocation.allocator(), child_id);
-    var activation = AnsweringActivation{ .tree = tree, .calls = 0 };
+    var activation: AnsweringActivation = .{ .tree = tree, .calls = 0 };
     const adapter = newAdapter(null, true, recordingAction, &action, recorder.host()) orelse
         return error.NoAdapter;
 
@@ -1747,7 +1760,7 @@ test "the debug text names the state and the platform node count" {
     // before the string is released with `accesskit_string_free`.
     var recorder = RecordingHost.init(std.testing.allocator);
     defer recorder.deinit();
-    var action = RecordingAction{};
+    var action: RecordingAction = .{};
     const adapter = newAdapter(null, true, recordingAction, &action, recorder.host()) orelse
         return error.NoAdapter;
     defer macosAdapterFree(adapter);
@@ -1759,7 +1772,7 @@ test "the debug text names the state and the platform node count" {
     );
     allocation.allocator().free(text[0..std.mem.len(text) :0]);
 
-    var activation = AnsweringActivation{ .tree = null, .calls = 0 };
+    var activation: AnsweringActivation = .{ .tree = null, .calls = 0 };
     _ = macosAdapterFocus(adapter, answeringActivation, &activation);
     const placeholder_text = macosAdapterDebug(adapter) orelse return error.NoText;
     try testing.expectEqualStrings(
@@ -1828,7 +1841,7 @@ test "the subclassing adapter forwards its four calls" {
     // It holds a `MacosAdapter` and adds the window it was built for.
     var recorder = RecordingHost.init(std.testing.allocator);
     defer recorder.deinit();
-    var action = RecordingAction{};
+    var action: RecordingAction = .{};
     var window: u8 = 0;
     const adapter = newSubclassingAdapter(
         &window,
@@ -1855,9 +1868,9 @@ test "a queued-events handle that cannot be allocated answers null" {
     // pointer to nothing.
     var recorder = RecordingHost.init(testing.allocator);
     defer recorder.deinit();
-    var action = RecordingAction{};
+    var action: RecordingAction = .{};
     const tree = try boxTwoNodeTree(allocation.allocator(), child_id);
-    var activation = AnsweringActivation{ .tree = tree, .calls = 0 };
+    var activation: AnsweringActivation = .{ .tree = tree, .calls = 0 };
     const adapter = newAdapter(null, true, recordingAction, &action, recorder.host()) orelse
         return error.NoAdapter;
     defer macosAdapterFree(adapter);

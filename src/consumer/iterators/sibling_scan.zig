@@ -172,7 +172,7 @@ pub fn previousFilteredSibling(node: ?NodeRef, filter: FilterFn) QueryError!?Nod
 fn childrenOf(node: NodeRef) children_mod.ChildrenIterator {
     const is_graft = schema.option.treeId(&node.data().properties) != null;
     return children_mod.children(
-        children_mod.child_ids(node, is_graft, graftChildOf(node)),
+        children_mod.childIds(node, is_graft, graftChildOf(node)),
         node.tree_state,
     );
 }
@@ -181,14 +181,14 @@ fn childrenOf(node: NodeRef) children_mod.ChildrenIterator {
 /// `current.following_siblings()` at `iterators.rs:270`, reached through
 /// `FollowingSiblings::new` at `iterators.rs:88-114`.
 fn followingSiblingIdsOf(node: NodeRef) following_mod.FollowingSiblingIdsIterator {
-    return following_mod.following_sibling_ids(parentOf(node), node.id());
+    return following_mod.followingSiblingIds(parentOf(node), node.id());
 }
 
 /// The preceding sibling ids of `node`. Upstream
 /// `current.preceding_siblings()` at `iterators.rs:311`, reached through
 /// `PrecedingSiblings::new` at `iterators.rs:179-201`.
 fn precedingSiblingIdsOf(node: NodeRef) preceding_mod.PrecedingSiblingIdsIterator {
-    return preceding_mod.preceding_sibling_ids(parentOf(node), node.id());
+    return preceding_mod.precedingSiblingIds(parentOf(node), node.id());
 }
 
 /// The parent of `node`, or `null` at the top of the tree. Reads
@@ -225,6 +225,9 @@ const Fixture = struct {
     /// Releases the map and every node's property buffers.
     fn deinit(self: *Fixture) void {
         self.state.deinit(self.gpa);
+        // SAFETY: `state.deinit` released every buffer the fixture owned, and
+        // no statement after it reads `self`.
+        self.* = undefined;
     }
 
     /// Stores one node and returns its id. `parent` is `null` for a root and

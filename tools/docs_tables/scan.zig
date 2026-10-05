@@ -62,9 +62,9 @@ pub const Module = struct {
     reexports: std.StringArrayHashMapUnmanaged(Reexport) = .empty,
     /// Every `alias.Symbol` the file names. The list is ordered because the
     /// document sorts its rows, and two runs over one tree must agree.
-    edges: std.ArrayListUnmanaged(Edge) = .empty,
+    edges: std.ArrayList(Edge) = .empty,
     /// A shape the scanner read but could not interpret, carrying its line.
-    problems: std.ArrayListUnmanaged(Problem) = .empty,
+    problems: std.ArrayList(Problem) = .empty,
 
     /// The path the document prints for `target` when seen from this module,
     /// and whether the caller owns what is returned.
@@ -119,7 +119,7 @@ pub const Tree = struct {
     /// Every file the parser rejected. A rejected file has no `Module`, so the
     /// fact lives on the tree: one unparseable file is one finding rather than
     /// a run that stopped before reading the other hundred.
-    rejected: std.ArrayListUnmanaged(Problem) = .empty,
+    rejected: std.ArrayList(Problem) = .empty,
 
     /// The module at `path`, or null when the tree does not hold it.
     pub fn get(self: *const Tree, path: []const u8) ?*Module {

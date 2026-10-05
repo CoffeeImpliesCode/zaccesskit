@@ -140,8 +140,8 @@ pub const ObjectId = union(enum) {
 ///
 /// **Errors.** This function does not fail.
 pub fn nodeSegment(node: FullNodeId) u128 {
-    const high: u128 = @as(u128, node.tree_index.value());
-    const low: u128 = @as(u128, node.local.value);
+    const high: u128 = node.tree_index.value();
+    const low: u128 = node.local.value;
     return (high << 64) | low;
 }
 

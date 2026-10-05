@@ -43,7 +43,7 @@
 //! are at L5 while this file is L4, so the cursor reads
 //! `NodeState.parent_and_index` and the `children` property directly.
 //! `docs/33` section 1.3 blesses that pattern for exactly this case.
-//! `following_sibling_ids` therefore takes the parent and the node id rather
+//! `followingSiblingIds` therefore takes the parent and the node id rather
 //! than a `NodeRef`, because its caller already has both.
 //!
 //! **What a graft parent yields.** Nothing. A graft node has exactly one
@@ -140,7 +140,7 @@ pub const FollowingSiblingIdsIterator = struct {
 /// `parent` is `null` at the top of the tree and the cursor then yields
 /// nothing, which is upstream `iterators.rs:104-106`. A graft `parent` yields
 /// nothing for the reason in the module doc.
-pub fn following_sibling_ids(
+pub fn followingSiblingIds(
     parent: ?NodeRef,
     id: FullNodeId,
 ) FollowingSiblingIdsIterator {
@@ -322,7 +322,7 @@ pub const FilteredSiblingsIterator = struct {
 /// Returns `error.TreeCycle` when a walk behind either end overruns its bound,
 /// and `error.NoSuchNode` when the state holds no entry for an id a `children`
 /// list names.
-pub fn following_filtered_siblings(
+pub fn followingFilteredSiblings(
     node: NodeRef,
     filter: FilterFn,
 ) QueryError!FilteredSiblingsIterator {
@@ -389,7 +389,7 @@ fn sameNode(a: FullNodeId, b: FullNodeId) bool {
 // `iterators.rs:79-115` is one struct with a private `new`, and `docs/33`
 // section 8 gives the operation to `node_ref/hierarchy.zig`. The struct and its
 // fields move here and the constructor becomes the free function
-// `following_sibling_ids`, because `node_ref/hierarchy.zig` is at L5 and
+// `followingSiblingIds`, because `node_ref/hierarchy.zig` is at L5 and
 // imports this file.
 //
 // `iterators.rs:136-142` is `size_hint`, and `:163-165` are the
@@ -415,6 +415,9 @@ const Fixture = struct {
     /// Releases the map and every node's property buffers.
     fn deinit(self: *Fixture) void {
         self.state.deinit(self.gpa);
+        // SAFETY: `state.deinit` released every buffer the fixture owned, and
+        // no statement after it reads `self`.
+        self.* = undefined;
     }
 
     /// Stores one node and returns its id. `parent` is `null` for a root and
@@ -502,7 +505,7 @@ fn collectFollowing(
 ) !std.ArrayList(u64) {
     var out: std.ArrayList(u64) = .empty;
     errdefer out.deinit(gpa);
-    var ids = following_sibling_ids(parentOf(node), node.id());
+    var ids = followingSiblingIds(parentOf(node), node.id());
     const bound = ids.len();
     var cursor = followingSiblings(ids, node.tree_state);
     var taken: usize = 0;
@@ -522,13 +525,13 @@ test "a lone node and a root yield no following sibling" {
     const only = try fixture.add(1, root, 0, .button);
     try fixture.setChildren(root, &.{1});
 
-    var from_only = following_sibling_ids(parentOf(try fixture.ref(only)), only);
+    var from_only = followingSiblingIds(parentOf(try fixture.ref(only)), only);
     try testing.expect(from_only.next() == null);
     try testing.expect(from_only.nextBack() == null);
     try testing.expectEqual(@as(usize, 0), from_only.len());
 
     // A root has no parent, so its cursor is empty on the same grounds.
-    var from_root = following_sibling_ids(parentOf(try fixture.ref(root)), root);
+    var from_root = followingSiblingIds(parentOf(try fixture.ref(root)), root);
     try testing.expect(from_root.next() == null);
     try testing.expectEqual(@as(usize, 0), from_root.len());
 }
@@ -547,7 +550,7 @@ test "following sibling ids cover every later sibling from either end" {
     const second = FullNodeId.init(.{ .value = 2 }, .init(0));
     var front: std.ArrayList(u64) = .empty;
     defer front.deinit(gpa);
-    var cursor = following_sibling_ids(parentOf(try fixture.ref(second)), second);
+    var cursor = followingSiblingIds(parentOf(try fixture.ref(second)), second);
     const bound = cursor.len();
     var taken: usize = 0;
     while (taken < bound) : (taken += 1) {
@@ -558,7 +561,7 @@ test "following sibling ids cover every later sibling from either end" {
 
     var back: std.ArrayList(u64) = .empty;
     defer back.deinit(gpa);
-    var reversed = following_sibling_ids(parentOf(try fixture.ref(second)), second);
+    var reversed = followingSiblingIds(parentOf(try fixture.ref(second)), second);
     taken = 0;
     while (taken < bound) : (taken += 1) {
         const id = reversed.nextBack() orelse break;
@@ -568,7 +571,7 @@ test "following sibling ids cover every later sibling from either end" {
 
     // Two ends on one cursor meet without repeating an item, which is the
     // invariant the `front` and `back` indices carry.
-    var meeting = following_sibling_ids(parentOf(try fixture.ref(second)), second);
+    var meeting = followingSiblingIds(parentOf(try fixture.ref(second)), second);
     const third = meeting.next() orelse return error.NoSibling;
     try testing.expectEqual(@as(u64, 3), third.local.value);
     const fourth = meeting.nextBack() orelse return error.NoSibling;
@@ -579,7 +582,7 @@ test "following sibling ids cover every later sibling from either end" {
 
     // The last sibling has nothing behind it, and `len` agrees.
     const last = FullNodeId.init(.{ .value = 4 }, .init(0));
-    var spent = following_sibling_ids(parentOf(try fixture.ref(last)), last);
+    var spent = followingSiblingIds(parentOf(try fixture.ref(last)), last);
     try testing.expectEqual(@as(usize, 0), spent.len());
     try testing.expect(spent.next() == null);
 }
@@ -602,7 +605,7 @@ test "a graft parent yields no following sibling even with a child of its own" {
     // A graft node has one child and no siblings, so upstream `iterators.rs:92-94`
     // yields nothing. A cursor that read the `children` property first would
     // report node 2.
-    var cursor = following_sibling_ids(parentOf(try fixture.ref(graft)), graft);
+    var cursor = followingSiblingIds(parentOf(try fixture.ref(graft)), graft);
     try testing.expect(cursor.next() == null);
     try testing.expectEqual(@as(usize, 0), cursor.len());
 }
@@ -655,7 +658,7 @@ test "the filtered following cursor opens an excluded node and closes a subtree"
     const bound = treeWalkStepBound(fixture.state.nodes.count());
     var front: std.ArrayList(u64) = .empty;
     defer front.deinit(gpa);
-    var cursor = try following_filtered_siblings(try fixture.ref(first), roleFilter());
+    var cursor = try followingFilteredSiblings(try fixture.ref(first), roleFilter());
     var taken: usize = 0;
     while (taken < bound) : (taken += 1) {
         const node = (try cursor.next()) orelse break;
@@ -665,7 +668,7 @@ test "the filtered following cursor opens an excluded node and closes a subtree"
 
     var back: std.ArrayList(u64) = .empty;
     defer back.deinit(gpa);
-    var reversed = try following_filtered_siblings(try fixture.ref(first), roleFilter());
+    var reversed = try followingFilteredSiblings(try fixture.ref(first), roleFilter());
     taken = 0;
     while (taken < bound) : (taken += 1) {
         const node = (try reversed.nextBack()) orelse break;
@@ -679,7 +682,7 @@ test "the filtered following cursor opens an excluded node and closes a subtree"
     // the scan never opens it.
     var inclusive: std.ArrayList(u64) = .empty;
     defer inclusive.deinit(gpa);
-    var all = try following_filtered_siblings(try fixture.ref(first), includeAllFilter());
+    var all = try followingFilteredSiblings(try fixture.ref(first), includeAllFilter());
     taken = 0;
     while (taken < bound) : (taken += 1) {
         const node = (try all.next()) orelse break;
@@ -689,7 +692,7 @@ test "the filtered following cursor opens an excluded node and closes a subtree"
 
     // A filter that excludes everything ends the cursor at once and reports no
     // error, because that is a choice by the filter and not a cycle.
-    var none = try following_filtered_siblings(try fixture.ref(first), excludeEveryFilter());
+    var none = try followingFilteredSiblings(try fixture.ref(first), excludeEveryFilter());
     try testing.expect((try none.next()) == null);
     try testing.expect((try none.nextBack()) == null);
 }
@@ -707,7 +710,7 @@ test "an abandoned filtered iteration writes nothing and a later read sees the w
     // Take one item and drop the cursor. Nothing below releases anything,
     // because nothing below allocated.
     {
-        var abandoned = try following_filtered_siblings(try fixture.ref(first), includeAllFilter());
+        var abandoned = try followingFilteredSiblings(try fixture.ref(first), includeAllFilter());
         _ = try abandoned.next();
     }
 
@@ -720,7 +723,7 @@ test "an abandoned filtered iteration writes nothing and a later read sees the w
 
     var after: std.ArrayList(u64) = .empty;
     defer after.deinit(gpa);
-    var rebuilt = try following_filtered_siblings(try fixture.ref(first), includeAllFilter());
+    var rebuilt = try followingFilteredSiblings(try fixture.ref(first), includeAllFilter());
     var taken: usize = 0;
     while (taken < treeWalkStepBound(fixture.state.nodes.count())) : (taken += 1) {
         const node = (try rebuilt.next()) orelse break;
@@ -776,7 +779,7 @@ test "a filter that matches no ancestor still walks the document's children" {
     const start = try fixture.ref(first);
     const bound = treeWalkStepBound(fixture.state.nodes.count());
 
-    var cursor = try following_filtered_siblings(start, paragraphFilter());
+    var cursor = try followingFilteredSiblings(start, paragraphFilter());
     // Both ends are reachable: the front is the second child and the back is
     // the last included child of the document, which is the same node.
     const front_id = (cursor.front orelse return error.NoSibling).id();
@@ -800,7 +803,7 @@ test "a filter that matches no ancestor still walks the document's children" {
     // The other end reaches the same node and stops there.
     var behind: std.ArrayList(u64) = .empty;
     defer behind.deinit(gpa);
-    var reversed = try following_filtered_siblings(start, paragraphFilter());
+    var reversed = try followingFilteredSiblings(start, paragraphFilter());
     taken = 0;
     while (taken < bound) : (taken += 1) {
         const node = (try reversed.nextBack()) orelse break;
@@ -827,7 +830,7 @@ test "a filter that includes nothing yields nothing and reports done" {
     // rather than asking again: a cursor that re-derives its far end on every
     // call would walk the tree once per call.
     const start = try fixture.ref(first);
-    var cursor = try following_filtered_siblings(start, excludeAllFilter());
+    var cursor = try followingFilteredSiblings(start, excludeAllFilter());
     try testing.expect(cursor.front == null);
     try testing.expect(cursor.back == null);
     try testing.expect(cursor.done);
@@ -838,7 +841,7 @@ test "a filter that includes nothing yields nothing and reports done" {
         try testing.expect((try cursor.next()) == null);
     }
 
-    var reversed = try following_filtered_siblings(start, excludeAllFilter());
+    var reversed = try followingFilteredSiblings(start, excludeAllFilter());
     taken = 0;
     while (taken < bound) : (taken += 1) {
         try testing.expect((try reversed.nextBack()) == null);
@@ -862,7 +865,7 @@ test "a filter that includes the parent finds the back end it found before" {
     const start = try fixture.ref(first);
     const bound = treeWalkStepBound(fixture.state.nodes.count());
 
-    var cursor = try following_filtered_siblings(start, includeAllFilter());
+    var cursor = try followingFilteredSiblings(start, includeAllFilter());
     const back_id = (cursor.back orelse return error.NoSibling).id();
     try testing.expectEqual(@as(u64, 2), back_id.local.value);
 
@@ -877,7 +880,7 @@ test "a filter that includes the parent finds the back end it found before" {
 
     var behind: std.ArrayList(u64) = .empty;
     defer behind.deinit(gpa);
-    var reversed = try following_filtered_siblings(start, includeAllFilter());
+    var reversed = try followingFilteredSiblings(start, includeAllFilter());
     taken = 0;
     while (taken < bound) : (taken += 1) {
         const node = (try reversed.nextBack()) orelse break;

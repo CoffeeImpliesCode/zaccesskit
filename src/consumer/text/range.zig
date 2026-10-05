@@ -125,6 +125,9 @@ pub const WeakRange = struct {
     pub fn deinit(self: *WeakRange) void {
         self.start_comparable.deinit();
         self.end_comparable.deinit();
+        // SAFETY: both keys above were released, which is everything the value
+        // owned, and no statement after them reads `self`.
+        self.* = undefined;
     }
 
     /// The node the range was measured against, as an id rather than a handle.
@@ -455,7 +458,7 @@ pub fn eql(a: Range, b: Range) bool {
 /// The text direction a node lays its text out in, read from the nearest
 /// ancestor that declares one.
 pub fn inheritedTextDirection(node_ref: NodeRef) QueryError!?TextDirection {
-    return properties.fetchInheritedProperty(node_ref, TextDirection, textDirectionOf);
+    return properties.fetchInheritedProperty(TextDirection, node_ref, textDirectionOf);
 }
 
 fn textDirectionOf(node_ref: *const schema.Node) ?TextDirection {
@@ -480,7 +483,7 @@ const SliceVisitor = struct {
     visit: *const fn (context: ?*anyopaque, node_ref: NodeRef, text_bytes: []const u8) bool,
 
     fn onNode(context: ?*anyopaque, node_ref: NodeRef) bool {
-        const self: *@This() = @ptrCast(@alignCast(context.?));
+        const self: *SliceVisitor = @ptrCast(@alignCast(context.?));
         return self.visit(self.context, node_ref, sliceFor(self.range, node_ref));
     }
 };
@@ -525,7 +528,7 @@ const WriteVisitor = struct {
 
     fn onNode(context: ?*anyopaque, node_ref: NodeRef, text_bytes: []const u8) bool {
         _ = node_ref;
-        const self: *@This() = @ptrCast(@alignCast(context.?));
+        const self: *WriteVisitor = @ptrCast(@alignCast(context.?));
         self.writer.writeAll(text_bytes) catch {
             self.failed = true;
             return false;
@@ -541,7 +544,7 @@ const AppendVisitor = struct {
 
     fn onNode(context: ?*anyopaque, node_ref: NodeRef, text_bytes: []const u8) bool {
         _ = node_ref;
-        const self: *@This() = @ptrCast(@alignCast(context.?));
+        const self: *AppendVisitor = @ptrCast(@alignCast(context.?));
         self.out.appendSlice(self.gpa, text_bytes) catch {
             self.failed = true;
             return false;
@@ -557,7 +560,7 @@ const BoxFolder = struct {
     failure: ?QueryError,
 
     fn onNode(context: ?*anyopaque, node_ref: NodeRef) bool {
-        const self: *@This() = @ptrCast(@alignCast(context.?));
+        const self: *BoxFolder = @ptrCast(@alignCast(context.?));
         const wanted_start = runStartIndex(self.range, node_ref);
         const wanted_end = runEndIndex(self.range, node_ref);
         const box = foldBox(node_ref, wanted_start, wanted_end) catch |err| {
@@ -708,8 +711,8 @@ pub fn eqlInherited(comptime T: type, a: ?T, b: ?T) bool {
 /// without the update algorithm. Inserting moves the map, so a caller must
 /// insert every node before taking a handle.
 fn insert(
-    state: *tree_state.TreeState,
     gpa: std.mem.Allocator,
+    state: *tree_state.TreeState,
     value: u64,
     parent: ?u64,
     node_ref: schema.Node,
@@ -757,9 +760,9 @@ fn twoRunDocument(gpa: std.mem.Allocator, state: *tree_state.TreeState) !void {
         .{ .value = 1 },
         .{ .value = 2 },
     });
-    try insert(state, gpa, 0, null, document);
-    try insert(state, gpa, 1, 0, try textRun(gpa, "hello"));
-    try insert(state, gpa, 2, 0, try textRun(gpa, "world"));
+    try insert(gpa, state, 0, null, document);
+    try insert(gpa, state, 1, 0, try textRun(gpa, "hello"));
+    try insert(gpa, state, 2, 0, try textRun(gpa, "world"));
 }
 
 /// A `TextInput` over three runs holding `one`, `two` and `three`, so a test
@@ -773,10 +776,10 @@ fn threeRunDocument(gpa: std.mem.Allocator, state: *tree_state.TreeState) !void 
         .{ .value = 2 },
         .{ .value = 3 },
     });
-    try insert(state, gpa, 0, null, document);
-    try insert(state, gpa, 1, 0, try textRun(gpa, "one"));
-    try insert(state, gpa, 2, 0, try textRun(gpa, "two"));
-    try insert(state, gpa, 3, 0, try textRun(gpa, "three"));
+    try insert(gpa, state, 0, null, document);
+    try insert(gpa, state, 1, 0, try textRun(gpa, "one"));
+    try insert(gpa, state, 2, 0, try textRun(gpa, "two"));
+    try insert(gpa, state, 3, 0, try textRun(gpa, "three"));
 }
 
 /// The same two runs under a window, so a walk that climbs out of the last run
@@ -785,16 +788,16 @@ fn nestedRunDocument(gpa: std.mem.Allocator, state: *tree_state.TreeState) !void
     var window = schema.Node.init(gpa, .window);
     errdefer window.deinit();
     try schema.ids_props.setChildren(&window.properties, &.{.{ .value = 0 }});
-    try insert(state, gpa, 9, null, window);
+    try insert(gpa, state, 9, null, window);
     var document = schema.Node.init(gpa, .text_input);
     errdefer document.deinit();
     try schema.ids_props.setChildren(&document.properties, &.{
         .{ .value = 1 },
         .{ .value = 2 },
     });
-    try insert(state, gpa, 0, 9, document);
-    try insert(state, gpa, 1, 0, try textRun(gpa, "hello"));
-    try insert(state, gpa, 2, 0, try textRun(gpa, "world"));
+    try insert(gpa, state, 0, 9, document);
+    try insert(gpa, state, 1, 0, try textRun(gpa, "hello"));
+    try insert(gpa, state, 2, 0, try textRun(gpa, "world"));
 }
 
 fn rangeOver(
@@ -886,7 +889,7 @@ const TracingVisitor = struct {
     visited: std.ArrayList(u64) = .empty,
 
     fn onNode(context: ?*anyopaque, node_ref: NodeRef) bool {
-        const self: *@This() = @ptrCast(@alignCast(context.?));
+        const self: *TracingVisitor = @ptrCast(@alignCast(context.?));
         self.visited.append(self.gpa, node_ref.id().local.value) catch return false;
         return true;
     }
@@ -1106,14 +1109,14 @@ test "a run with no per-character positions yields no box" {
     var document = schema.Node.init(gpa, .text_input);
     errdefer document.deinit();
     try schema.ids_props.setChildren(&document.properties, &.{.{ .value = 1 }});
-    try insert(&state, gpa, 0, null, document);
+    try insert(gpa, &state, 0, null, document);
     var run_node = schema.Node.init(gpa, .text_run);
     errdefer run_node.deinit();
     try schema.strings.setValue(&run_node.properties, "ab");
     try schema.vectors.setCharacterLengths(&run_node.properties, &.{ 1, 1 });
     try schema.option.setBounds(&run_node.properties, schema.rectInit(0, 0, 20, 10));
     try schema.enums.setTextDirection(&run_node.properties, .left_to_right);
-    try insert(&state, gpa, 1, 0, run_node);
+    try insert(gpa, &state, 1, 0, run_node);
 
     var boxes = try boundingBoxes(gpa, try init(
         gpa,
@@ -1132,7 +1135,7 @@ test "a box over part of a run starts on the edge the range starts at" {
     var document = schema.Node.init(gpa, .text_input);
     errdefer document.deinit();
     try schema.ids_props.setChildren(&document.properties, &.{.{ .value = 1 }});
-    try insert(&state, gpa, 0, null, document);
+    try insert(gpa, &state, 0, null, document);
     var run_node = schema.Node.init(gpa, .text_run);
     errdefer run_node.deinit();
     try schema.strings.setValue(&run_node.properties, "abcd");
@@ -1141,7 +1144,7 @@ test "a box over part of a run starts on the edge the range starts at" {
     try schema.vectors.setCharacterWidths(&run_node.properties, &.{ 10, 10, 10, 10 });
     try schema.option.setBounds(&run_node.properties, schema.rectInit(0, 0, 40, 10));
     try schema.enums.setTextDirection(&run_node.properties, .left_to_right);
-    try insert(&state, gpa, 1, 0, run_node);
+    try insert(gpa, &state, 1, 0, run_node);
 
     // Characters 1 through 3 end at 30 and start at 10, so the box is exactly
     // the strip between them. A fold that used a closed far edge would report
@@ -1165,7 +1168,7 @@ test "a start at the leading edge of a run takes the whole box" {
     var document = schema.Node.init(gpa, .text_input);
     errdefer document.deinit();
     try schema.ids_props.setChildren(&document.properties, &.{.{ .value = 1 }});
-    try insert(&state, gpa, 0, null, document);
+    try insert(gpa, &state, 0, null, document);
     var run_node = schema.Node.init(gpa, .text_run);
     errdefer run_node.deinit();
     try schema.strings.setValue(&run_node.properties, "abcd");
@@ -1174,7 +1177,7 @@ test "a start at the leading edge of a run takes the whole box" {
     try schema.vectors.setCharacterWidths(&run_node.properties, &.{ 10, 10, 10, 10 });
     try schema.option.setBounds(&run_node.properties, schema.rectInit(5, 5, 45, 15));
     try schema.enums.setTextDirection(&run_node.properties, .left_to_right);
-    try insert(&state, gpa, 1, 0, run_node);
+    try insert(gpa, &state, 1, 0, run_node);
 
     // Start 0 and end 4 are the run edges, so upstream leaves the rectangle
     // alone at `text.rs:778` and the box is the stored one.

@@ -108,7 +108,7 @@ const Options = struct {
 /// One module's symbols, grouped by the module that declares them.
 const Group = struct {
     owner: []const u8,
-    names: std.ArrayListUnmanaged([]const u8) = .empty,
+    names: std.ArrayList([]const u8) = .empty,
 };
 
 /// Everything one run holds. The allocator lives for the whole run, so every
@@ -117,7 +117,7 @@ const Run = struct {
     gpa: Allocator,
     options: Options,
     tree: scan.Tree,
-    findings: std.ArrayListUnmanaged(Finding) = .empty,
+    findings: std.ArrayList(Finding) = .empty,
     /// The table this run built for each marked region, keyed by its marker.
     tables: std.StringArrayHashMapUnmanaged([]const u8) = .empty,
 
@@ -139,7 +139,7 @@ const Run = struct {
 /// one look the same to a reader, and only the first is a defect, so the table
 /// carries its own header row and no data rows.
 fn tableFor(run: *Run, module: *const scan.Module) ![]const u8 {
-    var groups: std.ArrayListUnmanaged(Group) = .empty;
+    var groups: std.ArrayList(Group) = .empty;
     for (module.edges.items) |edge| {
         const owner = scan.ownerOf(&run.tree, edge.target, edge.name, 0) orelse {
             // A target outside the scanned tree is `std` or a package, and
@@ -185,7 +185,7 @@ fn isRecorded(owner: []const u8) bool {
 
 fn groupFor(
     gpa: Allocator,
-    groups: *std.ArrayListUnmanaged(Group),
+    groups: *std.ArrayList(Group),
     owner: []const u8,
 ) !*Group {
     for (groups.items) |*candidate| {

@@ -584,13 +584,13 @@ export fn accesskit_vec2_neg(vec: Vec2) callconv(.c) Vec2 {
 // identity.
 
 /// `struct accesskit_affine` as `include/zaccesskit.h:1440-1442` declares it.
-const c_affine = extern struct {
+const CAffine = extern struct {
     /// `double _0[6];`
     _0: [6]f64,
 };
 
 /// `struct accesskit_rect` as `include/zaccesskit.h:1451-1456` declares it.
-const c_rect = extern struct {
+const CRect = extern struct {
     /// `double x0;`
     x0: f64,
     /// `double y0;`
@@ -602,7 +602,7 @@ const c_rect = extern struct {
 };
 
 /// `struct accesskit_point` as `include/zaccesskit.h:1533-1536` declares it.
-const c_point = extern struct {
+const CPoint = extern struct {
     /// `double x;`
     x: f64,
     /// `double y;`
@@ -610,7 +610,7 @@ const c_point = extern struct {
 };
 
 /// `struct accesskit_vec2` as `include/zaccesskit.h:1545-1548` declares it.
-const c_vec2 = extern struct {
+const CVec2 = extern struct {
     /// `double x;`
     x: f64,
     /// `double y;`
@@ -618,7 +618,7 @@ const c_vec2 = extern struct {
 };
 
 /// `struct accesskit_size` as `include/zaccesskit.h:1557-1560` declares it.
-const c_size = extern struct {
+const CSize = extern struct {
     /// `double width;`
     width: f64,
     /// `double height;`
@@ -626,52 +626,52 @@ const c_size = extern struct {
 };
 
 /// The header form of an `Affine`, coefficient for coefficient.
-fn affineToC(value: Affine) c_affine {
+fn affineToC(value: Affine) CAffine {
     return .{ ._0 = value.coeffs };
 }
 
 /// The Zig form of a header `Affine`, coefficient for coefficient.
-fn affineFromC(value: c_affine) Affine {
+fn affineFromC(value: CAffine) Affine {
     return .{ .coeffs = value._0 };
 }
 
 /// The header form of a `Rect`, field for field in the header's order.
-fn rectToC(value: Rect) c_rect {
+fn rectToC(value: Rect) CRect {
     return .{ .x0 = value.x0, .y0 = value.y0, .x1 = value.x1, .y1 = value.y1 };
 }
 
 /// The Zig form of a header `Rect`, field for field in the header's order.
-fn rectFromC(value: c_rect) Rect {
+fn rectFromC(value: CRect) Rect {
     return .{ .x0 = value.x0, .y0 = value.y0, .x1 = value.x1, .y1 = value.y1 };
 }
 
 /// The header form of a `Point`, field for field.
-fn pointToC(value: Point) c_point {
+fn pointToC(value: Point) CPoint {
     return .{ .x = value.x, .y = value.y };
 }
 
 /// The Zig form of a header `Point`, field for field.
-fn pointFromC(value: c_point) Point {
+fn pointFromC(value: CPoint) Point {
     return .{ .x = value.x, .y = value.y };
 }
 
 /// The header form of a `Vec2`, field for field.
-fn vec2ToC(value: Vec2) c_vec2 {
+fn vec2ToC(value: Vec2) CVec2 {
     return .{ .x = value.x, .y = value.y };
 }
 
 /// The Zig form of a header `Vec2`, field for field.
-fn vec2FromC(value: c_vec2) Vec2 {
+fn vec2FromC(value: CVec2) Vec2 {
     return .{ .x = value.x, .y = value.y };
 }
 
 /// The header form of a `Size`, field for field.
-fn sizeToC(value: Size) c_size {
+fn sizeToC(value: Size) CSize {
     return .{ .width = value.width, .height = value.height };
 }
 
 /// The Zig form of a header `Size`, field for field.
-fn sizeFromC(value: c_size) Size {
+fn sizeFromC(value: CSize) Size {
     return .{ .width = value.width, .height = value.height };
 }
 

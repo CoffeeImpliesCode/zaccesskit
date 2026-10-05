@@ -111,15 +111,6 @@ fn enter() void {
     allocation.clearError();
 }
 
-/// Records that the call just made failed to allocate.
-///
-/// The one failing member of `accesskit_error`
-/// (`accesskit-c/include/accesskit.h:1761-1764`). `ruling 1` above is what makes
-/// this reachable from a void setter as well as from a getter.
-fn note_oom() void {
-    allocation.failWith(.out_of_memory);
-}
-
 /// The node behind a read-only C handle.
 ///
 /// Upstream's handle is a `*Node` already (`accesskit-c/src/common.rs:19-21`

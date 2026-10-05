@@ -8061,8 +8061,8 @@ const sample_coords = [_]f32{ 1.5, 2.5 };
 /// address the C type can name.
 const no_node_ids: [*]const NodeId = sample_ids[0..0].ptr;
 const no_measurements: [*c]const f32 = sample_coords[0..0].ptr;
-const empty_actions = [_]?*CustomAction{};
-const no_actions: [*c]const ?*CustomAction = @ptrCast(&empty_actions);
+const empty_actions: [0]?*CustomAction = .{};
+const no_actions: [*c]const ?*CustomAction = empty_actions[0..].ptr;
 
 /// A caller-supplied action array as the `accesskit_custom_action *const *` the
 /// header declares.
@@ -8124,7 +8124,7 @@ test "an unset optional reads as a flag byte over a zero, and a set zero is one 
     inline for (optional_rows, optional_names) |row, name| {
         // Each row's getter has its own return type, and the offsets below are
         // that type's own, which is the only reason this is `inline for`.
-        const Answer = @typeInfo(@TypeOf(row[0])).@"fn".return_type.?;
+        const answer_type = @typeInfo(@TypeOf(row[0])).@"fn".return_type.?;
         const fixture = try Fixture.init(gpa, .button);
         defer fixture.deinit(gpa);
 
@@ -8149,8 +8149,8 @@ test "an unset optional reads as a flag byte over a zero, and a set zero is one 
         // `include/zaccesskit.h:1069-1072` declares `bool has_value` then
         // `accesskit_node_id value`, and C puts the value at offset 8. Comparing
         // the whole struct would compare storage no reader is told to read.
-        const payload_start = @offsetOf(Answer, "value");
-        const payload_len = @sizeOf(@FieldType(Answer, "value"));
+        const payload_start = @offsetOf(answer_type, "value");
+        const payload_len = @sizeOf(@FieldType(answer_type, "value"));
         try testing.expect(payload_start > 0);
         testing.expectEqualSlices(
             u8,

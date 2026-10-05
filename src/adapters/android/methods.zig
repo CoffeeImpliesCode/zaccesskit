@@ -16,16 +16,17 @@
 //! gap, not a rounding.
 //!
 //! **A name alone does not identify a method here.** `GetMethodID` takes three
-//! strings, and three names in this set are shared:
+//! strings, and three names in this set are shared: `obtain`, which names a
+//! factory on `AccessibilityEvent`, on `AccessibilityNodeInfo` and on
+//! `RangeInfo`; `setParent`, which is overloaded on one class; and `<init>`,
+//! which names a constructor on `android.graphics.Rect` and another on
+//! `AccessibilityAction`.
 //!
-//! The `obtain` and `<init>` rows below exceed 100 columns. A Markdown table
-//! row is one indivisible line, so neither can wrap without breaking the table.
-//!
-//! | Name | Rows | Why |
+//! | Name | Rows | Why one name is not enough |
 //! |---|---|---|
-//! | `obtain` | 3 | `AccessibilityEvent.obtain(int)`, `AccessibilityNodeInfo.obtain(View, int)` and `RangeInfo.obtain(int, float, float, float)` are three unrelated factories |
-//! | `setParent` | 2 | `setParent(View)` and `setParent(View, int)` are overloads on one class |
-//! | `<init>` | 2 | `android.graphics.Rect.<init>` and `AccessibilityAction.<init>` are two constructors |
+//! | `obtain` | 3 | Three unrelated classes take it |
+//! | `setParent` | 2 | One class takes two overloads |
+//! | `<init>` | 2 | Two classes take a constructor |
 //!
 //! So `findByName` is ambiguous by construction and exists only to say so, and
 //! `findById` takes the whole triple.
