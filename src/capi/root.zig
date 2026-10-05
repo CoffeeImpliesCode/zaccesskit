@@ -30,9 +30,14 @@
 //! wrong length. `marshal.dupCString` truncates for that reason, and every
 //! function that takes or returns text says so in its own doc comment.
 //!
-//! **Not here yet.** The tree-update, optional and property-value groups are still
-//! being written, and this file grows as they land. A namespace root that listed a
-//! module that does not exist would compile against nothing.
+//! **The three newest modules, and what each one is.** Two of them own no
+//! export at all, and that is deliberate rather than unfinished.
+//! `optionals.zig` is the twenty-five `accesskit_opt_*` forms and the absence
+//! convention each one uses; the header declares no `accesskit_opt_*` function,
+//! so there is nothing there to export. `property_value.zig` is the nineteen C
+//! enumerations and the 272 tags they carry, proved to be one-to-one in both
+//! directions. `tree_update.zig` is the one of the three with declarations, and
+//! it owns all ten `accesskit_tree_update_*` exports.
 
 const std = @import("std");
 
@@ -61,6 +66,16 @@ pub const action_request = @import("action_request.zig");
 /// The platform entry points and the ten per-platform releases.
 pub const platform = @import("platform.zig");
 
+/// The tree update: one atomic change to one tree, and its ten exports.
+pub const tree_update = @import("tree_update.zig");
+
+/// The nineteen C enumerations and the 272 tags they carry.
+pub const property_value = @import("property_value.zig");
+
+/// The twenty-five `accesskit_opt_*` forms and the absence convention each one
+/// uses.
+pub const optionals = @import("optionals.zig");
+
 test "every module in this namespace is reachable and analysed" {
     // A `pub const` nothing references is a re-export the compiler may skip, so a
     // green run would report zero tests and prove nothing about the exports
@@ -74,4 +89,7 @@ test "every module in this namespace is reachable and analysed" {
     std.testing.refAllDecls(tree_info);
     std.testing.refAllDecls(action_request);
     std.testing.refAllDecls(platform);
+    std.testing.refAllDecls(tree_update);
+    std.testing.refAllDecls(property_value);
+    std.testing.refAllDecls(optionals);
 }
