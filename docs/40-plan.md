@@ -52,20 +52,23 @@ different total.
 
 | Layer | Modules | Lines | `test "` declarations | In the import graph |
 |---|---:|---:|---:|---:|
-| `src/schema/` | 24 | 13982 | 318 | 24 of 24 |
-| `src/consumer/` | 28 | 21274 | 385 | 28 of 28 |
-| `src/capi/` | 14 | 22294 | 220 | 14 of 14 |
-| `src/adapters/` | 47 | 35956 | 510 | 39 of 47 |
+| `src/schema/` | 24 | 13992 | 318 | 24 of 24 |
+| `src/consumer/` | 28 | 21282 | 385 | 28 of 28 |
+| `src/capi/` | 14 | 22316 | 220 | 14 of 14 |
+| `src/adapters/` | 47 | 36528 | 519 | 43 of 47 |
 | `src/root.zig` | 1 | 127 | 5 | in the graph |
-| **All** | **114** | **93633** | **1438** | **106 of 114** |
+| **All** | **114** | **94245** | **1447** | **110 of 114** |
 
-Eight modules and 2430 lines are outside the graph, and 46 of the 1438 test
+Four modules and 1554 lines are outside the graph, and 22 of the 1447 test
 declarations sit in those files, so a build step that roots at `src/root.zig`
-analyses none of them. Seven are AT-SPI or Windows modules. Three of them,
-`src/adapters/windows/bindings.zig`, `src/adapters/windows/com.zig` and
-`src/adapters/windows/error_codes.zig`, sit outside the graph because
-`build.zig.zon` does not name `zigwin32`, and
-`src/adapters/windows/root.zig:19-21` already records that.
+analyses none of them. All four are Windows modules and all four need the
+`zigwin32` pin that `build.zig.zon` does not declare. **Declaring the pin does
+not reach them.** Compiled against the pinned commit with Zig 0.16.0,
+`bindings.zig` compiles and its six tests pass on `x86_64-linux`, the other
+three fail to compile, and `bindings.zig` itself cannot be analysed for
+`aarch64-linux` or `powerpc64-linux`.
+`docs/42-native-adapter-build-map.md` section 2.1.5 records every diagnostic,
+and `src/adapters/windows/root.zig:19-31` records the measurement.
 
 `src/root.zig` is 127 lines and declares five names: `schema` at `:36`,
 `consumer` at `:49`, `capi` at `:57`, `version` at `:68` and
@@ -656,7 +659,7 @@ is what `@embedFile` gives for free
 
 ## 6. What is blocked, and on what
 
-Nine items. Three of them block a milestone. Six bound a claim.
+Ten items. Four of them block a milestone. Six bound a claim.
 
 | # | Blocker | Evidence | What unblocks it | Who acts |
 |---|---|---|---|---|
@@ -669,6 +672,7 @@ Nine items. Three of them block a milestone. Six bound a claim.
 | 7 | No Windows host and no Wine | `which wine` returns nothing. `docs/16-native-platform-apis.md:1788`. `zig build-exe -target x86_64-windows` does link, with `-luiautomationcore` and with `-luser32` (`docs/16-native-platform-apis.md:1776-1778`, exercised compilation) | A Windows host, or a Windows runner in CI. M7 is not blocked, it is limited to compile-only | whoever owns the CI |
 | 8 | No assistive technology on this bus | `at-spi2-registryd` and `at-spi2d` are not installed, and only `at-spi-bus-launcher` is (`docs/12-accesskit-adapters.md:1460`). Six seconds of idle on the live bus gave zero emissions, though both `AddMatch` calls succeeded (`docs/26-goose-live-bus-probe.md:354-359`) | A desktop session with a screen reader. Until then M6 proves the bus, not the reader, and the reader claim stays open in `docs/50-verification.md` | whoever tests on a desktop |
 | 9 | Zig 0.16.0 ships no `std.com` | A listing of `lib/std` has no `com.zig` (`docs/16-native-platform-apis.md:1530-1535`). zigwin32 gives types and extern declarations, not an object factory | Nothing unblocks it. The Windows COM object base, about 120 lines, is port-owned work inside M7 | nobody |
+| 10 | Declaring the `zigwin32` pin turns two `cross-test` rows red | `std.builtin.CallingConvention.winapi` is defined by CPU architecture alone at `lib/std/builtin.zig:132-138`: `x86_64`, `x86`, `aarch64` and `thumb` have values and every other architecture reaches `else => unreachable`. `bindings.zig` carries `callconv(.winapi)` in its vtable fields, so `aarch64-linux` fails with `error: calling convention 'aarch64_aapcs_win' not supported by compiler backend 'stage2_llvm'` and `powerpc64-linux` fails with `error: reached unreachable code`. Both rows are in `cross-test.profile.sh:38-42` and `CROSS_REQUIRE_RUNNERS=1` is set. Exercised compilation against the pinned commit, `docs/42-native-adapter-build-map.md` section 2.1.5 | Adoptable, not adopted, and the blocker is not the absence of the package. Scope the tests that read a `VTable` to an architecture where `.winapi` resolves, fix the three files that do not compile, then take the pin. The `.hash` `build.zig.zon` needs comes from one `zig build` run | this project at M7 |
 
 ---
 

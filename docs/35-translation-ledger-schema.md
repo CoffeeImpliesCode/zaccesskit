@@ -958,7 +958,7 @@ modules are still being written." All twelve are written. A count over the tree 
 | `src/schema/props/table.zig` | 2404 | 31 |
 | `src/schema/props/numbers.zig` | 799 | 29 |
 | `src/schema/props/ids.zig` | 756 | 23 |
-| `src/schema/props/enums.zig` | 962 | 20 |
+| `src/schema/props/enums.zig` | 969 | 20 |
 | `src/schema/update.zig` | 1022 | 19 |
 | `src/schema/props/colors.zig` | 550 | 16 |
 | `src/schema/props/vectors.zig` | 813 | 15 |

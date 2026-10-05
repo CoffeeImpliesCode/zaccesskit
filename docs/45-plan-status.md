@@ -293,13 +293,14 @@ named there as a split into five modules, and no split has been written.
 when it was written. The plan's own blocker 8 says the bus is live and the
 reader is not. Nothing here has run against either.
 
-### M7. The Windows adapter — one file on disk, the dependency is not pinned
+### M7. The Windows adapter — 12 files on disk, the dependency is not pinned
 
 **Plan said.** `src/adapters/windows/`, about 16 modules, about 4000 lines of
 Zig, against `marlersoft/zigwin32` at
 `9f15c276b4e9d05afd34a10d8662a7dfc34647ea`.
 
-**Measured.** One file, 774 lines. The dependency is not in `build.zig.zon`.
+**Measured.** Twelve files, 6895 lines, 103 `test "` declarations. The
+dependency is not in `build.zig.zon`.
 
 | Item | Measured | Evidence |
 |---|---|---|
@@ -307,17 +308,25 @@ Zig, against `marlersoft/zigwin32` at
 | upstream test lines | 712, exact | `adapters/windows/src/tests/*.rs` |
 | upstream example lines | 317, not in the plan | `adapters/windows/examples/hello_world.rs` |
 | `zigwin32` dependency | absent | `build.zig.zon:12-33` |
-| Zig on disk | 1 file, 774 lines | 06:50:33Z |
+| files in `src/adapters/windows/` | 12, 6895 lines, 103 `test "` | a walk of the directory |
+| of those, outside the import graph | 4, 1554 lines, 22 `test "` | a walk of the `@import` graph from `src/root.zig` |
 
-**Status.** Not started as a milestone. One binding file is on disk.
+**Status.** Not started as a milestone. The seam, the adapter state machine and
+the subclassing adapter are written and tested. The COM node layer is not.
 
 **The dependency is not pinned, so the compile route does not exist yet.** The
 plan's gate is `zig build-obj -target x86_64-windows` against zigwin32. Without
 the pin that command cannot resolve the import.
 
-**Not verified.** `bindings.zig` names symbols. Nothing was compiled here, and
-the 712 upstream test lines have no route on this host. The plan already says
-this, and it is still true.
+**One claim in this section was wrong until it was measured.** It said
+`bindings.zig` names symbols and that nothing was compiled here. `bindings.zig`
+compiles against the pinned commit and its six tests pass on `x86_64-linux`, so
+the second half is false. The other three files outside the graph fail to
+compile on all three cross-test rows, and `bindings.zig` itself cannot be
+analysed for `aarch64-linux` or `powerpc64-linux`, because
+`std.builtin.CallingConvention.winapi` has no value for those architectures.
+`docs/42-native-adapter-build-map.md` section 2.1.5 records every diagnostic.
+The 712 upstream test lines still have no route on this host.
 
 ### M8. The macOS adapter — not started
 

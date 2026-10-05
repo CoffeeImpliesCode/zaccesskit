@@ -173,7 +173,7 @@ fn tableFor(run: *Run, module: *const scan.Module) ![]const u8 {
 
     const rows = try run.gpa.alloc([]const u8, groups.items.len);
     for (groups.items, rows) |group, *row| {
-        row.* = try formatRow(run.gpa, group);
+        row.* = try formatRow(run.gpa, module, group);
     }
     return document.table(run.gpa, rows);
 }
@@ -195,14 +195,30 @@ fn groupFor(
     return &groups.items[groups.items.len - 1];
 }
 
-fn formatRow(gpa: Allocator, group: Group) ![]const u8 {
+/// One row: the symbols the group names, and where the document prints the
+/// module that declares them.
+///
+/// **The path prints the way the document writes it, not the way the tree
+/// keys it.** A module inside the layer prints layer-relative and a module
+/// outside it prints the way the importing file wrote it, which is
+/// `Module.display`. Printing the tree's own key instead puts
+/// `src/consumer/node_id.zig` beside a heading that reads `node_id.zig`, and a
+/// reader cannot tell which of the two the document means.
+///
+/// `display` reports whether it allocated, and only an allocated path is
+/// released here.
+fn formatRow(gpa: Allocator, module: *const scan.Module, group: Group) ![]const u8 {
     var out: Io.Writer.Allocating = .init(gpa);
     defer out.deinit();
     for (group.names.items, 0..) |name, index| {
         if (index != 0) try out.writer.writeAll(", ");
         try out.writer.print("`{s}`", .{name});
     }
-    return std.fmt.allocPrint(gpa, "{s} | `{s}`", .{ out.written(), group.owner });
+
+    const shown = try module.display(gpa, group.owner, consumer_prefix);
+    defer if (shown.owned) gpa.free(shown.path);
+
+    return std.fmt.allocPrint(gpa, "{s} | `{s}`", .{ out.written(), shown.path });
 }
 
 fn containsName(names: []const []const u8, name: []const u8) bool {

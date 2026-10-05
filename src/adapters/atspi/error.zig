@@ -9,16 +9,17 @@
 //!
 //! **What this module owns.** The six members, the five D-Bus error names, and
 //! the text each carries. No other module may name `org.freedesktop.DBus.Error.*`
-//! except `dispatch.zig`, which puts the name on the wire.
+//! except the dispatch layer, which is what puts a name on the wire and which
+//! does not exist yet.
 //!
 //! **Why the source is a path and not an `ObjectId`.** `docs/41` section 2.3
-//! puts `object_id.zig` below every other module and gives `error.zig` exactly
-//! one import, `wire.zig`. Naming `ObjectId` in a parameter would add a second
-//! edge and make the two modules mutually reachable in ownership terms. So
-//! `mapError` takes the object's own path, which is all upstream's
-//! `UnknownObject` arm uses, and `mapErrorFromNode` takes anything with a
-//! `path` method as an `anytype` parameter. A generic parameter is not an
-//! import edge, so the graph the build map states still holds.
+//! puts `object_id.zig` below every other module and gives `error.zig` no
+//! import edge. Naming `ObjectId` in a parameter would add one and make the two
+//! modules mutually reachable in ownership terms. So `mapError` takes the
+//! object's own path, which is all upstream's `UnknownObject` arm uses, and
+//! `mapErrorFromNode` takes anything with a `path` method as an `anytype`
+//! parameter. A generic parameter is not an import edge, so the graph the build
+//! map states still holds.
 //!
 //! **Errors.** Every function here is total and allocates nothing.
 
@@ -76,11 +77,13 @@ pub const error_failed: [:0]const u8 = "org.freedesktop.DBus.Error.Failed";
 
 /// The D-Bus error name a negative index produces, at `accessible.rs:76-77` and
 /// `selection.rs:78-82`. `mapError` never produces it, because no internal error
-/// carries a negative index; `interfaces/root.zig` names it for those two sites.
+/// carries a negative index; the interface modules `docs/41` schedules name it
+/// for those two sites, and they do not exist yet.
 pub const error_invalid_args: [:0]const u8 = "org.freedesktop.DBus.Error.InvalidArgs";
 
 /// The D-Bus error name an unimplemented member produces, at `document.rs:10-12`,
-/// `editable_text.rs:10-12` and `image.rs:31-33`.
+/// `editable_text.rs:10-12` and `image.rs:31-33`. The interface modules
+/// `docs/41` schedules name it for those three sites, and they do not exist yet.
 pub const error_not_supported: [:0]const u8 = "org.freedesktop.DBus.Error.NotSupported";
 
 /// The message for a negative index, shared by `accessible.rs:77` and
@@ -131,11 +134,12 @@ pub fn mapError(source_path: []const u8, err: Error) DbusError {
 ///
 /// This is `map_error_from_node` at `util.rs:40-42`, which upstream writes as
 /// `map_error(ObjectId::from(source), error)`. Taking the source as `anytype`
-/// keeps the one import `docs/41` section 2.3 gives this module, so the caller
-/// is `interfaces/*.zig` or `dispatch.zig` and neither imports the other.
+/// keeps `docs/41` section 2.3 free of an import edge, so the caller is an
+/// interface module or the dispatch layer and neither imports the other. Those
+/// modules do not exist yet.
 ///
-/// `source` must answer `path() []const u8`. `Node` at `node.zig` and `Root` at
-/// the same file both do.
+/// `source` must answer `path() []const u8`. `Node` and `Root` at the
+/// `node.zig` that `docs/41` schedules both do.
 ///
 /// **Errors.** This function does not fail.
 pub fn mapErrorFromNode(source: anytype, err: Error) DbusError {

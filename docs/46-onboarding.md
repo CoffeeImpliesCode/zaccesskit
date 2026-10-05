@@ -135,14 +135,15 @@ re-exports `schema`, `consumer` and `capi`. A `pub const` that no other declarat
 references is a re-export that analyzes nothing, so the count says nothing about a
 module that no re-export reaches.
 
-A walk of the `@import` graph from `src/root.zig` on 2026-10-05 puts that number in
-writing. The tree holds 114 modules under `src/`. 106 of them are in the graph. The
-eight that are not hold 2430 lines and 46 of the 1438 `test "` declarations under
-`src/`, so no shard reaches them. Seven are AT-SPI or Windows modules, and three of
-those, `src/adapters/windows/bindings.zig`, `src/adapters/windows/com.zig` and
-`src/adapters/windows/error_codes.zig`, are outside the graph because
-`build.zig.zon` does not name `zigwin32`. `src/adapters/windows/root.zig:19-21` says
-so. Do not quote a test count as coverage of those eight files.
+A walk of the `@import` graph from `src/root.zig` puts that number in writing.
+The tree holds 114 modules under `src/`. 110 of them are in the graph. The four
+that are not hold 1554 lines and 22 of the 1447 `test "` declarations under
+`src/`, so no shard reaches them. All four are Windows modules and all four need
+the `zigwin32` pin that `build.zig.zon` does not declare. Declaring the pin does
+not reach them either: `docs/42-native-adapter-build-map.md` section 2.1.5
+records that one of the four compiles against the pinned commit and three do
+not. `src/adapters/windows/root.zig:19-31` says so. Do not quote a test count as
+coverage of those four files.
 
 ### 2.5 Scratch
 

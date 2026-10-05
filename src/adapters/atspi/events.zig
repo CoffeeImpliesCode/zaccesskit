@@ -45,11 +45,11 @@
 //! **What is protocol here and what is bytes.** This module owns the *shape*:
 //! the signature string, the argument order, the interface names, the member
 //! names and the values each argument carries. It owns no bytes. The
-//! marshalling is goose's, through `wire/rect.zig` and `object_address.zig`,
-//! and those two are not reachable while goose is not a dependency of this
-//! project. A test below pins the signature and the order, which is the part a
-//! wrong transcription breaks; the byte layout is pinned in the modules that
-//! own it.
+//! marshalling is the port's own, through `wire/rect.zig` and
+//! `object_address.zig`, and both are reachable from this adapter and both pin
+//! the byte layout against the alignment the D-Bus specification fixes. A test
+//! below pins the signature and the order, which is the part a wrong
+//! transcription breaks.
 //!
 //! **Every loop over a domain here is bounded by that domain's own length**, and
 //! each one says which length it is in its doc comment. `Properties.put` scans

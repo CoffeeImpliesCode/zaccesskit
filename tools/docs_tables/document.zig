@@ -42,11 +42,14 @@ pub const Region = struct {
     /// The bytes between the opening marker's newline and the closing marker's
     /// line start. It always ends in a newline when the table is well formed.
     body: []const u8,
-
     /// The line the opening marker is on, 1-based, for a finding.
     line: u32,
     /// The byte the opening marker starts at.
     at: usize,
+    /// The byte the body starts at, which is the opening marker's line end.
+    /// A rewrite replaces from here rather than from `at`, so the marker that
+    /// named the table survives the write that fills it.
+    body_at: usize,
     /// The byte the closing marker's line starts at.
     end_at: usize,
 };
@@ -111,6 +114,7 @@ pub fn parse(gpa: Allocator, source: []const u8) !Report {
             .body = source[body_start..end_at],
             .line = lineOf(source, begin_at),
             .at = begin_at,
+            .body_at = body_start,
             .end_at = end_at,
         });
         cursor = end_at + endMarkerLineLen(source, end_at);
@@ -191,7 +195,12 @@ pub fn rewrite(
     var cursor: usize = 0;
     for (regions, bodies) |region, body| {
         if (body) |text| {
-            try w.writeAll(source[cursor..region.at]);
+            // The opening marker is part of the region but not part of the
+            // body, so it is copied across rather than replaced. Replacing
+            // from `region.at` drops the marker that named the table, and the
+            // next run then reads no region at all and passes on a document
+            // that has lost every table.
+            try w.writeAll(source[cursor..region.body_at]);
             try w.writeAll(text);
             cursor = region.end_at;
         }

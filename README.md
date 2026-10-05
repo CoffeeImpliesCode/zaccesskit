@@ -39,12 +39,12 @@ re-measure it before you quote it.
 
 | Layer | Modules | Lines | `test "` | In the analysis graph |
 |---|---:|---:|---:|---|
-| `src/schema/` | 24 | 13973 | 318 | yes |
-| `src/consumer/` | 28 | 21279 | 385 | yes |
-| `src/capi/` | 14 | 22283 | 220 | yes |
-| `src/adapters/` | 47 | 35964 | 510 | 39 of 47 |
-| `src/root.zig` | 1 | 124 | 5 | yes |
-| **All of `src/`** | **114** | **93623** | **1438** | **106 of 114** |
+| `src/schema/` | 24 | 13992 | 318 | yes |
+| `src/consumer/` | 28 | 21282 | 385 | yes |
+| `src/capi/` | 14 | 22316 | 220 | yes |
+| `src/adapters/` | 47 | 36528 | 519 | 43 of 47 |
+| `src/root.zig` | 1 | 127 | 5 | yes |
+| **All of `src/`** | **114** | **94245** | **1447** | **110 of 114** |
 
 `src/schema/` holds the platform-neutral vocabulary: roles, actions, identifiers,
 geometry, the property model and the tree update. It holds no I/O, no clock and
@@ -59,11 +59,11 @@ exports 446 of them, because 52 sit behind a preprocessor guard that is off
 there. `docs/40-capi-build-map.md` section 1.1 measured both figures, and
 `tools/capi_parity/main.zig` re-measures them per target on demand.
 
-### The analysis graph does not cover eight files
+### The analysis graph does not cover four files
 
 `zig build test` compiles the test root `src/root.zig` and follows every
-`@import` from it. That reaches 106 of the 114 modules under `src/`. The other
-eight are on disk, are compiled by nobody, and hold 2430 lines and 46 `test "`
+`@import` from it. That reaches 110 of the 114 modules under `src/`. The other
+four are on disk, are compiled by nobody, and hold 1554 lines and 22 `test "`
 declarations.
 
 | File | Lines | `test "` | Why nothing imports it |
@@ -71,17 +71,19 @@ declarations.
 | `src/adapters/windows/bindings.zig` | 746 | 6 | Needs the `zigwin32` pin, which `build.zig.zon` does not declare. |
 | `src/adapters/windows/com.zig` | 532 | 8 | The same pin. This is the COM node layer. |
 | `src/adapters/windows/error_codes.zig` | 176 | 5 | The same pin. |
-| `src/adapters/atspi/object_address.zig` | 315 | 9 | Needs the `goose` pin, which `build.zig.zon` does not declare. |
-| `src/adapters/atspi/wire/action.zig` | 154 | 5 | The same pin. |
-| `src/adapters/atspi/wire/rect.zig` | 171 | 6 | The same pin. |
-| `src/adapters/atspi/error.zig` | 236 | 4 | Nothing names it. Its own directory doc does not either. |
-| `src/adapters/windows/window_handle.zig` | 100 | 3 | Nothing names it. Its own directory doc does not either. |
+| `src/adapters/windows/window_handle.zig` | 100 | 3 | The same pin. Nothing else named it. |
 
-The last two rows are a different defect from the first six. The first six are
-blocked on a dependency decision and their directory doc comments say so.
-`window_handle.zig` and `error.zig` are orphans: `grep -rl` finds no importer,
-and `src/adapters/windows/root.zig` and `src/adapters/atspi/root.zig` do not
-mention either file. They are ported code with no caller.
+All four are Windows modules, and declaring the pin does not reach them.
+Compiled against the pinned `zigwin32` commit with Zig 0.16.0, `bindings.zig`
+compiles and its six tests pass on `x86_64-linux`, the other three fail to
+compile, and `bindings.zig` itself cannot be analysed for `aarch64-linux` or
+`powerpc64-linux`. `docs/42-native-adapter-build-map.md` section 2.1.5 gives
+every diagnostic and the fix it needs.
+
+The same question on the AT-SPI side has a different answer, and the difference
+is the finding. `goose` covered four type definitions there, so those modules
+now write their own D-Bus body bytes and are reached. No Zig package covers the
+UI Automation boundary, so the Windows four cannot be written the same way.
 
 Reproduce the reachability with a walk of the `@import` graph from
 `src/root.zig`, skipping `std`, `builtin`, `zio` and `build_options`.
@@ -93,10 +95,9 @@ in Debug and in ReleaseSafe, no leaks. That is the owner's observation. This
 README does not repeat a run it did not perform.
 
 The census above is a different measurement and the two do not agree exactly:
-1392 `test "` declarations sit in the analysis graph against 1371 reported
+1425 `test "` declarations sit in the analysis graph against 1371 reported
 passes. A declaration count and a pass count are not the same measurement, and
-the gap of 21 is unexplained. Do not treat either figure as a certificate for
-the other.
+the two disagree. Do not treat either figure as a certificate for the other.
 
 ## Why a direct translation
 
@@ -143,14 +144,14 @@ correctly (`cross-test.profile.sh:29-33`).
 
 ### `zig ast-check` reaches further than `zig build test`
 
-`zig ast-check` scans every file under `src/`, so it checks the eight modules
+`zig ast-check` scans every file under `src/`, so it checks the four modules
 the test root cannot reach. A green `zig build test` therefore says nothing
-about them. A parse error or a half-finished rename in one of those eight files
+about them. A parse error or a half-finished rename in one of those four files
 surfaces at the `ast-check` stage and nowhere else, and no build step will have
 warned you first.
 
 `src/adapters/windows/com.zig` is the file to watch. It is the COM node layer,
-it is the largest of the eight at 532 lines, and no stage above `ast-check`
+it is the largest of the four at 532 lines, and no stage above `ast-check`
 looks at it.
 
 ### The two cache paths must stay symlinks
@@ -194,9 +195,19 @@ checkout and `ext2/ext3` for the cache root.
 | `goose` | A Zig D-Bus library and the candidate for the AT-SPI adapter. Under evaluation, not adopted. | Tag `v3.3.0`, commit `8c6ee3a984a3b314bb921e3f8f6428a51a6d93e1`. It is not in `build.zig.zon`. |
 | `zigwin32` | The candidate binding route for the Windows COM layer. Not adopted. | `marlersoft/zigwin32` at `9f15c276b4e9d05afd34a10d8662a7dfc34647ea`, per `docs/42-native-adapter-build-map.md:38`. It is not in `build.zig.zon`. |
 
-The two unadopted pins are why six modules sit outside the analysis graph.
-Declaring either one is the single change that pulls its files into the build,
-and it is a decision this project has not taken.
+`goose` is unadopted because the port writes its own D-Bus body bytes, so no
+module waits on it.
+
+**`zigwin32` is adoptable and is not adopted.** The blocker is not the absence
+of a package. The package fetches, declares no dependencies and opens no
+header. The blocker is one compile error in each of the three files that do not
+compile against it, one test in `error_codes.zig` whose expected value is
+wrong, one design question about `HWND`, and one architecture mismatch that
+keeps `bindings.zig` out of two rows of the cross-test matrix. A later reader
+must be able to tell that from "the package is unavailable", because one is a
+decision this project has not taken and the other is not a fact about this
+host. `docs/42-native-adapter-build-map.md` section 2.1.5 records every defect
+and the fix each one answers.
 
 `goose` v3.3.0 builds and runs under Zig 0.16.0, and
 `docs/26-goose-live-bus-probe.md` drove it against the live accessibility bus on

@@ -15,22 +15,42 @@
 //! `ObjectAddress` and the two allocations behind it, because a reply built by
 //! `ObjectId.toAddress` has to outlive the call that built it. Keeping ownership
 //! out of `ObjectAddress` is not tidiness: a peer decodes a `(so)` by walking
-//! the struct's fields, so a third field on the wire struct would make the
-//! decoder read a `bool` out of the path. The test below decodes a reply to keep
-//! that true.
+//! the struct's two fields, so a third field on the wire struct would make the
+//! decoder read a `bool` out of the path.
 //!
-//! **Why this module imports nothing.** `docs/41` section 2.3 gives
-//! `object_address.zig` no edge. The three paths it names are declared in
-//! `object_id.zig`, which sits below it, and the six-line string writer below is
-//! this module's own. A construction helper that would need `ObjectId` belongs
-//! there.
+//! **Why the members are sentinel slices.** A D-Bus `STRING` and an
+//! `OBJECT_PATH` are the same wire shape, a `u32` byte count, the bytes and a
+//! NUL. A `[:0]const u8` is what a marshaller can write without copying, and it
+//! is what `object_id.zig` already builds, so neither type owns a byte.
+//!
+//! **Why `ser` is hand-written.** Upstream derives `zvariant::Type`, and that
+//! derive is what produced `(so)`. A Zig port has no derive, so the struct
+//! carries the signature as a `comptime` constant and a `ser` method that
+//! appends the two strings to a message body. `docs/12` section 11 records this
+//! substitution: a hand-written marshal per wire type, checked against recorded
+//! bytes. `docs/12` section 9.1 records the same choice for a body the library
+//! cannot marshal.
+//!
+//! **Wire layout.** The D-Bus specification, section "Byte order and
+//! alignment", says a struct starts on an 8-byte boundary and that each of its
+//! members is then aligned naturally. A `STRING` and an `OBJECT_PATH` are both
+//! 4-aligned, so the pad between the bus name and the path is part of the
+//! encoding and not optional. A bus name of five bytes ends the body at ten,
+//! two bytes short of the path's alignment, which makes the whole address 48
+//! bytes rather than 46.
+//!
+//! **The one edge this module owns.** The padding and string helpers below are
+//! this module's own, and `docs/41` section 2.3 keeps them that way, so
+//! `wire/action.zig` carries its own copy rather than importing one.
+//! `initFromObjectId` is the one exception: it names the `ObjectId` type,
+//! because an `anytype` parameter binds the type of its argument as written and
+//! the argument at every call site is an enum literal whose natural type is the
+//! union's tag, which has no `path`. `object_id.zig` imports nothing here, so
+//! the edge runs one way and the object-path scheme still tests on its own.
 
 const std = @import("std");
 
-const goose = @import("goose");
-const DBusWriter = goose.core.value.DBusWriter;
-const GPath = goose.core.value.GPath;
-const GStr = goose.core.value.GStr;
+const object_id = @import("object_id.zig");
 
 /// The object path every absent child answers with.
 ///
@@ -46,13 +66,13 @@ pub const null_path: [:0]const u8 = "/org/a11y/atspi/null";
 pub const ObjectAddress = struct {
     /// The wire signature of `ObjectAddress`. Every member that returns a peer
     /// checks its decoder against this one constant.
-    pub const SIGNATURE: [:0]const u8 = "(so)";
+    pub const signature: [:0]const u8 = "(so)";
 
     /// The unique name of the connection that owns `path`. Empty for the null
     /// address, where no connection owns anything.
-    bus_name: GStr,
+    bus_name: [:0]const u8,
     /// The path of the named object on that connection.
-    path: GPath,
+    path: [:0]const u8,
 
     /// Builds an address from a bus name and a path, copying neither.
     ///
@@ -61,7 +81,7 @@ pub const ObjectAddress = struct {
     ///
     /// **Errors.** This function does not fail.
     pub fn fromSlices(bus_name: [:0]const u8, path: [:0]const u8) ObjectAddress {
-        return .{ .bus_name = .{ .s = bus_name }, .path = .{ .s = path } };
+        return .{ .bus_name = bus_name, .path = path };
     }
 
     /// The absent-child marker: an empty bus name and `/org/a11y/atspi/null`.
@@ -77,16 +97,21 @@ pub const ObjectAddress = struct {
         return fromSlices("", null_path);
     }
 
-    /// Writes the bus name and then the path, which is the order the AT-SPI
+    /// Appends the bus name and then the path, which is the order the AT-SPI
     /// reference fixes and the order a peer decodes in.
     ///
     /// The struct is eight-aligned and each member is a four-aligned string.
+    /// The bytes are appended to `out`, which the caller owns and releases.
     ///
-    /// **Errors.** `error.OutOfMemory` from the goose writer.
-    pub fn ser(self: ObjectAddress, w: *DBusWriter) !void {
-        try w.padTo(8);
-        try writeString(w, self.bus_name.s);
-        try writePath(w, self.path.s);
+    /// **Errors.** `error.OutOfMemory` from `out`.
+    pub fn ser(
+        self: ObjectAddress,
+        gpa: std.mem.Allocator,
+        out: *std.ArrayList(u8),
+    ) std.mem.Allocator.Error!void {
+        try padTo(gpa, 8, out);
+        try writeString(gpa, out, self.bus_name);
+        try writePath(gpa, out, self.path);
     }
 };
 
@@ -127,24 +152,29 @@ pub const OwnedObjectAddress = struct {
     /// produces is this module's type. Upstream can hang it on the identifier
     /// because Rust carries no rule about which module owns which type, and
     /// `docs/41` section 2.1 rule 2 is exactly that rule: one module declares a
-    /// type. The effect is that `object_id.zig` keeps no edge to this file,
-    /// which is what lets the object-path scheme be tested without a D-Bus
-    /// dependency.
+    /// type. The edge runs this way and not the other, so `object_id.zig` keeps
+    /// no edge to this file.
     ///
-    /// `path` is taken as `anytype` rather than named, for the same reason
-    /// `error.mapErrorFromNode` takes its source that way: the identifier is
-    /// read through its `path` method, and a generic parameter is not an
-    /// import edge. It must answer `path(std.mem.Allocator) ![:0]u8`, which
-    /// `ObjectId` does.
+    /// `id` is named rather than taken as `anytype`, and that naming is what
+    /// makes the function compile. An `anytype` parameter binds the type of its
+    /// argument as written, and `ObjectId.root` written at a call site is an
+    /// enum literal whose natural type is the union's tag type
+    /// `@typeInfo(ObjectId).@"union".tag_type.?`, which answers no `path`. The
+    /// named parameter makes the union the type, so the lookup lands in the
+    /// union's own namespace where `path` is declared at `object_id.zig:88`.
     ///
-    /// The caller releases the result with `deinit`. On `error.OutOfMemory`
-    /// the temporary path is released here and nothing is left allocated.
+    /// There is no switch at the call site to write. `ObjectId.path` takes the
+    /// whole union as its receiver and switches on the tag itself, at
+    /// `object_id.zig:89-102`, so this function has no payload to take apart.
+    ///
+    /// The caller releases the result with `deinit`. On `error.OutOfMemory` the
+    /// temporary path is released here and nothing is left allocated.
     ///
     /// **Errors.** `error.OutOfMemory` from `gpa`.
     pub fn initFromObjectId(
         gpa: std.mem.Allocator,
         bus_name: []const u8,
-        id: anytype,
+        id: object_id.ObjectId,
     ) std.mem.Allocator.Error!OwnedObjectAddress {
         const borrowed_path = try id.path(gpa);
         defer gpa.free(borrowed_path);
@@ -163,132 +193,264 @@ pub const OwnedObjectAddress = struct {
     ///
     /// **Errors.** This function does not fail.
     pub fn deinit(self: *OwnedObjectAddress, gpa: std.mem.Allocator) void {
-        gpa.free(self.value.bus_name.s);
-        gpa.free(self.value.path.s);
+        gpa.free(self.value.bus_name);
+        gpa.free(self.value.path);
         self.* = undefined;
     }
 };
 
-/// The signature goose derives from the two members alone.
-const derived_signature: [:0]const u8 = blk: {
-    const len = goose.core.value.Value.reprLength(ObjectAddress);
-    var buf: [len]u8 = undefined;
-    goose.core.value.Value.getRepr(ObjectAddress, len, 0, &buf);
-    break :blk buf[0..len :0];
-};
-
-/// Writes a D-Bus string: four-aligned, a `u32` byte count, the bytes, a NUL.
-///
-/// `wire/action.zig` carries the same six lines. `docs/41` section 2.3 gives the
-/// two modules no edge, so the helper is written twice rather than hoisted.
-fn writeString(w: *DBusWriter, bytes: []const u8) !void {
-    try w.padTo(4);
-    try w.writeInt(u32, @intCast(bytes.len));
-    try w.buffer.appendSlice(w.gpa, bytes);
-    try w.buffer.append(w.gpa, 0);
+comptime {
+    // `(so)` names a string and an object path, and a peer walks the struct's
+    // two fields in order, so a third field would make the decoder read past the
+    // path. The arity and the type of each member are checked here.
+    const fields = @typeInfo(ObjectAddress).@"struct".fields;
+    if (fields.len != 2) {
+        @compileError("the (so) signature names exactly two members");
+    }
+    for (fields) |field| {
+        if (field.type != [:0]const u8) {
+            @compileError("every (so) member is a sentinel-terminated slice");
+        }
+    }
 }
 
-/// Writes a D-Bus object path, which has the same layout as a string and the
+/// Appends zero bytes until the body length is a multiple of `alignment`.
+///
+/// The D-Bus specification pads to the minimum that aligns the value that
+/// follows and forbids both a shorter pad and a longer one. Eight and four are
+/// the only two alignments this module passes: eight for a struct and four for
+/// a string.
+///
+/// **Errors.** `error.OutOfMemory` from `out`.
+fn padTo(
+    gpa: std.mem.Allocator,
+    comptime alignment: usize,
+    out: *std.ArrayList(u8),
+) std.mem.Allocator.Error!void {
+    if (alignment != 4 and alignment != 8) {
+        @compileError("a D-Bus struct is 8-aligned and a string is 4-aligned");
+    }
+    const missing = alignment - (out.items.len % alignment);
+    if (missing == alignment) return;
+    try out.appendNTimes(gpa, 0, missing);
+}
+
+/// Appends a D-Bus string: four-aligned, a `u32` byte count, the bytes, a NUL.
+///
+/// `wire/action.zig` carries its own copy of this. `docs/41` section 2.3 gives
+/// the two modules no edge, so the helper is written twice rather than hoisted.
+///
+/// **Errors.** `error.OutOfMemory` from `out`.
+fn writeString(
+    gpa: std.mem.Allocator,
+    out: *std.ArrayList(u8),
+    bytes: []const u8,
+) std.mem.Allocator.Error!void {
+    try padTo(gpa, 4, out);
+    var header: [4]u8 = undefined;
+    // A D-Bus string length is a `u32`. No object path or bus name comes near
+    // four gigabytes, and truncating instead would put a length on the wire that
+    // does not match the bytes behind it.
+    std.mem.writeInt(u32, &header, @intCast(bytes.len), .little);
+    try out.appendSlice(gpa, &header);
+    try out.appendSlice(gpa, bytes);
+    try out.append(gpa, 0);
+}
+
+/// Appends a D-Bus object path, which has the same layout as a string and the
 /// `o` signature.
-fn writePath(w: *DBusWriter, bytes: []const u8) !void {
-    try writeString(w, bytes);
+fn writePath(
+    gpa: std.mem.Allocator,
+    out: *std.ArrayList(u8),
+    bytes: [:0]const u8,
+) std.mem.Allocator.Error!void {
+    return writeString(gpa, out, bytes);
+}
+
+/// Asserts that every byte at `offset` is zero.
+///
+/// The specification requires alignment padding to be nul bytes and not
+/// uninitialized garbage: "it must always be made up of nul bytes. The
+/// alignment padding must not be left uninitialized". A length assertion alone
+/// does not see this, because an encoder that wrote junk into the pad still
+/// produced the right length and a peer that skips the pad still decoded the
+/// right strings. `offsets` is a comptime list, so the loop carries a comptime
+/// bound and names each byte it checks.
+///
+/// **Errors.** `error.TestUnexpectedResult` from a non-zero pad byte.
+fn expectNulAt(body: []const u8, comptime offsets: []const usize) !void {
+    inline for (offsets) |offset| {
+        try std.testing.expectEqual(@as(u8, 0), body[offset]);
+    }
+}
+
+/// Reads the D-Bus string that begins at `offset`, which is how a peer walks a
+/// `(so)`.
+fn readString(body: []const u8, offset: usize) []const u8 {
+    const len = std.mem.readInt(u32, body[offset..][0..4], .little);
+    return body[offset + 4 ..][0..len];
+}
+
+/// Reads the `u32` length that begins at `offset`, which is the first four
+/// bytes of a D-Bus string and so the field a wrong alignment shows first.
+fn stringLengthAt(body: []const u8, offset: usize) u32 {
+    return std.mem.readInt(u32, body[offset..][0..4], .little);
+}
+
+/// Writes one borrowed address into a body this helper owns.
+///
+/// **Errors.** `error.OutOfMemory` from the body.
+fn writeBorrowedAddress(gpa: std.mem.Allocator) std.mem.Allocator.Error!void {
+    var body: std.ArrayList(u8) = .empty;
+    defer body.deinit(gpa);
+    try ObjectAddress.fromSlices(":1.42", "/org/a11y/atspi/accessible/root")
+        .ser(gpa, &body);
+}
+
+/// Builds and releases one owned address.
+///
+/// The leak-detecting allocator behind this helper is what proves the second
+/// `dupeZ` failing releases the first copy, which is the `errdefer` in `init`.
+///
+/// **Errors.** `error.OutOfMemory` from `gpa`.
+fn buildOwnedAddress(gpa: std.mem.Allocator) std.mem.Allocator.Error!void {
+    var owned = try OwnedObjectAddress.init(
+        gpa,
+        ":1.42",
+        "/org/a11y/atspi/accessible/root",
+    );
+    defer owned.deinit(gpa);
 }
 
 test "ObjectAddress marshals as (so)" {
-    try std.testing.expectEqualStrings("(so)", ObjectAddress.SIGNATURE);
-}
-
-test "goose derives the declared signature from the two members" {
-    try std.testing.expectEqualStrings(ObjectAddress.SIGNATURE, derived_signature);
+    try std.testing.expectEqualStrings("(so)", ObjectAddress.signature);
 }
 
 test "the bus name reaches the wire before the path" {
     const gpa = std.testing.allocator;
+    var body: std.ArrayList(u8) = .empty;
+    defer body.deinit(gpa);
 
-    const address = ObjectAddress.fromSlices(":1.42", "/org/a11y/atspi/accessible/root");
-    var encoder = try goose.message.BodyEncoder.encode(gpa, address);
-    defer encoder.deinit();
+    try ObjectAddress.fromSlices(":1.42", "/org/a11y/atspi/accessible/root")
+        .ser(gpa, &body);
 
-    try std.testing.expectEqualStrings("(so)", encoder.signature());
-
-    var decoder = goose.message.BodyDecoder.init(gpa, encoder.body(), encoder.signature(), .little);
-    const decoded = try decoder.decode(ObjectAddress);
-
-    try std.testing.expectEqualStrings(":1.42", decoded.bus_name.s);
-    try std.testing.expectEqualStrings("/org/a11y/atspi/accessible/root", decoded.path.s);
+    try std.testing.expectEqualStrings(":1.42", readString(body.items, 0));
+    try std.testing.expectEqualStrings(
+        "/org/a11y/atspi/accessible/root",
+        readString(body.items, 12),
+    );
 }
 
-test "swapping the two members would decode differently, so the order is pinned" {
-    // The two strings have different lengths, so a port that wrote the path
-    // first would produce a body a peer decodes into the swapped pair. This
-    // asserts the exact byte layout rather than only the decode.
+test "the two members carry their own length and the pad between them" {
     const gpa = std.testing.allocator;
+    var body: std.ArrayList(u8) = .empty;
+    defer body.deinit(gpa);
 
-    var encoder = try goose.message.BodyEncoder.encode(
-        gpa,
-        ObjectAddress.fromSlices(":1.42", "/org/a11y/atspi/accessible/root"),
+    try ObjectAddress.fromSlices(":1.42", "/org/a11y/atspi/accessible/root")
+        .ser(gpa, &body);
+
+    // A struct starts on an 8-byte boundary, so the bus name starts at zero.
+    // It is 4 + 5 + 1 = 10 bytes and so ends at ten, which is two bytes short of
+    // the path's four-byte alignment. The path is 31 characters long, so it
+    // takes 4 + 31 + 1 and the body is 12 + 36 = 48 bytes. A port that packed
+    // the two members without the pad would write 46 bytes and a peer would
+    // read the path one field late.
+    try std.testing.expectEqual(@as(usize, 48), body.items.len);
+    try std.testing.expectEqual(@as(u32, 5), stringLengthAt(body.items, 0));
+    try std.testing.expectEqualStrings(":1.42", body.items[4..9]);
+    try std.testing.expectEqual(@as(u8, 0), body.items[9]);
+    try std.testing.expectEqual(@as(u8, 0), body.items[10]);
+    try std.testing.expectEqual(@as(u8, 0), body.items[11]);
+    try std.testing.expectEqual(@as(u32, 31), stringLengthAt(body.items, 12));
+    try std.testing.expectEqualStrings(
+        "/org/a11y/atspi/accessible/root",
+        body.items[16..47],
     );
-    defer encoder.deinit();
-    const body = encoder.body();
+    try std.testing.expectEqual(@as(u8, 0), body.items[47]);
+}
 
-    // The eight-byte struct alignment is already satisfied at body offset zero,
-    // so the bus name occupies bytes zero to nine and the path starts at ten:
-    // 4 + 5 + 1 for the name, then 4 + 30 + 1 for the path, so 45 bytes.
-    try std.testing.expectEqual(@as(usize, 45), body.len);
-    const name_len = std.mem.readInt(u32, body[0..4], .little);
-    try std.testing.expectEqual(@as(u32, 5), name_len);
-    try std.testing.expectEqualStrings(":1.42", body[4..9]);
-    const path_len = std.mem.readInt(u32, body[10..14], .little);
-    try std.testing.expectEqual(@as(u32, 30), path_len);
-    try std.testing.expectEqualStrings("/org/a11y/atspi/accessible/root", body[14..44]);
+test "an address that follows an odd member starts on the next eight-byte boundary" {
+    const gpa = std.testing.allocator;
+    var body: std.ArrayList(u8) = .empty;
+    defer body.deinit(gpa);
+
+    try body.appendSlice(gpa, "ab");
+    try ObjectAddress.fromSlices(":1.42", "/org/a11y/atspi/accessible/root")
+        .ser(gpa, &body);
+
+    // Two bytes precede the address, so the struct pads to eight. The bus name
+    // then runs from eight to eighteen, the pad takes the body to twenty, and
+    // the path runs from twenty to fifty-six. The six bytes of struct padding
+    // and the two before the path are asserted to be nul and not left as
+    // whatever the buffer held.
+    try expectNulAt(body.items, &.{ 2, 3, 4, 5, 6, 7, 18, 19 });
+    try std.testing.expectEqual(@as(usize, 56), body.items.len);
+    try std.testing.expectEqualStrings(":1.42", readString(body.items, 8));
+    try std.testing.expectEqualStrings(
+        "/org/a11y/atspi/accessible/root",
+        readString(body.items, 20),
+    );
 }
 
 test "the null address is an empty name and the null path" {
     const gpa = std.testing.allocator;
+    var body: std.ArrayList(u8) = .empty;
+    defer body.deinit(gpa);
 
-    var encoder = try goose.message.BodyEncoder.encode(gpa, ObjectAddress.nullAddress());
-    defer encoder.deinit();
+    try ObjectAddress.nullAddress().ser(gpa, &body);
 
-    var decoder = goose.message.BodyDecoder.init(gpa, encoder.body(), encoder.signature(), .little);
-    const decoded = try decoder.decode(ObjectAddress);
-    try std.testing.expectEqualStrings("", decoded.bus_name.s);
-    try std.testing.expectEqualStrings("/org/a11y/atspi/null", decoded.path.s);
+    // The empty bus name is 4 + 0 + 1 = 5 bytes, so the path's four-byte
+    // alignment moves it to eight, where 4 + 20 + 1 takes the body to 33. The
+    // three bytes of padding between them are nul.
+    try expectNulAt(body.items, &.{ 5, 6, 7 });
+    try std.testing.expectEqual(@as(usize, 33), body.items.len);
+    try std.testing.expectEqualStrings("", readString(body.items, 0));
+    try std.testing.expectEqualStrings("/org/a11y/atspi/null", readString(body.items, 8));
+    try std.testing.expectEqualStrings(null_path, readString(body.items, 8));
 }
 
 test "an owned address copies both members and releases them exactly once" {
     const gpa = std.testing.allocator;
 
-    var owned = try OwnedObjectAddress.init(gpa, ":1.42", "/org/a11y/atspi/accessible/root");
+    var owned = try OwnedObjectAddress.init(
+        gpa,
+        ":1.42",
+        "/org/a11y/atspi/accessible/root",
+    );
     defer owned.deinit(gpa);
 
     // The copies are separate allocations, so the address does not borrow the
     // literals the caller passed and a later release of the caller's memory
     // cannot reach through it.
-    try std.testing.expect(@intFromPtr(owned.value.bus_name.s.ptr) !=
+    try std.testing.expect(@intFromPtr(owned.value.bus_name.ptr) !=
         @intFromPtr(@as([:0]const u8, ":1.42").ptr));
-    try std.testing.expectEqualStrings(":1.42", owned.borrow().bus_name.s);
-    try std.testing.expectEqualStrings("/org/a11y/atspi/accessible/root", owned.borrow().path.s);
+    try std.testing.expectEqualStrings(":1.42", owned.borrow().bus_name);
+    try std.testing.expectEqualStrings(
+        "/org/a11y/atspi/accessible/root",
+        owned.borrow().path,
+    );
 }
 
 test "an owned address writes the same bytes as the borrowed one it copies" {
     const gpa = std.testing.allocator;
+    var body: std.ArrayList(u8) = .empty;
+    defer body.deinit(gpa);
 
-    const borrowed = ObjectAddress.fromSlices(":1.42", "/org/a11y/atspi/accessible/root");
-    var owned = try OwnedObjectAddress.init(gpa, ":1.42", "/org/a11y/atspi/accessible/root");
+    var owned = try OwnedObjectAddress.init(
+        gpa,
+        ":1.42",
+        "/org/a11y/atspi/accessible/root",
+    );
     defer owned.deinit(gpa);
 
-    var from_borrowed = try goose.message.BodyEncoder.encode(gpa, borrowed);
-    defer from_borrowed.deinit();
-    var from_owned = try goose.message.BodyEncoder.encode(gpa, owned.borrow());
-    defer from_owned.deinit();
+    var borrowed_body: std.ArrayList(u8) = .empty;
+    defer borrowed_body.deinit(gpa);
+    try ObjectAddress.fromSlices(":1.42", "/org/a11y/atspi/accessible/root")
+        .ser(gpa, &borrowed_body);
+    try owned.borrow().ser(gpa, &body);
 
-    try std.testing.expectEqualSlices(u8, from_borrowed.body(), from_owned.body());
+    try std.testing.expectEqualSlices(u8, borrowed_body.items, body.items);
 }
-
-/// The two tests below moved here with `initFromObjectId`. They used to live in
-/// `object_id.zig`, which reached this file for the address type and therefore
-/// carried the D-Bus dependency with it.
-const object_id = @import("object_id.zig");
 
 test "initFromObjectId names the object on the connection that was passed" {
     const gpa = std.testing.allocator;
@@ -296,10 +458,10 @@ test "initFromObjectId names the object on the connection that was passed" {
     var owned = try OwnedObjectAddress.initFromObjectId(gpa, ":1.42", object_id.ObjectId.root);
     defer owned.deinit(gpa);
 
-    try std.testing.expectEqualStrings(":1.42", owned.borrow().bus_name.s);
+    try std.testing.expectEqualStrings(":1.42", owned.borrow().bus_name);
     try std.testing.expectEqualStrings(
         "/org/a11y/atspi/accessible/root",
-        owned.borrow().path.s,
+        owned.borrow().path,
     );
 }
 
@@ -311,5 +473,28 @@ test "initFromObjectId writes the same path ObjectId.path builds" {
 
     // The two must agree, because `Accessible.Parent` and `GetChildAtIndex`
     // answer with an address whose path a peer then calls back on.
-    try std.testing.expectEqualStrings(object_id.root_path, owned.borrow().path.s);
+    try std.testing.expectEqualStrings(object_id.root_path, owned.borrow().path);
+}
+
+test "every allocation failure of ser is reported and never swallowed" {
+    // `ser` writes into a body the caller owns, so a failure leaves whatever was
+    // already written in place and the caller releases it. What must not happen
+    // is a swallowed failure, so the sweep fails one allocation at a time up to
+    // the first that succeeds.
+    try std.testing.checkAllAllocationFailures(
+        std.testing.allocator,
+        writeBorrowedAddress,
+        .{},
+    );
+}
+
+test "every allocation failure of init releases the copy it already made" {
+    // `init` takes two allocations in a fixed order and releases the first one
+    // when the second fails. The leak-detecting allocator behind the sweep is
+    // what sees that release, so a removed `errdefer` fails this test.
+    try std.testing.checkAllAllocationFailures(
+        std.testing.allocator,
+        buildOwnedAddress,
+        .{},
+    );
 }

@@ -66,21 +66,27 @@ pub const Module = struct {
     /// A shape the scanner read but could not interpret, carrying its line.
     problems: std.ArrayListUnmanaged(Problem) = .empty,
 
-    /// The path the document prints for `target` when seen from this module.
+    /// The path the document prints for `target` when seen from this module,
+    /// and whether the caller owns what is returned.
     ///
-    /// A module in the consumer layer prints as a layer-relative path, and one
-    /// outside it prints relative to this file's directory, so a row reads
-    /// `../../schema/geometry/affine.zig` the way the source imports it.
+    /// A module in the consumer layer prints as a layer-relative path and the
+    /// answer borrows out of `target`, and one outside it prints relative to
+    /// this file's directory and the answer is allocated. The two cannot be
+    /// released the same way, so the caller is told which it has.
+    ///
+    /// The error set is `relativePath`'s rather than `Allocator.Error`,
+    /// because a path printed through a writer can fail to write and an
+    /// over-narrow signature hides that behind a discard.
     pub fn display(
         self: *const Module,
         gpa: Allocator,
         target: []const u8,
         consumer_prefix: []const u8,
-    ) Allocator.Error![]const u8 {
+    ) (Allocator.Error || std.Io.Writer.Error)!struct { path: []const u8, owned: bool } {
         if (std.mem.startsWith(u8, target, consumer_prefix)) {
-            return target[consumer_prefix.len..];
+            return .{ .path = target[consumer_prefix.len..], .owned = false };
         }
-        return relativePath(gpa, self.dir, target);
+        return .{ .path = try relativePath(gpa, self.dir, target), .owned = true };
     }
 };
 
@@ -145,8 +151,15 @@ pub fn scanTree(gpa: Allocator, io: std.Io, src_dir: []const u8) !Tree {
         // `Ast.parse` takes a sentinel-terminated slice, and `readFileAlloc`
         // returns one without. The extra byte is the sentinel, so no realloc and
         // no copy of the source.
+        //
+        // **The sentinel buffer is not released here.** Every name a module
+        // records is a `tokenSlice` pointing into it, so freeing it at the end
+        // of the iteration leaves the tree holding slices into reclaimed
+        // memory: the names come back as whatever the allocator wrote there
+        // next, and a lookup for a symbol reports garbage rather than nothing.
+        // The tree outlives every name it holds, so the tree's allocator keeps
+        // the source for the life of the run.
         const source = try gpa.allocSentinel(u8, raw.len, 0);
-        defer gpa.free(source);
         @memcpy(source, raw);
 
         const module = scanModule(gpa, source, path) catch |err| switch (err) {
@@ -348,6 +361,17 @@ fn declName(tree: *const Ast, member: NodeIndex) ?[]const u8 {
             return tree.tokenSlice(probe);
         },
         else => {
+            // A `const` or `var` declaration is its own member node whose main
+            // token is the keyword, and a `fn` proto's main token is `fn`, so
+            // neither names itself. Reading the main token as the name returns
+            // `const` or `fn` for every declaration in the file, and a file
+            // whose every name is the same string declares nothing.
+            if (tree.fullVarDecl(member)) |decl| return varDeclName(tree, decl);
+            var buffer: [1]Ast.Node.Index = undefined;
+            if (tree.fullFnProto(&buffer, member)) |proto| {
+                const name = proto.name_token orelse return null;
+                return tree.tokenSlice(name);
+            }
             const token = tree.nodeMainToken(member);
             if (tree.tokenTag(token) != .identifier) return null;
             return tree.tokenSlice(token);
@@ -533,18 +557,41 @@ pub fn relativePath(gpa: Allocator, from_dir: []const u8, to: []const u8) ![]con
 fn scanChains(gpa: Allocator, tree: *const Ast, module: *Module) !void {
     const tokens = tree.tokens.items(.tag);
     var chain: std.ArrayList([]const u8) = .empty;
+    // A head that follows a value names a field of that value, so its chain
+    // names no module however much of it looks like an alias.
+    var names_a_value = false;
     var index: TokenIndex = 0;
     while (index < tokens.len) : (index += 1) {
         if (tokens[index] != .identifier) continue;
 
         const is_head = index == 0 or !continuesChain(tree, index);
         if (is_head) {
-            if (chain.items.len >= 2) try recordChain(gpa, module, chain.items);
+            if (chain.items.len >= 2 and !names_a_value) {
+                try recordChain(gpa, module, chain.items);
+            }
             chain.clearRetainingCapacity();
+            names_a_value = followsValue(tree, index);
         }
         try chain.append(gpa, tree.tokenSlice(index));
     }
-    if (chain.items.len >= 2) try recordChain(gpa, module, chain.items);
+    if (chain.items.len >= 2 and !names_a_value) try recordChain(gpa, module, chain.items);
+}
+
+/// True when the identifier at `token` is reached from a value rather than
+/// from a name, which is what makes it a field rather than a module.
+///
+/// `one.id().tree_index.value()` puts `tree_index` after the rparen of a call,
+/// so it reads a field of what the call returned even though `tree_index` is
+/// an alias elsewhere in the same file. The chain is well formed and its head
+/// is a real alias, so nothing but the token before the head tells the two
+/// apart.
+fn followsValue(tree: *const Ast, token: TokenIndex) bool {
+    if (token < 2) return false;
+    if (tree.tokenTag(token - 1) != .period) return false;
+    return switch (tree.tokenTag(token - 2)) {
+        .r_paren, .r_bracket, .period => true,
+        else => false,
+    };
 }
 
 /// True when the identifier at `token` continues the chain before it, which is

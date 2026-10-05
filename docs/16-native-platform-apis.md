@@ -1530,6 +1530,13 @@ Repository: `https://github.com/marlersoft/zigwin32`. Checked out at commit
 Package name `.win32`, version `42.0.39-preview`, and
 `minimum_zig_version = "0.14.0"`, so a Zig 0.16.0 build may fetch it.
 
+Fetching it is not the same as the port's own Windows files compiling against
+it. Four of the port's files sit outside the analysis graph because
+`build.zig.zon` names only `zio`, and compiled against this commit three of
+the four do not compile and the fourth cannot be analysed for two rows of the
+cross-test matrix. `docs/42-native-adapter-build-map.md` section 2.1.5 records
+every diagnostic, so this section settles the route and not the cost.
+
 Its `build.zig` is seven lines. It only exposes a module and never touches the
 Windows SDK:
 

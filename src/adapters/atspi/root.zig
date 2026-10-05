@@ -9,12 +9,16 @@
 //!
 //! ## What is compiled and tested on this host
 //!
-//! Everything this file and its five siblings below hold, with no bus, no
+//! Everything this file and its nine siblings below hold, with no bus, no
 //! window manager and no accessibility daemon:
 //!
 //! - the six exports' signatures, their argument order and their return shapes,
 //!   checked by the C ABI itself when `platform.zig` compiles;
 //! - the adapter lifetime: allocate once, release once, release twice is safe;
+//! - the three wire body types, `ObjectAddress`, `Action` and `Rect`, marshalled
+//!   byte for byte and checked against the alignment the D-Bus specification
+//!   fixes, and the six-member error set with its map onto five D-Bus error
+//!   names;
 //! - the tree state machine — the first update builds the tree, every later one
 //!   applies to it, and a node added, rewritten or removed raises the event the
 //!   reference defines;
@@ -28,15 +32,14 @@
 //!
 //! Three gaps, named so a reviewer does not have to find them.
 //!
-//! 1. **No D-Bus transport, because goose is not a dependency of this project.**
-//!    `build.zig.zon` declares `zio` and nothing else, so `@import("goose")`
-//!    does not resolve and `object_address.zig`, `wire/action.zig` and
-//!    `wire/rect.zig` cannot be analysed. They are left on disk exactly as they
-//!    were, because deleting working protocol work is worse than leaving it
-//!    unanalysed, and nothing here imports them. The consequence is that no
+//! 1. **No D-Bus transport, so no body reaches a bus.** `object_address.zig`,
+//!    `wire/action.zig` and `wire/rect.zig` marshal their value into a D-Bus
+//!    body and are analysed and tested with everything else, but nothing carries
+//!    that body to a connection. `build.zig.zon` declares `zio` and nothing
+//!    else, and `docs/40-plan.md` puts the connection, the object register and
+//!    the dispatch loop under a later milestone. The consequence is that no
 //!    signal is raised on a bus, no inbound member call is answered, and no
-//!    `org.a11y.atspi.Socket.Embed` handshake is performed. **Wiring goose into
-//!    `build.zig.zon` is the one change that unblocks all three.**
+//!    `org.a11y.atspi.Socket.Embed` handshake is performed.
 //!
 //! 2. **No unique bus name, so no `Embed`.** goose v3.3.0 sends `Hello` and
 //!    discards the reply (`connection.zig:572-573`), so it cannot tell the
@@ -103,11 +106,15 @@
 
 const std = @import("std");
 
+const adapter_errors = @import("error.zig");
 const boundary = @import("../../capi/boundary.zig");
 const events = @import("events.zig");
+const object_address = @import("object_address.zig");
 const object_id = @import("object_id.zig");
 const platform_adapter = @import("platform_adapter.zig");
 const wire = @import("wire.zig");
+const wire_action = @import("wire/action.zig");
+const wire_rect = @import("wire/rect.zig");
 
 const ActivationHandler = boundary.ActivationHandler;
 const ActionHandler = boundary.ActionHandler;
@@ -646,9 +653,15 @@ test "every module in this adapter is reachable and analysed" {
     // A `pub const` nothing references is a re-export the compiler may skip, so
     // a green run would prove nothing about the modules underneath. This is the
     // third instance of that defect in this package and it has been written down
-    // three times already.
+    // three times already. The four modules below were the fourth instance: they
+    // imported a D-Bus library this project does not depend on, so nothing
+    // reached them and the gate analysed them at no point.
+    std.testing.refAllDecls(adapter_errors);
+    std.testing.refAllDecls(object_address);
     std.testing.refAllDecls(platform_adapter);
     std.testing.refAllDecls(wire);
+    std.testing.refAllDecls(wire_action);
+    std.testing.refAllDecls(wire_rect);
     std.testing.refAllDecls(object_id);
 }
 
