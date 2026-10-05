@@ -774,11 +774,11 @@ pub const TypeSpec = struct {
 
 /// The type keywords and qualifiers, which can never be a parameter name.
 const type_keywords = [_][]const u8{
-    "void",         "char",      "short",     "int",         "long",
-    "float",        "double",    "signed",    "unsigned",    "_Bool",
-    "bool",         "const",     "volatile",  "restrict",    "_Atomic",
-    "struct",       "union",     "enum",      "inline",      "register",
-    "static",       "extern",    "typedef",   "_Noreturn",   "auto",
+    "void",   "char",   "short",    "int",       "long",
+    "float",  "double", "signed",   "unsigned",  "_Bool",
+    "bool",   "const",  "volatile", "restrict",  "_Atomic",
+    "struct", "union",  "enum",     "inline",    "register",
+    "static", "extern", "typedef",  "_Noreturn", "auto",
 };
 
 fn isTypeKeyword(name: []const u8) bool {
@@ -790,26 +790,26 @@ fn isTypeKeyword(name: []const u8) bool {
 
 fn builtinLayout(abi: Abi, name: []const u8) ?Layout {
     const one = [_][]const u8{
-        "bool",    "_Bool",     "char",      "signed char", "unsigned char",
-        "int8_t",  "uint8_t",   "__int8_t",  "__uint8_t",   "int_least8_t",
-        "uint_least8_t",        "__int_least8_t",           "__uint_least8_t",
+        "bool",          "_Bool",          "char",            "signed char", "unsigned char",
+        "int8_t",        "uint8_t",        "__int8_t",        "__uint8_t",   "int_least8_t",
+        "uint_least8_t", "__int_least8_t", "__uint_least8_t",
     };
     const two = [_][]const u8{
-        "short",     "short int",  "signed short", "unsigned short",
-        "int16_t",   "uint16_t",   "__int16_t",   "__uint16_t",
+        "short",   "short int", "signed short", "unsigned short",
+        "int16_t", "uint16_t",  "__int16_t",    "__uint16_t",
     };
     const four = [_][]const u8{
-        "int",    "signed",   "unsigned",  "unsigned int",
-        "float",  "int32_t",  "uint32_t",  "__int32_t",
+        "int",        "signed",  "unsigned", "unsigned int",
+        "float",      "int32_t", "uint32_t", "__int32_t",
         "__uint32_t",
     };
     const eight = [_][]const u8{
-        "double",  "unsigned long", "long int",  "long long",
-        "unsigned long long",       "int64_t",   "uint64_t",
-        "__int64_t",                "__uint64_t", "size_t",
-        "ssize_t", "intptr_t",      "uintptr_t", "ptrdiff_t",
-        "time_t",  "clock_t",       "LRESULT",   "WPARAM",
-        "LPARAM",  "HRESULT",       "HINSTANCE", "BOOL",
+        "double",             "unsigned long", "long int", "long long",
+        "unsigned long long", "int64_t",       "uint64_t", "__int64_t",
+        "__uint64_t",         "size_t",        "ssize_t",  "intptr_t",
+        "uintptr_t",          "ptrdiff_t",     "time_t",   "clock_t",
+        "LRESULT",            "WPARAM",        "LPARAM",   "HRESULT",
+        "HINSTANCE",          "BOOL",
     };
     // A bare `long` is 4 bytes under Microsoft x64 and 8 everywhere else, so
     // the eight-byte table leaves it out and this one line answers for it.
@@ -1210,8 +1210,8 @@ fn parseParams(
             const before = chunk[chunk.len - 2];
             const before_is_tag = before.kind == .ident and
                 (std.mem.eql(u8, before.text, "struct") or
-                std.mem.eql(u8, before.text, "union") or
-                std.mem.eql(u8, before.text, "enum"));
+                    std.mem.eql(u8, before.text, "union") or
+                    std.mem.eql(u8, before.text, "enum"));
             if (!before_is_tag) {
                 name = last.text;
                 type_toks = chunk[0 .. chunk.len - 1];
@@ -1283,8 +1283,8 @@ fn parseFields(
                 const before = chunk[chunk.len - 2];
                 const before_is_tag = before.kind == .ident and
                     (std.mem.eql(u8, before.text, "struct") or
-                    std.mem.eql(u8, before.text, "union") or
-                    std.mem.eql(u8, before.text, "enum"));
+                        std.mem.eql(u8, before.text, "union") or
+                        std.mem.eql(u8, before.text, "enum"));
                 if (!before_is_tag) {
                     name = last.text;
                     type_toks = chunk[0 .. chunk.len - 1];
@@ -1392,6 +1392,9 @@ const LayoutCtx = struct {
         var max_size: u32 = 0;
         var known = true;
         for (fields, 0..) |f, fi| {
+            // SAFETY: the branch below writes `l` before any read of it on the
+            // same iteration, so no iteration reads the undefined value from
+            // this line. A taken branch never skips the write.
             var l: Layout = undefined;
             if (f.inline_body) |body| {
                 l = ctx.ofRecord(body);
@@ -1711,8 +1714,8 @@ fn classify(
             const before = body[body.len - 2];
             const before_is_tag = before.kind == .ident and
                 (std.mem.eql(u8, before.text, "struct") or
-                std.mem.eql(u8, before.text, "union") or
-                std.mem.eql(u8, before.text, "enum"));
+                    std.mem.eql(u8, before.text, "union") or
+                    std.mem.eql(u8, before.text, "enum"));
             if (!before_is_tag) {
                 name = last.text;
                 type_toks = body[0 .. body.len - 1];
@@ -1722,7 +1725,12 @@ fn classify(
         const kind: Typedef.Kind = if (underlying.kind == .@"struct" or
             underlying.kind == .@"union") .opaque_handle else .alias;
         try out.typedefs.append(arena, .{
-            .name = if (name.len != 0) name else (if (underlying.name.len != 0) underlying.name else ""),
+            .name = if (name.len != 0)
+                name
+            else if (underlying.name.len != 0)
+                underlying.name
+            else
+                "",
             .line = line,
             .kind = kind,
             .underlying = underlying,
@@ -1812,6 +1820,30 @@ test "an Apple target turns the macOS branch on and the Android branch off" {
     try std.testing.expect(!doc.functions[1].guard.active);
     try std.testing.expectEqual(Platform.android, doc.functions[1].guard.platform);
     try std.testing.expect(doc.functions[2].guard.active);
+}
+
+test "a Linux chain that excludes Android is off there and still reads as unix" {
+    const gpa = std.testing.allocator;
+    // The shape `include/zaccesskit.h:1022` and `:6263` use. `__ANDROID__`
+    // defines `__linux__`, so the exclusion has to be spelled for the block to
+    // be off on Android at all, and the scanner has to keep naming the branch
+    // unix rather than android for the class column to stay the unix row.
+    const source =
+        \\#if (defined(__linux__) || defined(__OpenBSD__)) && !defined(__ANDROID__)
+        \\int unix_only(void);
+        \\#endif
+    ;
+    var linux = try parse(gpa, source, .linux);
+    defer linux.deinit();
+    try std.testing.expectEqual(@as(usize, 1), linux.functions.len);
+    try std.testing.expect(linux.functions[0].guard.active);
+    try std.testing.expectEqual(Platform.unix, linux.functions[0].guard.platform);
+
+    var android = try parse(gpa, source, .android);
+    defer android.deinit();
+    try std.testing.expectEqual(@as(usize, 1), android.functions.len);
+    try std.testing.expect(!android.functions[0].guard.active);
+    try std.testing.expectEqual(Platform.unix, android.functions[0].guard.platform);
 }
 
 test "a struct return and a struct parameter are seen as aggregates" {

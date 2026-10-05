@@ -55,6 +55,13 @@ const Affine = affine_mod.Affine;
 const Rect = rect_mod.Rect;
 const rectInit = rect_mod.rectInit;
 
+/// The failures one generator in this module can name.
+///
+/// `std.mem.Allocator.Error` is the allocation that failed and
+/// `random.DrawError` is the bounded walk over the draws that spent its whole
+/// budget, so a caller reads which of the two it has to handle.
+pub const GenerateError = std.mem.Allocator.Error || random.DrawError;
+
 /// The widest owned slice one generated value carries, in elements.
 ///
 /// The bound is the harness's own. It is wide enough that a slice crosses more
@@ -93,12 +100,12 @@ pub const SliceForm = enum {
 /// A drawn form never asks for zero elements, so `empty` stays the only source
 /// of an empty slice and a defect in the empty path cannot hide behind the
 /// drawn one.
-pub fn sliceLen(source: *Random, form: SliceForm) usize {
+pub fn sliceLen(source: *Random, form: SliceForm) random.DrawError!usize {
     return switch (form) {
         .empty => 0,
         .single => 1,
         .maximal => max_slice_len,
-        .drawn => source.below(max_slice_len) + 1,
+        .drawn => try source.below(max_slice_len) + 1,
     };
 }
 
@@ -106,10 +113,10 @@ pub fn sliceLen(source: *Random, form: SliceForm) usize {
 ///
 /// The walk over the domain is `std.enums.values(E).len` wide, which is the
 /// member count the type itself declares.
-pub fn pickEnum(comptime E: type, source: *Random) E {
+pub fn pickEnum(comptime E: type, source: *Random) random.DrawError!E {
     const members = comptime std.enums.values(E);
     comptime assert(members.len > 0);
-    return members[source.below(members.len)];
+    return members[try source.below(members.len)];
 }
 
 /// A `NodeId` whose content is the next draw.
@@ -127,15 +134,15 @@ pub fn buildTreeId(source: *Random) TreeId {
 
 /// A `Color` whose four channels are the bytes of one draw.
 pub fn buildColor(source: *Random) Color {
-    const lanes: [4]u8 = @bitCast(source.next());
+    const lanes: [4]u8 = @bitCast(@as(u32, @truncate(source.next())));
     return .{ .red = lanes[0], .green = lanes[1], .blue = lanes[2], .alpha = lanes[3] };
 }
 
 /// A `TextDecoration` whose style is one member of its domain and whose color
 /// is a drawn color.
-pub fn buildTextDecoration(source: *Random) TextDecoration {
+pub fn buildTextDecoration(source: *Random) random.DrawError!TextDecoration {
     return .{
-        .style = pickEnum(TextDecorationStyle, source),
+        .style = try pickEnum(TextDecorationStyle, source),
         .color = buildColor(source),
     };
 }
@@ -179,8 +186,8 @@ pub fn buildRect(source: *Random) Rect {
 ///
 /// The walk over the domain is `table.propertyIdCount` wide, which is the count
 /// of rows in `property_descriptors`.
-pub fn pickPropertyId(source: *Random) table.PropertyId {
-    return @enumFromInt(@as(u8, @intCast(source.below(table.propertyIdCount))));
+pub fn pickPropertyId(source: *Random) random.DrawError!table.PropertyId {
+    return @enumFromInt(@as(u8, @intCast(try source.below(table.propertyIdCount))));
 }
 
 /// An owned `std.ArrayList(u8)` of `len` drawn bytes.
@@ -242,13 +249,13 @@ pub fn buildActions(
     source: *Random,
     len: usize,
     form: SliceForm,
-) std.mem.Allocator.Error!std.ArrayList(CustomAction) {
+) GenerateError!std.ArrayList(CustomAction) {
     var list: std.ArrayList(CustomAction) = .empty;
     errdefer releaseActions(gpa, &list);
     try list.ensureTotalCapacity(gpa, len);
     var index: usize = 0;
     while (index < len) : (index += 1) {
-        const description = try buildBytes(gpa, source, sliceLen(source, form));
+        var description = try buildBytes(gpa, source, try sliceLen(source, form));
         // `CustomAction.init` copies the bytes it is given, so the drawn
         // description is released here rather than handed to the action.
         defer description.deinit(gpa);
@@ -280,97 +287,75 @@ pub fn releaseActions(gpa: std.mem.Allocator, list: *std.ArrayList(CustomAction)
 ///
 /// On `error.OutOfMemory` nothing is returned and the caller holds no
 /// allocation: every arm that allocates guards its own list with an `errdefer`.
+/// `error.TooManyRejectedDraws` comes from the draw that chose the slice length
+/// or the tag, which no arm reaches before it has allocated, so that arm
+/// returns nothing either.
 pub fn buildValue(
     source: *Random,
     gpa: std.mem.Allocator,
     tag: PropertyValueTag,
     form: SliceForm,
-) std.mem.Allocator.Error!PropertyValue {
+) GenerateError!PropertyValue {
     return switch (tag) {
         .none => .none,
-        .node_id_vec => @unionInit(
-            PropertyValue,
-            @tagName(tag),
-            try buildNodeIds(gpa, source, sliceLen(source, form)),
+        .node_id_vec => withTag(
+            .node_id_vec,
+            try buildNodeIds(gpa, source, try sliceLen(source, form)),
         ),
-        .node_id => @unionInit(PropertyValue, @tagName(tag), buildNodeId(source)),
-        .string => @unionInit(
-            PropertyValue,
-            @tagName(tag),
-            try buildBytes(gpa, source, sliceLen(source, form)),
+        .node_id => withTag(.node_id, buildNodeId(source)),
+        .string => withTag(.string, try buildBytes(gpa, source, try sliceLen(source, form))),
+        .f64_ => withTag(.f64_, source.real()),
+        .f32_ => withTag(.f32_, @as(f32, @floatCast(source.real()))),
+        .usize_ => withTag(.usize_, source.next()),
+        .color => withTag(.color, buildColor(source)),
+        .text_decoration => withTag(.text_decoration, try buildTextDecoration(source)),
+        .length_vec => withTag(
+            .length_vec,
+            try buildBytes(gpa, source, try sliceLen(source, form)),
         ),
-        .f64_ => @unionInit(PropertyValue, @tagName(tag), source.real()),
-        .f32_ => @unionInit(PropertyValue, @tagName(tag), @as(f32, @floatCast(source.real()))),
-        .usize_ => @unionInit(PropertyValue, @tagName(tag), source.next()),
-        .color => @unionInit(PropertyValue, @tagName(tag), buildColor(source)),
-        .text_decoration => @unionInit(
-            PropertyValue,
-            @tagName(tag),
-            buildTextDecoration(source),
+        .coord_vec => withTag(.coord_vec, try buildCoords(gpa, source, try sliceLen(source, form))),
+        .bool_ => withTag(.bool_, source.flag()),
+        .invalid => withTag(.invalid, try pickEnum(node_enums.Invalid, source)),
+        .toggled => withTag(.toggled, try pickEnum(node_enums.Toggled, source)),
+        .live => withTag(.live, try pickEnum(node_enums.Live, source)),
+        .text_direction => withTag(.text_direction, try pickEnum(node_enums.TextDirection, source)),
+        .orientation => withTag(.orientation, try pickEnum(node_enums.Orientation, source)),
+        .sort_direction => withTag(.sort_direction, try pickEnum(node_enums.SortDirection, source)),
+        .aria_current => withTag(.aria_current, try pickEnum(node_enums.AriaCurrent, source)),
+        .auto_complete => withTag(.auto_complete, try pickEnum(node_enums.AutoComplete, source)),
+        .has_popup => withTag(.has_popup, try pickEnum(node_enums.HasPopup, source)),
+        .list_style => withTag(.list_style, try pickEnum(node_enums.ListStyle, source)),
+        .text_align => withTag(.text_align, try pickEnum(node_enums.TextAlign, source)),
+        .vertical_offset => withTag(
+            .vertical_offset,
+            try pickEnum(node_enums.VerticalOffset, source),
         ),
-        .length_vec => @unionInit(
-            PropertyValue,
-            @tagName(tag),
-            try buildBytes(gpa, source, sliceLen(source, form)),
+        .affine => withTag(.affine, buildAffine(source)),
+        .rect => withTag(.rect, buildRect(source)),
+        .text_selection => withTag(.text_selection, buildTextSelection(source)),
+        .custom_action_vec => withTag(
+            .custom_action_vec,
+            try buildActions(gpa, source, try source.below(max_action_count + 1), form),
         ),
-        .coord_vec => @unionInit(
-            PropertyValue,
-            @tagName(tag),
-            try buildCoords(gpa, source, sliceLen(source, form)),
-        ),
-        .bool_ => @unionInit(PropertyValue, @tagName(tag), source.flag()),
-        .invalid => @unionInit(PropertyValue, @tagName(tag), pickEnum(node_enums.Invalid, source)),
-        .toggled => @unionInit(PropertyValue, @tagName(tag), pickEnum(node_enums.Toggled, source)),
-        .live => @unionInit(PropertyValue, @tagName(tag), pickEnum(node_enums.Live, source)),
-        .text_direction => @unionInit(
-            PropertyValue,
-            @tagName(tag),
-            pickEnum(node_enums.TextDirection, source),
-        ),
-        .orientation => @unionInit(
-            PropertyValue,
-            @tagName(tag),
-            pickEnum(node_enums.Orientation, source),
-        ),
-        .sort_direction => @unionInit(
-            PropertyValue,
-            @tagName(tag),
-            pickEnum(node_enums.SortDirection, source),
-        ),
-        .aria_current => @unionInit(
-            PropertyValue,
-            @tagName(tag),
-            pickEnum(node_enums.AriaCurrent, source),
-        ),
-        .auto_complete => @unionInit(
-            PropertyValue,
-            @tagName(tag),
-            pickEnum(node_enums.AutoComplete, source),
-        ),
-        .has_popup => @unionInit(PropertyValue, @tagName(tag), pickEnum(node_enums.HasPopup, source)),
-        .list_style => @unionInit(
-            PropertyValue,
-            @tagName(tag),
-            pickEnum(node_enums.ListStyle, source),
-        ),
-        .text_align => @unionInit(
-            PropertyValue,
-            @tagName(tag),
-            pickEnum(node_enums.TextAlign, source),
-        ),
-        .vertical_offset => @unionInit(
-            PropertyValue,
-            @tagName(tag),
-            pickEnum(node_enums.VerticalOffset, source),
-        ),
-        .affine => @unionInit(PropertyValue, @tagName(tag), buildAffine(source)),
-        .rect => @unionInit(PropertyValue, @tagName(tag), buildRect(source)),
-        .text_selection => @unionInit(PropertyValue, @tagName(tag), buildTextSelection(source)),
-        .custom_action_vec => @unionInit(
-            PropertyValue,
-            @tagName(tag),
-            try buildActions(gpa, source, source.below(max_action_count + 1), form),
-        ),
-        .tree_id => @unionInit(PropertyValue, @tagName(tag), buildTreeId(source)),
+        .tree_id => withTag(.tree_id, buildTreeId(source)),
     };
+}
+
+/// The payload `tag` carries inside `PropertyValue`.
+///
+/// `comptime` because the field name comes from the tag, and the field name is
+/// what names the type.
+fn Payload(comptime tag: PropertyValueTag) type {
+    return @FieldType(PropertyValue, @tagName(tag));
+}
+
+/// The union that carries `payload` under `tag`.
+///
+/// `tag` is `comptime` because `@tagName` and `@unionInit` both need a field
+/// name the compiler knows before it runs, and `buildValue` is handed a tag
+/// that was read at runtime. Every arm of that switch therefore names its own
+/// literal tag here. `Payload` names the union field, so an arm that builds
+/// the wrong shape is a compile error rather than a failing sweep.
+fn withTag(comptime tag: PropertyValueTag, payload: Payload(tag)) PropertyValue {
+    return @unionInit(PropertyValue, @tagName(tag), payload);
 }

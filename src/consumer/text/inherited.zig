@@ -601,7 +601,7 @@ test "a position reports the value its own run inherits" {
     const gpa = testing.allocator;
     try twoRunDocument(&state, gpa, "Noto", "Inconsolata");
 
-    const position_value = Position{
+    const position_value: Position = .{
         .root_node = handle(&state, 0),
         .inner = .{ .node = handle(&state, 2), .character_index = 0 },
     };
@@ -674,7 +674,7 @@ test "a range is mixed when one child overrides the document around both runs" {
     // stores "Noto" in the document's own buffer and the walk answers that
     // buffer, and it is not the same allocation the literal is.
     try testing.expectEqualStrings("Noto", (try nodeFontFamily(handle(&state, 0))).?);
-    const position_at_second = Position{
+    const position_at_second: Position = .{
         .root_node = handle(&state, 0),
         .inner = .{ .node = handle(&state, 2), .character_index = 0 },
     };
@@ -682,7 +682,7 @@ test "a range is mixed when one child overrides the document around both runs" {
         "Inconsolata",
         (try positionFontFamily(position_at_second)).?,
     );
-    const position_at_first = Position{
+    const position_at_first: Position = .{
         .root_node = handle(&state, 0),
         .inner = .{ .node = handle(&state, 1), .character_index = 0 },
     };
@@ -710,7 +710,7 @@ test "a flag set on the run reaches the run and folds across a range" {
 
     try testing.expect((try nodeIsItalic(handle(&state, 2))));
 
-    const position_value = Position{
+    const position_value: Position = .{
         .root_node = handle(&state, 0),
         .inner = .{ .node = handle(&state, 2), .character_index = 0 },
     };

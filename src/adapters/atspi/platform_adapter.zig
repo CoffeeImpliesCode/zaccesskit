@@ -61,14 +61,15 @@
 //! | Walk | Bound |
 //! |---|---|
 //! | `announceWholeTree` over the first update's tree | `nodes.count()`, the map's own length |
-//! | the four change slots | the number of nodes one update named, which is `update.nodes.items.len` and is read before the update is transferred |
+//! | the four change slots | the number of nodes one update named |
 //! | the event queue | `raised.items.items.len`, the bound `events.EventQueue` names |
 //!
 //! The four change slots are driven by the consumer layer and cannot be bounded
 //! here, so the bound is the property of the update that reached them: one
 //! update names each node it adds, updates or removes at most once, which is
 //! `docs/33` invariant I1 and the reason the consumer layer accepts the update
-//! at all.
+//! at all. The count is `update.nodes.items.len`, read before the update is
+//! transferred.
 
 const std = @import("std");
 

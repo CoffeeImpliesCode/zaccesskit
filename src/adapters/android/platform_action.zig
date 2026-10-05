@@ -232,6 +232,9 @@ const BundleReader = struct {
         if (class == null) return error.JavaMemberMissing;
         defer table.deleteLocalRef(class);
 
+        // SAFETY: the loop below fills every one of the four `methods` slots
+        // from `bundle_lookups` before the reader is returned, and returns
+        // early on any failure, so no read ever sees an unwritten slot.
         var reader: BundleReader = .{ .table = table, .methods = undefined };
         for (bundle_lookups, 0..) |lookup, index| {
             const method = table.getMethodId(class, lookup.name, lookup.signature);

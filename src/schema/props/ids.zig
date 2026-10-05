@@ -74,6 +74,43 @@ comptime {
     std.debug.assert(@hasField(PropertyValue, "node_id_vec"));
 }
 
+/// The 15 properties this family publishes a getter, a setter and a clearer
+/// for, in upstream order: the eight lists of
+/// `node_id_vec_property_methods!` at `accesskit/src/lib.rs:2025-2067`, then
+/// the seven single ids of `node_id_property_methods!` at `:2069-2095`.
+///
+/// This is the family's whole domain in one place, so
+/// `table.assertFamilyReachable` can hold it against the descriptor table: a
+/// property with a row in `property_descriptors` and no row here is a
+/// compile error. The eight lists also publish a pusher, which this table does
+/// not name, because the pusher is a second spelling of one operation rather
+/// than a third accessor for the property.
+pub const property_ids = [_]PropertyId{
+    .children,
+    .controls,
+    .details,
+    .described_by,
+    .flow_to,
+    .labelled_by,
+    .owns,
+    .radio_group,
+    .active_descendant,
+    .error_message,
+    .in_page_link_target,
+    .member_of,
+    .next_on_line,
+    .previous_on_line,
+    .popup_for,
+};
+
+comptime {
+    // The two invocations carry eight entries and seven. A row added here
+    // without an upstream entry changes the number of functions this module
+    // publishes, so the count is the check.
+    std.debug.assert(property_ids.len == 15);
+    table.assertFamilyReachable(.ids, property_ids);
+}
+
 /// Reads the `NodeId` arm. `copy_type_getters!` at
 /// `accesskit/src/lib.rs:1248-1259` returns the stored value and `null` for
 /// every other arm.
@@ -606,7 +643,11 @@ test "a list getter hands back the store's own array, not a copy" {
     const second_read = children(&properties);
 
     try testing.expectEqual(@intFromPtr(first_read.ptr), @intFromPtr(second_read.ptr));
-    try testing.expectEqualSlices(NodeId, &[_]NodeId{ .{ .value = 1 }, .{ .value = 2 } }, first_read);
+    try testing.expectEqualSlices(
+        NodeId,
+        &[_]NodeId{ .{ .value = 1 }, .{ .value = 2 } },
+        first_read,
+    );
 }
 
 test "a single-id getter reads through to the store after an overwrite" {

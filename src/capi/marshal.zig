@@ -972,7 +972,10 @@ pub fn opt_rect_to_c(value: ?Rect) COptRect {
 /// returns references, and the port keeps that split. The result copies the
 /// selection out, so nothing the caller does next to the node can change it.
 pub fn opt_text_selection_to_c(value: ?*const TextSelection) COptTextSelection {
-    return if (value) |held| .{ .has_value = true, .value = held.* } else .{ .has_value = false, .value = std.mem.zeroes(TextSelection) };
+    return if (value) |held|
+        .{ .has_value = true, .value = held.* }
+    else
+        .{ .has_value = false, .value = std.mem.zeroes(TextSelection) };
 }
 
 /// `accesskit_opt_coords` for `value`. `accesskit_node_character_positions` and

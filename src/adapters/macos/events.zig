@@ -145,6 +145,10 @@ pub fn releaseEvent(gpa: Allocator, event: *QueuedEvent) void {
     switch (event.*) {
         .announcement => |announcement| {
             gpa.free(announcement.text);
+            // SAFETY: the line above released the one buffer this union owns,
+            // and this line moves it onto the owning-nothing tag since no
+            // statement after it reads the released text. A reader that reads
+            // it anyway gets a trap in Debug rather than the freed slice.
             event.* = .{ .node_destroyed = undefined };
         },
         .generic, .node_destroyed => {},
@@ -504,8 +508,9 @@ fn nodeRemoved(context: *anyopaque, node: NodeRef) void {
 /// because upstream compares `raw_value` and a change from one spelling to
 /// another is a change the client hears.
 fn rawValueEquals(a: NodeRef, b: NodeRef) bool {
-    const left = consumer.node_ref.set_state.rawValue(a) orelse return consumer.node_ref.set_state.rawValue(b) == null;
-    const right = consumer.node_ref.set_state.rawValue(b) orelse return false;
+    const set_state = consumer.node_ref.set_state;
+    const left = set_state.rawValue(a) orelse return set_state.rawValue(b) == null;
+    const right = set_state.rawValue(b) orelse return false;
     return std.mem.eql(u8, left, right);
 }
 

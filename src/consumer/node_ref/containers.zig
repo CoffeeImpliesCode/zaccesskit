@@ -86,7 +86,6 @@ const TreeState = tree_state.TreeState;
 const QueryError = tree_state.QueryError;
 const FilterFn = filter.FilterFn;
 const FilterResult = filter.FilterResult;
-const Role = schema.Role;
 
 // --- role predicates, node.rs:920-955 -------------------------------------------
 

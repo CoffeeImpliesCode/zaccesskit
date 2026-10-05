@@ -248,7 +248,10 @@ pub fn walk(
     }
     if (!visit(context, start_position.node)) return false;
     if (sameNode(start_position.node, end_position.node)) return true;
-    var runs = try hierarchy.followingFilteredSiblings(start_position.node, hit_test.text_run_filter);
+    var runs = try hierarchy.followingFilteredSiblings(
+        start_position.node,
+        hit_test.text_run_filter,
+    );
     while (try runs.next()) |run| {
         if (!visit(context, run)) return false;
         if (sameNode(run, end_position.node)) break;
@@ -269,7 +272,7 @@ pub fn traverseText(
     context: ?*anyopaque,
     visit: *const fn (context: ?*anyopaque, node_ref: NodeRef, text_bytes: []const u8) bool,
 ) QueryError!bool {
-    var slice_visitor = SliceVisitor{ .range = range, .context = context, .visit = visit };
+    var slice_visitor: SliceVisitor = .{ .range = range, .context = context, .visit = visit };
     return walk(gpa, range, @ptrCast(&slice_visitor), SliceVisitor.onNode);
 }
 
@@ -283,7 +286,7 @@ pub fn writeText(
     range: Range,
     writer: *std.Io.Writer,
 ) (QueryError || std.Io.Writer.Error)!void {
-    var sink = WriteVisitor{ .writer = writer, .failed = false };
+    var sink: WriteVisitor = .{ .writer = writer, .failed = false };
     _ = try traverseText(gpa, range, @ptrCast(&sink), WriteVisitor.onNode);
     if (sink.failed) return error.WriteFailed;
 }
@@ -295,7 +298,7 @@ pub fn writeText(
 pub fn text(gpa: std.mem.Allocator, range: Range) QueryError!std.ArrayList(u8) {
     var out: std.ArrayList(u8) = .empty;
     errdefer out.deinit(gpa);
-    var sink = AppendVisitor{ .gpa = gpa, .out = &out, .failed = false };
+    var sink: AppendVisitor = .{ .gpa = gpa, .out = &out, .failed = false };
     _ = try traverseText(gpa, range, @ptrCast(&sink), AppendVisitor.onNode);
     if (sink.failed) return error.OutOfMemory;
     return out;
@@ -319,7 +322,7 @@ pub fn boundingBoxes(
 ) QueryError!std.ArrayList(schema.Rect) {
     var out: std.ArrayList(schema.Rect) = .empty;
     errdefer out.deinit(gpa);
-    var folder = BoxFolder{
+    var folder: BoxFolder = .{
         .gpa = gpa,
         .range = range,
         .out = &out,
@@ -348,7 +351,7 @@ pub fn fetchProperty(
     range: Range,
     getter: *const fn (NodeRef) QueryError!?T,
 ) QueryError!RangePropertyValue(T) {
-    var folder = FoldFolder(T){
+    var folder: FoldFolder(T) = .{
         .getter = getter,
         .value = null,
         .mixed = false,
@@ -895,7 +898,7 @@ test "the walk visits every run the range covers, in document order" {
     const gpa = testing.allocator;
     try threeRunDocument(gpa, &state);
 
-    var tracer = TracingVisitor{ .gpa = gpa };
+    var tracer: TracingVisitor = .{ .gpa = gpa };
     defer tracer.visited.deinit(gpa);
     // The range starts inside the first run and ends inside the third. A walk
     // that reports the run it starts in and no other answers one id here, and
@@ -920,7 +923,7 @@ test "a range inside one run does not reach the runs after it" {
     const gpa = testing.allocator;
     try threeRunDocument(gpa, &state);
 
-    var tracer = TracingVisitor{ .gpa = gpa };
+    var tracer: TracingVisitor = .{ .gpa = gpa };
     defer tracer.visited.deinit(gpa);
     // Both ends sit in the middle run, so `walk` answers before it builds the
     // sibling cursor at all.
@@ -944,7 +947,7 @@ test "the walk does not leave the document for the node above it" {
     const gpa = testing.allocator;
     try nestedRunDocument(gpa, &state);
 
-    var tracer = TracingVisitor{ .gpa = gpa };
+    var tracer: TracingVisitor = .{ .gpa = gpa };
     defer tracer.visited.deinit(gpa);
     // Stepping past the last run climbs to the document and then to the
     // window. Neither is a text run, and a walk that offered either of them
@@ -1194,7 +1197,7 @@ test "a position from another node is refused by setStart and setEnd" {
     try twoRunDocument(gpa, &state);
 
     var range = try rangeOver(gpa, &state, 0, 5);
-    const other = Position{
+    const other: Position = .{
         .root_node = handle(&state, 1),
         .inner = .{ .node = handle(&state, 1), .character_index = 2 },
     };
@@ -1213,7 +1216,7 @@ test "a start that passes the end drags the end with it" {
     try twoRunDocument(gpa, &state);
 
     var range = try rangeOver(gpa, &state, 0, 2);
-    const past = Position{
+    const past: Position = .{
         .root_node = handle(&state, 0),
         .inner = .{ .node = handle(&state, 2), .character_index = 4 },
     };

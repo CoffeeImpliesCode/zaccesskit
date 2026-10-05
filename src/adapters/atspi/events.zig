@@ -670,7 +670,7 @@ test "every property value carries the signature the reference declares" {
 
 test "an event splits the header from the body" {
     const gpa = std.testing.allocator;
-    var event = Event{
+    var event: Event = .{
         .kind = .cache,
         .member = member_add_accessible,
         .id = .root,
@@ -694,15 +694,15 @@ test "an event splits the header from the body" {
 }
 
 test "two events about different nodes are not about the same subject" {
-    const here = Event{ .kind = .object, .member = member_focus, .id = .root };
-    const elsewhere = Event{ .kind = .object, .member = member_focus, .id = .root };
+    const here: Event = .{ .kind = .object, .member = member_focus, .id = .root };
+    const elsewhere: Event = .{ .kind = .object, .member = member_focus, .id = .root };
 
     try testing.expect(here.sameSubject(elsewhere));
 
-    const other_interface = Event{ .kind = .cache, .member = member_focus, .id = .root };
+    const other_interface: Event = .{ .kind = .cache, .member = member_focus, .id = .root };
     try testing.expect(!here.sameSubject(other_interface));
 
-    const other_member = Event{ .kind = .object, .member = member_announcement, .id = .root };
+    const other_member: Event = .{ .kind = .object, .member = member_announcement, .id = .root };
     try testing.expect(!here.sameSubject(other_member));
 }
 
@@ -732,7 +732,7 @@ test "draining moves each event's dictionary rather than copying or dropping it"
     const gpa = std.testing.allocator;
     var queue = EventQueue.empty();
 
-    var event = Event{ .kind = .object, .member = member_state_changed, .id = .root };
+    var event: Event = .{ .kind = .object, .member = member_state_changed, .id = .root };
     try event.properties.put(gpa, "new_value", .{ .boolean = true });
     try queue.push(gpa, event);
 

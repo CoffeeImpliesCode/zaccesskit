@@ -370,7 +370,11 @@ pub fn backwardToCharacterStart(position: Position) QueryError!Position {
 /// here that disagreed.
 ///
 /// Allocates nothing and cannot fail.
-pub fn degenerateRangeParts(position: Position) struct { node: NodeRef, start: InnerPosition, end: InnerPosition } {
+pub fn degenerateRangeParts(position: Position) struct {
+    node: NodeRef,
+    start: InnerPosition,
+    end: InnerPosition,
+} {
     return .{ .node = position.root_node, .start = position.inner, .end = position.inner };
 }
 
@@ -598,7 +602,11 @@ fn buildNode(role: schema.Role, extras: RunExtras) std.mem.Allocator.Error!Node 
 /// `byte_lengths` gives the byte length of each character, which is what
 /// `character_lengths` stores and what makes the byte offset of every character
 /// its running sum.
-fn buildRun(text: []const u8, byte_lengths: []const u8, extras: RunExtras) std.mem.Allocator.Error!Node {
+fn buildRun(
+    text: []const u8,
+    byte_lengths: []const u8,
+    extras: RunExtras,
+) std.mem.Allocator.Error!Node {
     var run = try buildNode(.text_run, extras);
     errdefer run.deinit();
     try schema.strings.setValue(&run.properties, text);
@@ -616,6 +624,10 @@ fn put(state: *TreeState, id: NodeId, parent: ?ParentAndIndex, node: *Node) !voi
         .parent_and_index = parent,
         .data = node.*,
     });
+    // SAFETY: the map copied `node` by value on the lines above, so the
+    // caller-owned slot no longer owns the properties, and no statement after
+    // it reads `node`. A read anyway traps in Debug rather than aliasing the
+    // stored copy with two owners.
     node.* = undefined;
 }
 
@@ -864,7 +876,14 @@ test "isWordStart answers for a listed word start and not for a listed gap" {
     defer state.deinit(test_allocator);
     _ = try addDocumentRoot(&state, &.{localId(2)});
     // Word starts at characters zero and three.
-    _ = try addRun(&state, localId(2), 0, "ab cd", &.{ 1, 1, 1, 1, 1 }, .{ .word_starts = &.{ 0, 3 } });
+    _ = try addRun(
+        &state,
+        localId(2),
+        0,
+        "ab cd",
+        &.{ 1, 1, 1, 1, 1 },
+        .{ .word_starts = &.{ 0, 3 } },
+    );
     const root = try refOf(&state, localId(1));
     const run = try refOf(&state, localId(2));
 
@@ -1042,9 +1061,18 @@ test "isLineStart and isLineEnd answer from the run's own links" {
     const run = try refOf(&state, localId(2));
 
     // A lone run declares no line link in either direction, so it is both.
-    try testing.expect(isLineStart(.{ .root_node = root, .inner = .{ .node = run, .character_index = 0 } }));
-    try testing.expect(isLineEnd(.{ .root_node = root, .inner = .{ .node = run, .character_index = 2 } }));
-    try testing.expect(!isLineEnd(.{ .root_node = root, .inner = .{ .node = run, .character_index = 1 } }));
+    try testing.expect(isLineStart(.{
+        .root_node = root,
+        .inner = .{ .node = run, .character_index = 0 },
+    }));
+    try testing.expect(isLineEnd(.{
+        .root_node = root,
+        .inner = .{ .node = run, .character_index = 2 },
+    }));
+    try testing.expect(!isLineEnd(.{
+        .root_node = root,
+        .inner = .{ .node = run, .character_index = 1 },
+    }));
 }
 
 test "isLineStart and isLineEnd need the neighbour a linked run names" {
@@ -1061,10 +1089,22 @@ test "isLineStart and isLineEnd need the neighbour a linked run names" {
 
     // The two runs share a line, so the first run's end is not a line end and
     // the second run's start is not a line start.
-    try testing.expect(isLineStart(.{ .root_node = root, .inner = .{ .node = first, .character_index = 0 } }));
-    try testing.expect(!isLineEnd(.{ .root_node = root, .inner = .{ .node = first, .character_index = 2 } }));
-    try testing.expect(!isLineStart(.{ .root_node = root, .inner = .{ .node = second, .character_index = 0 } }));
-    try testing.expect(isLineEnd(.{ .root_node = root, .inner = .{ .node = second, .character_index = 2 } }));
+    try testing.expect(isLineStart(.{
+        .root_node = root,
+        .inner = .{ .node = first, .character_index = 0 },
+    }));
+    try testing.expect(!isLineEnd(.{
+        .root_node = root,
+        .inner = .{ .node = first, .character_index = 2 },
+    }));
+    try testing.expect(!isLineStart(.{
+        .root_node = root,
+        .inner = .{ .node = second, .character_index = 0 },
+    }));
+    try testing.expect(isLineEnd(.{
+        .root_node = root,
+        .inner = .{ .node = second, .character_index = 2 },
+    }));
 }
 
 test "forwardToCharacterEnd steps one character without leaving its run" {

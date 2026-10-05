@@ -1307,10 +1307,19 @@ const RecordedCall = struct {
 /// The recorder owns no memory and returns no error, so a test can drive the
 /// whole fill without a failing allocator in the middle of a recorded call.
 const Recorder = struct {
+    // SAFETY: `recordFindClass` appends to `classes` only below
+    // `recorded_class_capacity` and only bumps `class_count` after the write,
+    // so every reader that checks the count sees a filled row.
     classes: [recorded_class_capacity]ResolvedClass = undefined,
     class_count: usize = 0,
+    // SAFETY: `recordGetMethodId` and `recordGetStaticFieldId` append below
+    // `recorded_member_capacity` and bump `member_count` only after the write,
+    // so a `member_count`-bounded read never reaches an unwritten row.
     members: [recorded_member_capacity]ResolvedMember = undefined,
     member_count: usize = 0,
+    // SAFETY: `recordCall` appends below `recorded_call_capacity` and bumps
+    // `call_count` only after the write, so a `call_count`-bounded read never
+    // reaches an unwritten row.
     calls: [recorded_call_capacity]RecordedCall = undefined,
     call_count: usize = 0,
     /// The two numbers `getIntArrayRegion` writes, the host screen origin.
@@ -2072,6 +2081,10 @@ test "the twenty-one descriptors methods.zig holds no row for are spelled as the
         .{
             .class = "Landroid/view/accessibility/AccessibilityNodeInfo;",
             .name = "addAction",
+            // The descriptor is one JNI token of 74 characters, and this field
+            // already sits on its own line at the structural indent of 12, so
+            // the line is 101 columns and a `++` split needs three more than
+            // the single column it has spare.
             .signature = "(Landroid/view/accessibility/AccessibilityNodeInfo$AccessibilityAction;)V",
         },
         .{

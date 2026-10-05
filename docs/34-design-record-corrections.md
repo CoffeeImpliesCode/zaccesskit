@@ -32,10 +32,20 @@ live tree. The command was `zig 0.16.0 test src/probe.zig`, run at
 of those 77 are the geometry modules' own tests, so the run reached them and
 did not pass silently.
 
-**`zig build test` was no alternative at this revision.** It roots at
-`src/root.zig`, which declares `version` at `:34` and `minimum_zig_version` at
+**`zig build test` was no alternative at this revision, and that has changed.**
+The paragraph read: "`zig build test` was no alternative at this revision. It roots
+at `src/root.zig`, which declares `version` at `:34` and `minimum_zig_version` at
 `:40` and imports no module under `src/schema/`. A green `zig build test` here
-compiles two constants and two tests. The mirror is what reached the code.
+compiles two constants and two tests." The two line numbers are stale now, and the
+claim about the import graph is false now.
+
+A count over the tree on 2026-10-05 gives the correction. `src/root.zig` is 127
+lines and declares five names: `schema` at `src/root.zig:36`, `consumer` at `:49`,
+`capi` at `:57`, `version` at `:68` and `minimum_zig_version` at `:74`. The root
+imports `src/schema/` at line 36, so the claim that it imports no module under
+`src/schema/` is wrong. All 24 schema modules are in the import graph from that
+root, each carries a `refAllDecls` test on its own namespace, and a green
+`zig build test` therefore compiles all 24 rather than two constants.
 
 **Status of the originals.** The design documents stay exactly as they were
 written, and nothing in `docs/10` through `docs/30` is edited by this file. This

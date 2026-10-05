@@ -99,8 +99,11 @@ zig build cross-test
 |---|---|
 | `zig version` | Prints the version the shim selected. |
 | `zig build` | Builds the default step, which is the published module. |
-| `zig build test` | Runs the library tests in Debug and in ReleaseSafe. |
+| `zig build test` | Runs four shards: `test-Debug`, `test-ReleaseSafe`, `fuzz-Debug` and `fuzz-ReleaseSafe`. |
 | `zig build cross-test` | Runs the Debug shard for every foreign target. |
+| `zig build fuzz` | Replays the committed corpus. `zig build test` already depends on both fuzz shards. |
+| `zig build capi-parity` | Compares `include/zaccesskit.h` against the exports for every measured target. |
+| `zig build docs-tables` | Checks the generated symbol tables in `docs/36` against the source. |
 
 Each native test shard runs under a four gibibyte address-space ceiling, so a runaway
 test fails quickly. `build.zig` names the ceiling and applies it.
@@ -132,6 +135,15 @@ re-exports `schema`, `consumer` and `capi`. A `pub const` that no other declarat
 references is a re-export that analyzes nothing, so the count says nothing about a
 module that no re-export reaches.
 
+A walk of the `@import` graph from `src/root.zig` on 2026-10-05 puts that number in
+writing. The tree holds 114 modules under `src/`. 106 of them are in the graph. The
+eight that are not hold 2430 lines and 46 of the 1438 `test "` declarations under
+`src/`, so no shard reaches them. Seven are AT-SPI or Windows modules, and three of
+those, `src/adapters/windows/bindings.zig`, `src/adapters/windows/com.zig` and
+`src/adapters/windows/error_codes.zig`, are outside the graph because
+`build.zig.zon` does not name `zigwin32`. `src/adapters/windows/root.zig:19-21` says
+so. Do not quote a test count as coverage of those eight files.
+
 ### 2.5 Scratch
 
 Put scratch under `/tmp/scratch/<your-slice>/`. Never use `/tmp`, never
@@ -160,8 +172,11 @@ Read the layers in this order. Each one depends on the layers above it in the li
 6. `test/` holds the C consumer, the fuzz corpus and the fuzz generator.
 7. `tools/` holds Zig helper programs, such as the header parity checker.
 
-`src/root.zig` is the module root and declares nothing else. Everything a consumer
-reaches is re-exported there.
+`src/root.zig` is the module root. It declares five names: `schema` at
+`src/root.zig:36`, `consumer` at `:49`, `capi` at `:57`, `version` at `:68` and
+`minimum_zig_version` at `:74`. It also holds five tests. The first three
+declarations carry a `refAllDecls` test, which is what makes a green run reach the
+modules underneath them. Everything a consumer reaches is re-exported there.
 
 ### 3.1 Which document answers which question
 

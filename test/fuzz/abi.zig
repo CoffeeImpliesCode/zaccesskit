@@ -11,9 +11,10 @@
 //! geometry, colour, decoration and text-selection types as `extern struct`
 //! precisely because their offsets are a contract. Each of those has a row
 //! here. The `accesskit_opt_*` rows and the list rows have no Zig counterpart
-//! today, because the C ABI form lives in `src/capi/` and that file does not
-//! exist; the harness reads their recorded numbers and reports them, and a Zig
-//! check for each arrives with the type.
+//! in the schema layer, because the C ABI form lives in `src/capi/` and this
+//! harness measures the header rather than the exported symbols; it reads
+//! their recorded numbers, reports them, and `zig build capi-parity` is the
+//! step that compares the header against what `src/capi/` exports.
 //!
 //! **The per-tag projection.** `tagProjection` has one arm per member of
 //! `PropertyValueTag`, so the union cannot gain a variant that no row of the
@@ -21,7 +22,7 @@
 //! nobody knows": adding a variant without adding its projection is a compile
 //! error here.
 //!
-//! **Where the numbers come from.** `include/zaccesskit.h:6490` states that the
+//! **Where the numbers come from.** `include/zaccesskit.h:6507` states that the
 //! table was measured on x86-64 Linux with the system C compiler. This module
 //! compiles no C and re-measures nothing. It checks that the header still
 //! declares what it declared and that the Zig types agree with it.
@@ -40,14 +41,20 @@ const size_mod = @import("../../src/schema/geometry/size.zig");
 const PropertyValueTag = table.PropertyValueTag;
 
 /// The header, read at compile time so a missing file is a build failure.
-pub const header_text = @embedFile("../../../include/zaccesskit.h");
+pub const header_text = @embedFile("../../include/zaccesskit.h");
 
 /// The marker every row of the conformance table begins with.
-const row_prefix = " *   accesskit_";
+///
+/// The marker stops at the column gap and not at the type name, so the name a
+/// row records still begins with `accesskit_` and matches what `tagProjection`
+/// returns. The header's own column rule and four prose lines carry the same
+/// marker; `parseOne` skips every line whose columns do not parse as numbers.
+/// `[OBSERVED: 48 lines carry it and 39 of them are rows]`
+const row_prefix = " *   ";
 
 /// The widest table this parser will read.
 ///
-/// The header declares 39 rows at `include/zaccesskit.h:6511` to `:6549`, so
+/// The header declares 39 rows at `include/zaccesskit.h:6526` to `:6564`, so
 /// 128 leaves room for a revision that grows the table and turns an overflow
 /// into a compile error rather than a silent truncation.
 pub const max_row_count: usize = 128;
@@ -166,7 +173,7 @@ fn splitFields(line: []const u8, out: *[4][]const u8) usize {
     var count: usize = 0;
     var rest = line;
     while (count < out.len) {
-        rest = std.mem.trimLeft(u8, rest, " \t");
+        rest = std.mem.trimStart(u8, rest, " \t");
         if (rest.len == 0) break;
         const end = std.mem.indexOfAny(u8, rest, " \t") orelse rest.len;
         out[count] = rest[0..end];

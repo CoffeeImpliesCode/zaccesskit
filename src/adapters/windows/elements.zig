@@ -446,7 +446,10 @@ test "every allocation failure leaves the registry as it was" {
             // A failed insert must leave no node behind, or a later request
             // would find a slot whose provider was never built.
             try testing.expectEqual(@as(usize, 0), registry.nodeCount());
-            try testing.expectEqual(@as(?*const ProviderSlot, null), registry.existingSlot(nodeId(1)));
+            try testing.expectEqual(
+                @as(?*const ProviderSlot, null),
+                registry.existingSlot(nodeId(1)),
+            );
         }
     }
 }

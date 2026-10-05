@@ -166,7 +166,10 @@ pub fn applyUpdate(
             if (scratch.seen_child_ids.contains(mapped_child_id)) return error.DuplicateChild;
             try scratch.seen_child_ids.put(gpa, mapped_child_id, {});
             _ = scratch.unreachable_ids.fetchOrderedRemove(mapped_child_id);
-            const parent_and_index = ParentAndIndex{ .parent_id = node_id, .index = child_index };
+            const parent_and_index: ParentAndIndex = .{
+                .parent_id = node_id,
+                .index = child_index,
+            };
             if (state.nodes.getPtr(mapped_child_id)) |child_state| {
                 if (!isSameParent(child_state.parent_and_index, parent_and_index)) {
                     child_state.parent_and_index = parent_and_index;

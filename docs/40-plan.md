@@ -1,8 +1,9 @@
 # 40 — The milestone plan for `zaccesskit`
 
-**What this plan consumes.** The 29 research documents under `docs/`, the two
-pinned upstream checkouts, the `zio` pin in `build.zig.zon`, the eight fixed
-decisions in `local://zaccesskit-risk-register.md`, and the module layout in
+**What this plan consumes.** The research documents under `docs/`, which numbered
+29 when this plan was written and number 41 now, the two pinned upstream
+checkouts, the `zio` pin in `build.zig.zon`, the eight fixed decisions in
+`local://zaccesskit-risk-register.md`, and the module layout in
 `docs/30-port-design.md`.
 
 **What consumes this plan.** `docs/50-verification.md`, which turns the gates
@@ -10,11 +11,17 @@ below into a verification record. And the next agent to translate a module, who
 needs to know what must already be true before a file opens.
 
 **Branch: advice. This document is a proposal, not a finding.** No claim below
-is evidence. Nothing in the port has been compiled, tested or run. Every build
-and test command in this plan is written as a command an agent *would* run, and
-every size figure is a size somebody expects. Where a fact comes from a document
-that measured it, the label says so. Where this plan is guessing, the label says
-that too. A reader must not treat an entry gate here as a result.
+is evidence, and no entry gate in this document is a result. Every build and test
+command in this plan is written as a command an agent *would* run, and every size
+figure is a size somebody expects. Where a fact comes from a document that
+measured it, the label says so. Where this plan is guessing, the label says that
+too. A reader must not treat an entry gate here as a result.
+
+**What changed under this plan.** The plan was written against an empty tree on
+2026-10-05, and section 1.1 corrects the sentences that describe that tree. The
+milestone tables are not corrected, because a milestone states what a slice must
+produce and what gate it must pass, and a milestone that has been reached is still
+described by its target.
 
 ## 1. What this plan is and is not
 
@@ -25,13 +32,49 @@ estimates its size, and states an entry gate. An entry gate is a command plus a
 stated proof. A gate can fail, and when it fails the failure names the defect
 rather than a stage number.
 
-This plan does not implement the port. Today the repository holds five things
-and no more: `build.zig` and `build.zig.zon` for the `zio` pin and the module
-wiring, `cross-test.profile.sh` for the foreign matrix, `src/root.zig` as a
-module doc comment with no declaration in it, `AGENTS.md` and `README.md` for
-the house rules, and this `docs/` corpus. There is no library code, no test, no
-C header and no adapter. Every line of Zig the port will contain does not exist
-yet.
+This plan does not implement the port, and it does not describe the port as it
+stands. It was written against an empty tree and read: "Today the repository
+holds five things and no more: `build.zig` and `build.zig.zon` for the `zio` pin
+and the module wiring, `cross-test.profile.sh` for the foreign matrix,
+`src/root.zig` as a module doc comment with no declaration in it, `AGENTS.md` and
+`README.md` for the house rules, and this `docs/` corpus. There is no library
+code, no test, no C header and no adapter. Every line of Zig the port will
+contain does not exist yet." Every one of those sentences is now false, and
+section 1.1 carries the measurement that says so.
+
+### 1.1 The tree as it stands, measured 2026-10-05T20:02+02:00
+
+A comment-aware walk of the `@import` graph from `src/root.zig`, skipping `std`,
+`builtin`, `zio` and `build_options`. Line counts come from `wc -l`. The test
+column counts declarations whose line begins with `test "`. Other agents were
+editing the tree while the walk ran, so a reader who repeats it may see a
+different total.
+
+| Layer | Modules | Lines | `test "` declarations | In the import graph |
+|---|---:|---:|---:|---:|
+| `src/schema/` | 24 | 13982 | 318 | 24 of 24 |
+| `src/consumer/` | 28 | 21274 | 385 | 28 of 28 |
+| `src/capi/` | 14 | 22294 | 220 | 14 of 14 |
+| `src/adapters/` | 47 | 35956 | 510 | 39 of 47 |
+| `src/root.zig` | 1 | 127 | 5 | in the graph |
+| **All** | **114** | **93633** | **1438** | **106 of 114** |
+
+Eight modules and 2430 lines are outside the graph, and 46 of the 1438 test
+declarations sit in those files, so a build step that roots at `src/root.zig`
+analyses none of them. Seven are AT-SPI or Windows modules. Three of them,
+`src/adapters/windows/bindings.zig`, `src/adapters/windows/com.zig` and
+`src/adapters/windows/error_codes.zig`, sit outside the graph because
+`build.zig.zon` does not name `zigwin32`, and
+`src/adapters/windows/root.zig:19-21` already records that.
+
+`src/root.zig` is 127 lines and declares five names: `schema` at `:36`,
+`consumer` at `:49`, `capi` at `:57`, `version` at `:68` and
+`minimum_zig_version` at `:74`. Three of the five carry a `refAllDecls` test at
+`:106`, `:115` and `:122`, which is why a green `zig build test` reaches all 24
+schema modules.
+
+This census counts files and declarations. It runs no compiler.
+`docs/50-verification.md` owns the run evidence, and this plan cites none of it.
 
 A milestone here is a named set of upstream files translated, with an entry gate
 that can fail. It is not a sprint and it is not a date. The unit is the upstream
@@ -40,8 +83,10 @@ by line. A milestone that cannot state which upstream lines it covers is not a
 milestone. M1 covers `lib.rs` role and property tables. M2 covers `tree.rs` and
 `update_coordinator.rs`. Neither is "the data layer".
 
-The gates below are commands, not results. `zig-gate` has not been run for this
-plan, and neither has `zig build`, `zig build test` or `zig build cross-test`.
+The gates below are commands, not results. Nothing was run to write this plan and
+nothing in it reports an outcome. The tree has moved since, and the run evidence
+for the tree belongs to `docs/50-verification.md`.
+
 The upstream figures this plan quotes, the 182 roles, the 496 exported C
 functions, the goose gaps G1 to G9, the measured struct layouts, all of those
 come from documents that measured them, and each is attributed. The proof labels
@@ -65,16 +110,17 @@ the three splits it names are counted here as separate modules.
 
 ### M0. The base
 
-What already exists on 2026-10-05, all of it written by earlier work and none of
-it compiled for this plan:
+This table is the baseline M0 started from, read on 2026-10-05. It is not the tree
+today, and section 1.1 measures that. Three of the five rows have moved, and the
+corrections are beside each row.
 
-| Thing | Where | State |
+| Thing | Where, then | State then |
 |---|---|---|
-| `zio` pin, codeload tarball at commit `2662fdc45997611b962b560c513c16963475a01b` | `build.zig.zon:29-33` | source reading at a pinned revision |
-| One published module `zaccesskit`, rooted at `src/root.zig`, importing `zio` | `build.zig:37-48` | source reading |
-| Two test shards, Debug and ReleaseSafe, each under `ulimit -v 4194304` | `build.zig:52-71`, `:108-118` | source reading |
+| `zio` pin, codeload tarball at commit `2662fdc45997611b962b560c513c16963475a01b` | `build.zig.zon:29-33` | source reading at a pinned revision. The pin has not moved. |
+| One published module `zaccesskit`, rooted at `src/root.zig`, importing `zio` | `build.zig:37-48`, now `build.zig:58-66` | source reading |
+| Two test shards, Debug and ReleaseSafe, each under `ulimit -v 4194304` | `build.zig:52-71`, now `build.zig:74-94` | source reading |
 | One foreign matrix with three rows | `cross-test.profile.sh:38-42` | source reading |
-| A module root with no declaration in it | `src/root.zig:1-19` | source reading |
+| A module root with no declaration in it | `src/root.zig:1-19` | source reading. Wrong now. `src/root.zig` is 127 lines and declares five names, at `:36`, `:49`, `:57`, `:68` and `:74`, and the `test` step depends on two more shards it did not have, `fuzz-Debug` at `build.zig:170` and `fuzz-ReleaseSafe` at `build.zig:186`. |
 
 What M0 adds:
 
@@ -84,8 +130,8 @@ What M0 adds:
 | A probe module that imports `goose` | One file, no logic | A dependency in `.dependencies` that nothing imports is never fetched, so a bad hash would not fail until M5. |
 | Three more matrix rows | `riscv64-linux`, `loongarch64-linux`, `x86-linux`, named in advance at `cross-test.profile.sh:35-37` | Wider architecture coverage and 32-bit pointer and alignment bugs. `x86-linux` is the row that catches a `usize` assumed to be 8 bytes. |
 | A self-test | One `test` that counts its own discovery, so stage 3 prints a count | `AGENTS.md` item 2 makes the printed count a gate condition, and stage 3 only soft-skips when there is no `test` step at all (`zig-gate:452-453`). |
-| `.paths` widened | Add `test`, `include`, `third_party` | `build.zig.zon:36-44` does not list `test/` today, so a packaged build would drop every fixture. |
-| **No `fuzz` step** | The decision is to not add one | `-ffuzz` does not compile on Zig 0.16.0 (`docs/22-zig-build-surface.md:1915-1959`). `Module.CreateOptions.fuzz` becomes `-ffuzz` (`std/Build/Module.zig:248`, `:552`) and turns every containing compile red, and `zig build test --fuzz=N` reports `error: no fuzz tests found` because a fuzz run off the `test` path is never made. A fuzz step that cannot compile is worse than no fuzz step, because a reviewer must read the diff to learn why. |
+| `.paths` widened | Add `third_party` | **Done for two of the three.** `build.zig.zon:53-64` lists `test`, `tools`, `include` and `docs`. It does not list `third_party`, and no `third_party` directory exists. |
+| **No `fuzz` step** | The decision was to add none, because a fuzz step cannot compile | **The decision stands and the reason no longer holds alone.** `-ffuzz` does not compile on Zig 0.16.0 (`docs/22-zig-build-surface.md:1915-1959`), and no build step sets it. `build.zig:156` declares a `fuzz` step anyway, and it replays the committed corpus in `test/fuzz/corpus/` through `std.testing.fuzz` rather than mutating. `build.zig:140-142` says so in the step's own comment. |
 
 | Field | M0 |
 |---|---|
@@ -635,10 +681,10 @@ what would have to change for the item to become worth scheduling.
 |---|---|---|
 | An X11 adapter | Upstream ships none. `adapters/unix/src/` contains zero X11, XCB and Wayland code: the only match for `xcb\|wayland\|X11\|xlib\|xkb\|wl_` over the adapter and its manifest is a doc comment at `adapters/unix/src/adapter.rs:172` (`docs/12-accesskit-adapters.md:74-80`) | Someone asks for window bounds and focus that the application cannot supply. That is new work with no upstream to translate, and `docs/27-x11-headers-resolution.md` says the headers are obtainable from the Nix sandbox store |
 | A Wayland adapter | The same finding, same line. Under Wayland an application cannot get its window position, which is why the doc comment at `adapter.rs:172` says `set_root_window_bounds` only makes sense under X11 | The same condition. A compositor protocol would have to be named first |
-| Fuzzing | `-ffuzz` does not compile, so a fuzz step cannot be built, let alone run. Adding the step would put a red build in the graph (`docs/22-zig-build-surface.md:1940-1944`) | A Zig release where `zig test -ffuzz` compiles. The corpus and the targets in `docs/18-testing-strategy.md:637-680` are then scheduled unchanged, and the milestone plan gains two gate lines: a required replay and a bounded nightly mutation |
+| Fuzzing | Mutation is not scheduled, and that part still holds: `-ffuzz` does not compile on Zig 0.16.0, so a mutating step cannot be built (`docs/22-zig-build-surface.md:1940-1944`). A replay step was built anyway. `build.zig:156` declares `fuzz` and replays the committed corpus in `test/fuzz/corpus/` through `std.testing.fuzz`, and `build.zig:140-142` says in its own comment that this is replay and not mutation | A Zig release where `zig test -ffuzz` compiles. The corpus and the targets in `docs/18-testing-strategy.md:637-680` are then scheduled unchanged, and the milestone plan gains two gate lines: the required replay already in the graph, and a bounded nightly mutation |
 | An `accesskit_winit` equivalent | `docs/12-accesskit-adapters.md:861-863` argues it is a toolkit bridge, not a platform adapter, and that reproducing it means writing a winit clone. This port targets platform adapters | A Zig windowing library appears that the port can bind to. Until then a bridge would be a second project |
 | A coverage gate | `zig-cov` is off unless `--cov` is passed, and `build.zig` has no coverage wiring, so stage 10 skips itself (`docs/18-testing-strategy.md:983-991`). There is no branch metric at all (`:993-1006`) | Someone wires `zig-cov` into `build.zig` and sets `ZIG_COV_FAIL_UNDER`. Until then no milestone writes a percentage |
-| `ReleaseFast` and `ReleaseSmall` builds | `build.zig:54-71` runs Debug and ReleaseSafe because the gate runs a plain `zig build test` with no `-Doptimize`. `AGENTS.md:296-297` names a green gate as no proof of the other two modes | The gate gains a stage that runs them, or a milestone needs a performance claim |
+| `ReleaseFast` and `ReleaseSmall` builds | `build.zig:74-94` runs Debug and ReleaseSafe because the gate runs a plain `zig build test` with no `-Doptimize`. `AGENTS.md:296-297` names a green gate as no proof of the other two modes | The gate gains a stage that runs them, or a milestone needs a performance claim |
 | A multi-threaded executor for D-Bus calls | goose's `Connection` methods are synchronous (`connection.zig:1080` for `methodCall`), and every D-Bus call blocks its executor (`docs/26-goose-live-bus-probe.md:702-704`, runtime observation). Upstream's handlers are synchronous and short | A call is measured blocking long enough to matter. Then a bounded worker pool is scheduled, not a general executor |
 | Byte compatibility with upstream's C header | The upstream header has six recorded ABI breaks, the most recent 0.18.0 on 2025-12-10 (`docs/11-accesskit-c-abi.md`, R14). The two crates also version independently: macos 0.27.1, windows 0.35.1, unix 0.24.0, android 0.9.0, ios 0.2.1 | Never, for the header upstream ships. `docs/31-c-abi-design.md` states which breaks the port adopts and which it declines |
 | Bindings for languages other than C | The port targets a C ABI because that is what upstream's adapters consume, and a C caller cannot register a platform of its own because no vtable exists (`docs/11-accesskit-c-abi.md`, R13). Adding a second binding is a second surface to keep in step | A consumer appears that cannot link C. A `translate-c` binding over the port's own header is then a rung-3 addition, not a redesign |

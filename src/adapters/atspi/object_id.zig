@@ -172,7 +172,7 @@ test "the cache identifier names the cache path" {
 test "a node path is the prefix, the adapter and the node segment, in that order" {
     const gpa = std.testing.allocator;
 
-    const id = ObjectId{ .node = .{ .adapter = 3, .node = testNode(42, 0) } };
+    const id: ObjectId = .{ .node = .{ .adapter = 3, .node = testNode(42, 0) } };
     const path = try id.path(gpa);
     defer gpa.free(path);
 

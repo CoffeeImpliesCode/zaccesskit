@@ -390,7 +390,13 @@ fn reportCensus(w: *Io.Writer, sweep: *Sweep) !void {
     try censusRow(sweep, w, "function declarations", doc.functions.len, Measured.functions);
     try censusRow(sweep, w, "laid-out structs", doc.records.len, Measured.laid_out_structs);
     try censusRow(sweep, w, "opaque handles", opaque_count, Measured.opaque_handles);
-    try censusRow(sweep, w, "function-pointer typedefs", function_pointers, Measured.function_pointer_typedefs);
+    try censusRow(
+        sweep,
+        w,
+        "function-pointer typedefs",
+        function_pointers,
+        Measured.function_pointer_typedefs,
+    );
     try censusRow(sweep, w, "enum declarations", doc.enums.len, Measured.enums);
     try censusRow(sweep, w, "enum variants", variants, Measured.enum_variants);
     try censusRow(sweep, w, "exported data objects", doc.objects.len, Measured.data_objects);
@@ -410,7 +416,11 @@ fn reportCensus(w: *Io.Writer, sweep: *Sweep) !void {
     if (total != Measured.functions) {
         try sweep.add(.{
             .kind = .count_disagreement,
-            .detail = try std.fmt.allocPrint(sweep.arena, "header declares {d} functions, docs/40 measured {d}", .{ total, Measured.functions }),
+            .detail = try std.fmt.allocPrint(
+                sweep.arena,
+                "header declares {d} functions, docs/40 measured {d}",
+                .{ total, Measured.functions },
+            ),
         });
     }
 
@@ -418,8 +428,14 @@ fn reportCensus(w: *Io.Writer, sweep: *Sweep) !void {
     try w.print("  {s:<38}{d:>6}\n", .{ "export fn", export_fn });
     try w.print("  {s:<38}{d:>6}\n", .{ "@export under a comptime guard", at_export });
     try w.print("  {s:<38}{d:>6}\n", .{ "total sites", sweep.scan.sites.len });
-    try w.print("  {s:<38}{d:>6}\n", .{ "platform.export_records rows", platform.export_record_count });
-    try w.print("  {s:<38}{d:>6}\n\n", .{ "header.capi_parity_scan_problems", sweep.scan.problems.len });
+    try w.print("  {s:<38}{d:>6}\n", .{
+        "platform.export_records rows",
+        platform.export_record_count,
+    });
+    try w.print("  {s:<38}{d:>6}\n\n", .{
+        "unreadable export sites",
+        sweep.scan.problems.len,
+    });
 }
 
 fn censusRow(sweep: *Sweep, w: *Io.Writer, label: []const u8, got: usize, want: usize) !void {
@@ -433,7 +449,11 @@ fn censusRow(sweep: *Sweep, w: *Io.Writer, label: []const u8, got: usize, want: 
     if (!ok) {
         try sweep.add(.{
             .kind = .count_disagreement,
-            .detail = try std.fmt.allocPrint(sweep.arena, "{s}: measured {d}, docs/40 measured {d}", .{ label, got, want }),
+            .detail = try std.fmt.allocPrint(
+                sweep.arena,
+                "{s}: measured {d}, docs/40 measured {d}",
+                .{ label, got, want },
+            ),
         });
     }
 }
@@ -487,7 +507,11 @@ fn reportRecordCheck(w: *Io.Writer, sweep: *Sweep) !void {
         }
     }
 
+    // Only a guarded site is expected to have a row. `export_records` holds
+    // the 58 declarations behind a guard and nothing else, so a portable site
+    // with no row is the table being correct rather than a defect.
     for (sweep.scan.sites) |s| {
+        if (s.guard == null) continue;
         if (recordFor(s.symbol) != null) continue;
         without_record += 1;
         try w.print(
@@ -506,7 +530,8 @@ fn reportRecordCheck(w: *Io.Writer, sweep: *Sweep) !void {
         });
     }
 
-    try w.print("  rows matched {d}, guard disagreements {d}, rows without a site {d}, sites without a row {d}\n\n", .{
+    try w.print("  rows matched {d}, guard disagreements {d}," ++
+        " rows without a site {d}, sites without a row {d}\n\n", .{
         matched,
         disagreements,
         without_site,
@@ -624,7 +649,9 @@ fn reportTarget(w: *Io.Writer, sweep: *Sweep, t: header.Target, doc: *const head
         try w.print("  docs/40 measured no total for this target\n", .{});
         try sweep.add(.{
             .kind = .unmeasured_target,
-            .detail = try std.fmt.allocPrint(sweep.arena, "no measured total for target {s}", .{@tagName(t)}),
+            .detail = try detail(sweep, "no measured total for target {s}", .{
+                @tagName(t),
+            }),
         });
     } else {
         try w.print("  docs/40 measured {d} for this target{s}\n", .{
@@ -638,25 +665,44 @@ fn reportTarget(w: *Io.Writer, sweep: *Sweep, t: header.Target, doc: *const head
         if (declared_total != expected.?) {
             try sweep.add(.{
                 .kind = .count_disagreement,
-                .detail = try std.fmt.allocPrint(sweep.arena, "{s}: header declares {d}, docs/40 measured {d}", .{ @tagName(t), declared_total, expected.? }),
+                .detail = try detail(
+                    sweep,
+                    "{s}: header declares {d}, docs/40 measured {d}",
+                    .{ @tagName(t), declared_total, expected.? },
+                ),
             });
         }
         if (exported_total != expected.?) {
             try sweep.add(.{
                 .kind = .count_disagreement,
-                .detail = try std.fmt.allocPrint(sweep.arena, "{s}: Zig exports {d}, docs/40 measured {d}", .{ @tagName(t), exported_total, expected.? }),
+                .detail = try detail(
+                    sweep,
+                    "{s}: Zig exports {d}, docs/40 measured {d}",
+                    .{ @tagName(t), exported_total, expected.? },
+                ),
             });
         }
         if (measured_total != expected.?) {
             try sweep.add(.{
                 .kind = .count_disagreement,
-                .detail = try std.fmt.allocPrint(sweep.arena, "{s}: the per-guard docs/40 split sums to {d}, its own per-target total is {d}", .{ @tagName(t), measured_total, expected.? }),
+                .detail = try detail(
+                    sweep,
+                    "{s}: the per-guard docs/40 split sums to {d}, " ++
+                        "its own per-target total is {d}",
+                    .{ @tagName(t), measured_total, expected.? },
+                ),
             });
         }
     }
     try w.writeAll("\n");
 
     try compareTarget(w, sweep, t, doc, zp);
+}
+
+/// The one place a finding's sentence is built, so the call sites stay short
+/// and every sentence borrows the sweep's arena rather than a fresh one.
+fn detail(sweep: *Sweep, comptime fmt: []const u8, args: anytype) ![]const u8 {
+    return std.fmt.allocPrint(sweep.arena, fmt, args);
 }
 
 fn expectedTotal(t: header.Target) ?usize {
@@ -762,8 +808,21 @@ fn reportSummary(w: *Io.Writer, sweep: *Sweep) !void {
     try w.print("summary\n", .{});
     if (sweep.findings.items.len == 0) {
         try w.writeAll("  no mismatches and nothing unreadable\n");
-        return;
+    } else {
+        try reportFindings(w, sweep);
     }
+    try w.writeAll("\n");
+    try w.print("verdict: {s}\n", .{
+        if (sweep.hasKind(.unreadable))
+            "NOT PARITY - something could not be read, so the comparison is not evidence"
+        else if (sweep.findings.items.len != 0)
+            "NOT IN PARITY - the two sides disagree"
+        else
+            "IN PARITY - every declaration this target sees is exported, and nothing else is",
+    });
+}
+
+fn reportFindings(w: *Io.Writer, sweep: *Sweep) !void {
     var kinds = std.EnumArray(Finding.Kind, usize).initFill(0);
     for (sweep.findings.items) |f| kinds.set(f.kind, kinds.get(f.kind) + 1);
     for (std.enums.values(Finding.Kind)) |kind| {
@@ -771,7 +830,11 @@ fn reportSummary(w: *Io.Writer, sweep: *Sweep) !void {
         if (n == 0) continue;
         try w.print("  {d:>5}  {s}\n", .{ n, @tagName(kind) });
     }
-    try w.writeAll("\n  symbol                            header            zig                  kind\n");
+    try w.writeAll(
+        "\n  symbol" ++
+            "                                     header" ++
+            "            zig                     kind\n",
+    );
     for (sweep.findings.items) |f| {
         const header_at = if (f.header_line == 0) "-" else try std.fmt.allocPrint(
             sweep.arena,
@@ -782,7 +845,7 @@ fn reportSummary(w: *Io.Writer, sweep: *Sweep) !void {
             try std.fmt.allocPrint(sweep.arena, "{s}:{d}", .{ s.file, s.line })
         else
             "-";
-        try w.print("  {s:<33}{s:<18}{s:<21}{s}\n", .{
+        try w.print("  {s:<44}{s:<18}{s:<24}{s}\n", .{
             f.symbol,
             header_at,
             site_at,

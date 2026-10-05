@@ -249,10 +249,18 @@ pub const Platform = struct {
     /// Fills `slot` with the provider for `node_id`.
     ///
     /// The node layer writes `slot.interface`. A refusal leaves it `null`.
-    create_provider: *const fn (gpa: std.mem.Allocator, node_id: FullNodeId, slot: *ProviderSlot) void,
+    create_provider: *const fn (
+        gpa: std.mem.Allocator,
+        node_id: FullNodeId,
+        slot: *ProviderSlot,
+    ) void,
 
     /// Releases what `create_provider` wrote into `slot`.
-    destroy_provider: *const fn (gpa: std.mem.Allocator, node_id: FullNodeId, slot: *ProviderSlot) void,
+    destroy_provider: *const fn (
+        gpa: std.mem.Allocator,
+        node_id: FullNodeId,
+        slot: *ProviderSlot,
+    ) void,
 
     /// Answers a `WM_GETOBJECT` with the provider in `slot`, and returns the
     /// `LRESULT` the window procedure returns.
@@ -640,7 +648,8 @@ fn unavailableCallWindowProc(
 /// `int UiaLookupId(AutomationIdentifierType, const GUID*)`,
 /// `LRESULT UiaReturnRawElementProvider(HWND, WPARAM, LPARAM, IRawElementProviderSimple*)`,
 /// `HRESULT UiaRaiseAutomationEvent(IRawElementProviderSimple*, UIA_EVENT_ID)` and
-/// `HRESULT UiaRaiseAutomationPropertyChangedEvent(IRawElementProviderSimple*, UIA_PROPERTY_ID, VARIANT, VARIANT)`.
+/// `HRESULT UiaRaiseAutomationPropertyChangedEvent(IRawElementProviderSimple*,
+/// UIA_PROPERTY_ID, VARIANT, VARIANT)`.
 ///
 /// **Unverified.** No Windows SDK and no Windows target exist on this host, so
 /// nothing has compared these four against a header. They must be checked on a
@@ -702,9 +711,17 @@ extern "win32" fn UiaRaiseAutomationPropertyChangedEvent(
 const Win32EntryPoints = struct {
     is_window_visible: *const fn (hwnd: ?*anyopaque) callconv(.winapi) c_int,
     get_property: *const fn (hwnd: ?*anyopaque, name: [*:0]const u16) callconv(.winapi) ?*anyopaque,
-    set_property: *const fn (hwnd: ?*anyopaque, name: [*:0]const u16, value: ?*anyopaque) callconv(.winapi) c_int,
+    set_property: *const fn (
+        hwnd: ?*anyopaque,
+        name: [*:0]const u16,
+        value: ?*anyopaque,
+    ) callconv(.winapi) c_int,
     remove_property: *const fn (hwnd: ?*anyopaque, name: [*:0]const u16) callconv(.winapi) c_int,
-    set_window_proc: *const fn (hwnd: ?*anyopaque, index: c_int, procedure: ?*anyopaque) callconv(.winapi) isize,
+    set_window_proc: *const fn (
+        hwnd: ?*anyopaque,
+        index: c_int,
+        procedure: ?*anyopaque,
+    ) callconv(.winapi) isize,
     call_window_proc: *const fn (
         procedure: ?*anyopaque,
         hwnd: ?*anyopaque,
@@ -771,8 +788,14 @@ test "normalizeObjId reads the low 32 bits as a signed number" {
     // The three cases are the ones `adapter.rs:607-613` turns into a decision:
     // the root identifier, the client identifier, and a sender that sign
     // extended the low half into a 64-bit message field.
-    try testing.expectEqual(uia_root_object_id, normalizeObjId(@bitCast(@as(u64, 0xFFFF_FFFF_FFFF_FFE7))));
-    try testing.expectEqual(objid_client, normalizeObjId(@bitCast(@as(u64, 0xFFFF_FFFF_FFFF_FFFC))));
+    try testing.expectEqual(
+        uia_root_object_id,
+        normalizeObjId(@bitCast(@as(u64, 0xFFFF_FFFF_FFFF_FFE7))),
+    );
+    try testing.expectEqual(
+        objid_client,
+        normalizeObjId(@bitCast(@as(u64, 0xFFFF_FFFF_FFFF_FFFC))),
+    );
 
     const sign_extended: LParam = @bitCast(@as(usize, @as(u64, 0xFFFF_FFFF_FFFF_FFE7)));
     try testing.expectEqual(@as(i32, -25), normalizeObjId(sign_extended));
@@ -901,7 +924,11 @@ test "the window seam for this target refuses rather than claims a window" {
         @ptrFromInt(0x10),
         subclass_property_name.ptr,
     ));
-    try testing.expect(!window_api.set_property(@ptrFromInt(0x10), subclass_property_name.ptr, @ptrFromInt(1)));
+    try testing.expect(!window_api.set_property(
+        @ptrFromInt(0x10),
+        subclass_property_name.ptr,
+        @ptrFromInt(1),
+    ));
     try testing.expect(!window_api.remove_property(@ptrFromInt(0x10), subclass_property_name.ptr));
 }
 

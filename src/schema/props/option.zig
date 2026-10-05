@@ -64,6 +64,7 @@ const TextSelection = values.TextSelection;
 const TreeId = ids.TreeId;
 
 const Properties = table.Properties;
+const PropertyId = table.PropertyId;
 
 /// The transform to apply to the coordinates of this node and its descendants,
 /// or `null` when the property is not set.
@@ -234,6 +235,31 @@ pub fn setTreeId(properties: *Properties, value: TreeId) std.mem.Allocator.Error
 /// A store that does not hold the property is left as it was.
 pub fn clearTreeId(properties: *Properties) void {
     properties.clear(.tree_id);
+}
+
+/// The four properties this family publishes a getter, a setter and a clearer
+/// for, in upstream order, from the `property_methods!` block at
+/// `accesskit/src/lib.rs:2508-2546`: `Transform`, `Bounds`, `TextSelection`
+/// and `TreeId`.
+///
+/// This is the family's whole domain in one place, so
+/// `table.assertFamilyReachable` can hold it against the descriptor table. The
+/// four payloads are four different types and stay one list, because the claim
+/// is about properties and the payload of each row is already pinned by the
+/// descriptor row this list is checked against.
+pub const property_ids = [_]PropertyId{
+    .transform,
+    .bounds,
+    .text_selection,
+    .tree_id,
+};
+
+comptime {
+    // The invocation carries four entries. A row added here without an upstream
+    // entry changes the number of functions this module publishes, so the count
+    // is the check.
+    assert(property_ids.len == 4);
+    table.assertFamilyReachable(.option, property_ids);
 }
 
 fn testAffine() Affine {

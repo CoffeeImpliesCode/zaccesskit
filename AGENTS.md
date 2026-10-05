@@ -35,10 +35,9 @@ that reads the same field to select the toolchain. Do not install a second
 compiler beside the shim and do not write the version anywhere else.
 
 `docs/30-port-design.md`, `docs/31-c-abi-design.md`, `docs/40-plan.md` and
-`docs/50-verification.md` do not exist yet. They own the module layout, the C
-seam, the milestone order and the evidence record. When a rule below hands a
-decision to one of them, take it there, and delete the interim rule in the same
-change.
+`docs/50-verification.md` all exist. They own the module layout, the C seam, the
+milestone order and the evidence record. When a rule below hands a decision to
+one of them, take it there, and delete the interim rule in the same change.
 
 ## 2. Golden rules
 
@@ -234,12 +233,24 @@ Each item names the failure it prevents. Do not rediscover them.
   fuzz` over the 823 lines of `zig-gate` returns `0`. A fuzz step therefore never
   runs unless a gate line in `docs/40-plan.md` names it. Put the target file and
   the corpus directory in that line.
-- **`src/root.zig` is a module doc comment and nothing else until the first
-  milestone adds declarations.** `zlint` reports one warning for it,
-  `empty-file`. That warning is expected and correct. Do not add a declaration,
-  a `pub const` placeholder, an `export fn` or an unused import to silence it.
-  The warning goes when the first milestone lands real declarations, and not
-  before.
+- **`src/root.zig` declares five names, and every one of them earns its
+  place.** It re-exports the three namespaces `schema`, `consumer` and `capi`,
+  and it mirrors `version` and `minimum_zig_version` out of `build.zig.zon`
+  through the `build_options` module. It used to be a module doc comment and
+  nothing else, and the `empty-file` warning `zlint` reported for it was the
+  correct verdict on that file. The file is not that file any more, so the
+  warning and the exemption that allowed it are both gone. Do not add a
+  placeholder `pub const`, an `export fn` or an unused import to quiet a
+  linter, and do not flatten the three namespaces into the root:
+  `docs/30-port-design.md` record R2 fixes them one level down, because a
+  consumer names those types in one signature.
+- **A re-export nothing references analyses nothing.** Zig analyses lazily, so
+  `pub const schema = @import("schema/root.zig")` compiles without looking at
+  one module under `src/schema/`. `zig build test` reported green that way,
+  having checked two constants and two tests. Each of the three namespaces
+  therefore has a test in `src/root.zig` that calls
+  `std.testing.refAllDecls` on it, and a fourth namespace needs one in the
+  same change.
 - **Bound the address space on native runs only.** `build.zig:22` sets four
   gibibytes and `addCeilingedRun` applies it through a `bash -c` launcher whose
   script is `ulimit -v 4194304; exec "$0"`. Keep it off `cross-test`. Under

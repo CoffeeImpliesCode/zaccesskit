@@ -475,45 +475,59 @@ const testing = std.testing;
 /// Counts what the installed pair is asked to do, so a test can assert that one
 /// release reached the declared allocator exactly once.
 ///
-/// The pair runs on a `FixedBufferAllocator` rather than on
+/// The pair bump-allocates from a store **inside the counters** rather than on
 /// `std.testing.allocator`. `check` reads the head of a block after the block
 /// was released, and `std.testing.allocator` unmaps a page on a large free,
-/// so that read faults instead of returning the dead word. A buffer allocator
-/// keeps the bytes mapped, which is what makes the refusal observable.
+/// so that read faults instead of returning the dead word. A store that never
+/// reclaims keeps the bytes mapped, which is what makes the refusal observable.
 const Counters = struct {
+    /// How many bytes of `store` the pair has handed out. Zero is a whole
+    /// store, so a `Counters` written with `.{}` names no uninitialised state
+    /// and the thunks are safe to call before `useCounters` rewinds it.
+    used: usize = 0,
     allocs: usize = 0,
     frees: usize = 0,
-    heads: usize = 0,
     context: ?*anyopaque = null,
+
+    /// The bytes every block is cut from, at the head's alignment so a head
+    /// written into it keeps the alignment `carve` promised.
+    ///
+    /// The bound is 256 bytes. The largest case asks for two blocks: `Fixture`
+    /// is 16 bytes, which `carve` rounds to 48, and a 13-byte C string rounds
+    /// to 48 as well, so no case hands out more than 96. A case that outgrows
+    /// the store gets `null`, which is the allocator contract for exhaustion.
+    store: [256]u8 align(@alignOf(Head)) = undefined,
 
     fn allocThunk(size: usize, context: ?*anyopaque) callconv(.c) ?*anyopaque {
         const self: *Counters = @ptrCast(@alignCast(context orelse return null));
-        const bytes = std.mem.alignForward(usize, size, @alignOf(Head));
-        const heads = bytes / @sizeOf(Head);
-        const memory = arena.allocator().alloc(Head, heads) catch return null;
+        // The store is aligned to the head and the cursor starts at zero, so
+        // aligning the cursor aligns the address it names.
+        const start = std.mem.alignForward(usize, self.used, @alignOf(Head));
+        const room = self.store.len -| start;
+        if (size > room) return null;
+        self.used = start + size;
         self.allocs += 1;
-        self.heads = heads;
         self.context = context;
-        return @ptrCast(memory.ptr);
+        return self.store[start .. start + size].ptr;
     }
 
-    fn freeThunk(ptr: ?*anyopaque, context: ?*anyopaque) callconv(.c) void {
+    fn freeThunk(_: ?*anyopaque, context: ?*anyopaque) callconv(.c) void {
         const self: *Counters = @ptrCast(@alignCast(context orelse return));
-        const memory: [*]Head = @ptrCast(@alignCast(ptr orelse return));
-        arena.allocator().free(memory[0..self.heads]);
         self.frees += 1;
     }
 };
 
-/// The backing store the counting pair allocates from. `useCounters` resets it
-/// so each case starts from an empty buffer.
-var arena_bytes: [16 * 1024]u8 align(@alignOf(Head)) = undefined;
-var arena: std.heap.FixedBufferAllocator = undefined;
-
-/// Installs the counting pair. The caller restores the C allocator with a
-/// `defer`, because a test body is a function and runs its defers.
+/// Installs the counting pair over a whole store. The caller restores the C
+/// allocator with a `defer`, because a test body is a function and runs its
+/// defers.
+///
+/// A case that allocates goes through here rather than naming the two thunks
+/// itself. The rewind is what a reused `Counters` needs, and the one install
+/// site is what stops a case from reading a store the previous case filled.
+/// The two cases that pass one `null` half call `installAllocator` directly,
+/// because the half they leave out is the thing under test.
 fn useCounters(counters: *Counters) void {
-    arena = .init(&arena_bytes);
+    counters.used = 0;
     installAllocator(Counters.allocThunk, Counters.freeThunk, counters);
 }
 
@@ -595,7 +609,7 @@ test "a released string and a released block are refused alike" {
 
 test "the context reaches the installed pair unchanged" {
     var counters: Counters = .{};
-    installAllocator(Counters.allocThunk, Counters.freeThunk, &counters);
+    useCounters(&counters);
     defer installAllocator(null, null, null);
 
     const block = try create(Fixture);
@@ -607,7 +621,7 @@ test "the context reaches the installed pair unchanged" {
 test "passing null for either half restores the C allocator" {
     const installed_vtable = blk: {
         var counters: Counters = .{};
-        installAllocator(Counters.allocThunk, Counters.freeThunk, &counters);
+        useCounters(&counters);
         defer installAllocator(null, null, null);
         break :blk allocator().vtable;
     };

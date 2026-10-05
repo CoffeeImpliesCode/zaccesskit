@@ -96,7 +96,10 @@ pub const constants = [constant_count]Constant{
     .{ .group = .action_argument, .name = "ACTION_ARGUMENT_EXTEND_SELECTION_BOOLEAN" },
     .{ .group = .action_argument, .name = "ACTION_ARGUMENT_SELECTION_START_INT" },
     .{ .group = .action_argument, .name = "ACTION_ARGUMENT_SELECTION_END_INT" },
-    .{ .group = .action_argument, .name = "android.view.accessibility.action.ARGUMENT_PROGRESS_VALUE" },
+    .{
+        .group = .action_argument,
+        .name = "android.view.accessibility.action.ARGUMENT_PROGRESS_VALUE",
+    },
     // 12 event type ids.
     .{ .group = .event_type, .name = "EVENT_VIEW_CLICKED" },
     .{ .group = .event_type, .name = "EVENT_VIEW_SELECTED" },
@@ -235,6 +238,10 @@ test "every event type id is spelled as the map spells it" {
     });
 }
 
+// The test name is one string literal, and `test` takes no expression for a
+// name, so the line cannot wrap. The name is not reworded either: it lists the
+// six groups it covers and matches the sibling test above, which uses the same
+// "is spelled as the map spells it" wording.
 test "every content change, focus, live region, motion, granularity and range name is spelled as the map spells it" {
     try expectGroup(.content_change_type, &.{"CONTENT_CHANGE_TYPE_SUBTREE"});
     try expectGroup(.focus_input_mode, &.{ "FOCUS_INPUT", "FOCUS_ACCESSIBILITY" });

@@ -65,7 +65,6 @@
 //! number of platform nodes the tree produced.
 
 const std = @import("std");
-const builtin = @import("builtin");
 
 const boundary = @import("../../capi/boundary.zig");
 const allocation = @import("../../capi/allocation.zig");
@@ -381,6 +380,12 @@ pub const MacosQueuedEvents = struct {
         var list = self.events;
         events_mod.releaseEvents(allocator, &list);
         const context = self.context;
+        // SAFETY: `releaseEvents` above freed every queued event's payload and
+        // the array behind them, and the `context.release()` below drops the
+        // reference through the local copy taken before this line rather than
+        // through `self`. Nothing after this reads `self`, so poisoning it
+        // turns a second `raiseAndRelease` into a Debug trap instead of a
+        // double free.
         self.* = undefined;
         context.release();
     }
@@ -449,9 +454,12 @@ pub const MacosAdapter = struct {
     /// The caller owns a non-null result and must pass it to
     /// `macosQueuedEventsRaise`.
     ///
-    /// **Errors.** None. An update the tree rejects, or a factory that runs out
-    /// of memory, leaves the adapter in the state it was in and produces no
-    /// handle, because a handle whose tree is stale would be worse than none.
+    /// **Errors.** None. An update the tree rejects or a factory that runs out
+    /// of memory leaves the adapter in the state it was in and produces no
+    /// handle, because a handle whose tree is stale would be worse than none. A
+    /// handle that cannot be allocated answers the same way. Over a
+    /// placeholder the new tree stays installed even so, because it is the
+    /// current one.
     pub fn updateIfActive(
         self: *MacosAdapter,
         factory: TreeUpdateFactory,
@@ -506,7 +514,8 @@ pub const MacosAdapter = struct {
     ///
     /// Upstream `Adapter::update_view_focus_state`, at `adapter.rs:152-175`.
     /// **Returns** `null` when the adapter is not active, which is upstream's
-    /// answer for both non-active states.
+    /// answer for both non-active states, and when the handle cannot be
+    /// allocated. The tree keeps the focus it was given either way.
     pub fn updateViewFocusState(
         self: *MacosAdapter,
         is_focused: bool,
@@ -682,15 +691,23 @@ pub const MacosAdapter = struct {
     ///
     /// The handle takes one context reference, so it stays valid after
     /// `macosAdapterFree`.
+    ///
+    /// **Returns.** `null` when the handle cannot be allocated. That is the
+    /// only answer the header allows: this call sits behind a return type of
+    /// `?*MacosQueuedEvents`, so a non-optional handle answered with
+    /// `undefined` reaches the C caller as a non-null pointer to nothing, and
+    /// `macosQueuedEventsRaise` would read it. On this path `events` is
+    /// released and the context reference is **not** taken, so the adapter
+    /// keeps exactly the references it held and the caller owns nothing.
     fn newQueuedEvents(
         self: *MacosAdapter,
         context: *Context,
         list: ArrayList(events_mod.QueuedEvent),
-    ) *MacosQueuedEvents {
+    ) ?*MacosQueuedEvents {
         const handle = self.allocator.create(MacosQueuedEvents) catch {
             var owned = list;
             events_mod.releaseEvents(self.allocator, &owned);
-            return undefined;
+            return null;
         };
         context.retain();
         handle.* = .{
@@ -756,23 +773,17 @@ fn blankPlaceholderUpdate(allocator: Allocator) !schema.TreeUpdate {
 /// **The trap is the contract, not an assertion.**
 /// `boundary.TreeUpdateFactory` states that the factory must not return `null`,
 /// because it transfers ownership of the tree it builds and a `null` return
-/// leaves the library holding nothing. Upstream aborts there. This call prints
-/// the violation and then traps, which is the same outcome: the process stops
-/// rather than the adapter continuing with no tree. **A `null` return from an
-/// activation handler is a different thing** and is an ordinary answer that
-/// installs the placeholder; `getOrInitContext` treats it that way.
+/// leaves the library holding nothing. Upstream aborts there, and this call
+/// traps rather than printing first: the process stops rather than the adapter
+/// continuing with no tree, and the house rules forbid a diagnostic here. **A
+/// `null` return from an activation handler is a different thing** and is an
+/// ordinary answer that installs the placeholder; `getOrInitContext` treats it
+/// that way.
 fn treeUpdateFromFactory(
     factory: TreeUpdateFactory,
     factory_userdata: ?*anyopaque,
 ) schema.TreeUpdate {
-    const owned = factory(factory_userdata) orelse {
-        std.debug.print(
-            "accesskit: a tree update factory returned null, which is a contract " ++
-                "violation at src/capi/boundary.zig:50 and stops the process\n",
-            .{},
-        );
-        @trap();
-    };
+    const owned = factory(factory_userdata) orelse @trap();
     return takeUpdate(owned);
 }
 
@@ -828,6 +839,14 @@ pub const RecordingHost = struct {
     /// What `hit_test` answers for any point, and `null` for none.
     hit: ?*anyopaque = null,
 
+    /// Set when a post could not be recorded because the allocator ran out.
+    ///
+    /// The two post paths are reached through the `Host` vtable, which returns
+    /// nothing, so there is no error to hand back. Recording the failure here
+    /// is what keeps it from being a silent drop: a test that asserts a count
+    /// fails on the flag instead of passing one notification short.
+    failed: bool = false,
+
     /// An empty recorder over `allocator`.
     pub fn init(allocator: Allocator) RecordingHost {
         return .{ .allocator = allocator };
@@ -837,6 +856,11 @@ pub const RecordingHost = struct {
     pub fn deinit(self: *RecordingHost) void {
         var posts = self.posts;
         posts.deinit(self.allocator);
+        // SAFETY: `posts.deinit` above released the only allocation this
+        // recorder owned; `allocator` is a borrowed handle and is not released.
+        // A `Host` vtable pointer handed out by `host()` still points here
+        // after the deinit, so the poison is what makes a post that arrives
+        // late trap rather than write into freed memory.
         self.* = undefined;
     }
 
@@ -863,7 +887,9 @@ pub const RecordingHost = struct {
             .node = node,
             .window = null,
             .notification = notification,
-        }) catch {};
+        }) catch {
+            self.failed = true;
+        };
     }
 
     fn postWithUserInfo(
@@ -880,7 +906,9 @@ pub const RecordingHost = struct {
             .notification = notification,
             .text = text,
             .priority = priority,
-        }) catch {};
+        }) catch {
+            self.failed = true;
+        };
     }
 
     fn viewOf(context: ?*anyopaque) ?*anyopaque {
@@ -991,6 +1019,9 @@ fn releaseState(self: *MacosAdapter) void {
         .placeholder => |placeholder| placeholder.context.release(),
         .active => |context| context.release(),
     }
+    // SAFETY: the switch above released what the state owned, and no statement
+    // after this line reads `self`. The caller destroys or owns the memory, so
+    // a stale read traps in Debug rather than reaching a released context.
     self.* = undefined;
 }
 
@@ -1177,6 +1208,9 @@ pub fn newSubclassingAdapter(
 /// The adapter must not be `null`.
 pub fn macosSubclassingAdapterFree(adapter: *MacosSubclassingAdapter) void {
     releaseState(&adapter.adapter);
+    // SAFETY: the line above released the embedded adapter state, and the line
+    // below destroys this memory, so no statement after it reads `adapter`. A
+    // stale read traps in Debug rather than reaching the released state.
     adapter.* = undefined;
     heap().destroy(adapter);
 }
@@ -1274,6 +1308,10 @@ var registered_window_classes: usize = 0;
 /// stays readable for the life of the process. A view built on the frame of
 /// whichever function called the accessor dangles the moment that function
 /// returns, and the fault lands later, in whoever read the name.
+// SAFETY: every slot either reader can reach is written first. `patchWindowClass`
+// `@memset`s the slot and copies the name in before it increments
+// `registered_window_classes`, and both readers stop at that count, so no slot
+// below it is ever read uninitialised.
 var window_class_names: [window_class_capacity][class_name_capacity]u8 = undefined;
 
 /// Records `name` and installs the forwarder, once per name.
@@ -1352,6 +1390,10 @@ pub fn hostViewSelectors() []const [:0]const u8 {
 /// **Returns.** `error.OutOfMemory` from `gpa.dupe`. On any error nothing is
 /// allocated, so a caller that gets `null` owns nothing.
 fn renderDebug(adapter: *const MacosAdapter, allocator: Allocator) ![*:0]u8 {
+    // SAFETY: `bufPrint` below is the only writer and it writes exactly the
+    // bytes it returns, so `rendered` never names a byte this buffer did not
+    // receive. The `error.NoRoom` path returns before anything reads the
+    // buffer, which is why an unwritten tail is not a problem.
     var buffer: [512]u8 = undefined;
     const state_name = switch (adapter.state) {
         .inactive => "Inactive",
@@ -1791,6 +1833,65 @@ test "the subclassing adapter forwards its four calls" {
     );
     try testing.expect(macosSubclassingAdapterUpdateViewFocusState(adapter, true) == null);
     macosSubclassingAdapterFree(adapter);
+}
+
+test "a queued-events handle that cannot be allocated answers null" {
+    // The handle is the one allocation `newQueuedEvents` makes, so failing it
+    // is the whole null path. Before the return type carried the optional, the
+    // same failure answered `undefined` and the C caller held a non-null
+    // pointer to nothing.
+    var recorder = RecordingHost.init(testing.allocator);
+    defer recorder.deinit();
+    var action = RecordingAction{};
+    const tree = try boxTwoNodeTree(allocation.allocator(), child_id);
+    var activation = AnsweringActivation{ .tree = tree, .calls = 0 };
+    const adapter = newAdapter(null, true, recordingAction, &action, recorder.host()).?;
+    defer macosAdapterFree(adapter);
+
+    // A live tree, so the handle allocation is the only thing left to fail.
+    _ = macosAdapterFocus(adapter, answeringActivation, &activation);
+    const context = switch (adapter.state) {
+        .active => |held| held,
+        else => return error.NotActive,
+    };
+
+    // Only the handle allocation runs on this allocator, because the tree was
+    // built before the swap. `macosAdapterFree` releases through `heap()` and
+    // the context's own allocator, so neither is disturbed here.
+    var failing: testing.FailingAllocator = .init(testing.allocator, .{
+        .fail_index = 0,
+    });
+    adapter.allocator = failing.allocator();
+
+    try testing.expect(adapter.newQueuedEvents(context, .empty) == null);
+    // The context is untouched, so the adapter still owns exactly one
+    // reference and the deferred free releases it once.
+    try testing.expectEqual(@as(usize, 1), context.refs);
+}
+
+test "a recorder that cannot grow records the failure instead of dropping it" {
+    // `Host.post` and `Host.post_with_user_info` return nothing, so an
+    // allocation failure has nowhere to go but the recorder. Each gets its own
+    // failing allocator, because `FailingAllocator` fails one index and lets
+    // the rest through: one shared instance would let the second post succeed
+    // and hide the path under test.
+    var node_failing: testing.FailingAllocator = .init(testing.allocator, .{
+        .fail_index = 0,
+    });
+    var nodes = RecordingHost.init(node_failing.allocator());
+    defer nodes.deinit();
+    RecordingHost.post(&nodes, null, "AXFocusedUIElement");
+    try testing.expect(nodes.failed);
+    try testing.expectEqual(@as(usize, 0), nodes.count());
+
+    var window_failing: testing.FailingAllocator = .init(testing.allocator, .{
+        .fail_index = 0,
+    });
+    var windows = RecordingHost.init(window_failing.allocator());
+    defer windows.deinit();
+    RecordingHost.postWithUserInfo(&windows, null, "AXAnnouncementRequested", "text", 0);
+    try testing.expect(windows.failed);
+    try testing.expectEqual(@as(usize, 0), windows.count());
 }
 
 test "the entry points take the handlers platform.zig passes them" {

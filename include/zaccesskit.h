@@ -95,10 +95,10 @@
 #endif /* __APPLE__ */
 
 /*
- * This header declares no platform registration mechanism. The library links
- * the platform adapters it ships, and a C caller cannot supply one. A caller
- * that needs a platform this library does not ship must build its own tree and
- * use the Zig surface instead.
+ * The five platform guards partition the surface and are exclusive:
+ * `__ANDROID__` also defines `__linux__`, so the Linux and BSD block names
+ * `!defined(__ANDROID__)`. A caller that needs a platform this library does
+ * not ship must build its own tree and use the Zig surface instead.
  *
  * Every handle here is owned by the caller until a `push` or a `set` transfers
  * it, a `*_free` releases it, or it is handed to a callback. The tables in
@@ -1021,9 +1021,9 @@ typedef struct accesskit_tree_update accesskit_tree_update;
  */
 #if (defined(__linux__) || defined(__DragonFly__) || \
      defined(__FreeBSD__) || defined(__NetBSD__) || \
-     defined(__OpenBSD__))
+     defined(__OpenBSD__)) && !defined(__ANDROID__)
 typedef struct accesskit_unix_adapter accesskit_unix_adapter;
-#endif /* the Linux and BSD family */
+#endif /* the Linux and BSD family, and not Android */
 
 /**
  * A platform handle this header only names. It has no C layout, and the
@@ -6262,7 +6262,7 @@ accesskit_macos_add_focus_forwarder_to_window_class_with_length(
 
 #if (defined(__linux__) || defined(__DragonFly__) || \
      defined(__FreeBSD__) || defined(__NetBSD__) || \
-     defined(__OpenBSD__))
+     defined(__OpenBSD__)) && !defined(__ANDROID__)
 /**
  * Returns a Unix adapter, or `null` when the allocation failed.
  *
@@ -6335,7 +6335,7 @@ accesskit_unix_adapter_update_window_focus_state(
 char *
 accesskit_unix_adapter_debug(const struct accesskit_unix_adapter *adapter);
 
-#endif /* the Linux and BSD family */
+#endif /* the Linux and BSD family, and not Android */
 
 #if defined(_WIN32)
 /**

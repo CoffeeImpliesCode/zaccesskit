@@ -317,6 +317,10 @@ grep -n '^    text_run = ' src/schema/role.zig
 grep -n '^    TextRun,' /tmp/scratch/accesskit/accesskit/src/lib.rs
 ```
 
+The second block builds a scratch mirror. It is superseded and a reader should
+run `zig build test` instead. It is kept here because this section explains why
+the mirror existed, and the explanation is the reason the recipe does not.
+
 ```sh
 S=/tmp/scratch/ledger-check
 rm -rf "$S" && mkdir -p "$S"
@@ -337,11 +341,19 @@ The first two commands give the Zig line and the upstream line. The count of
 preceding variant declarations is the same number in both files, because rule
 Z5 copies each discriminant rather than renumbering the tags.
 
-The mirror exists because `zig build test` roots at `src/root.zig`, and that
-root re-exports only the version constants today. A green `zig build test`
-compiles none of `src/schema/`. Copy `build.zig` as well as `build.zig.zon`,
-because the `zig` on this host is an anyzig shim that refuses to start without
-a `build.zig` to read `.minimum_zig_version` from.
+The mirror was needed when this ledger was written and is not needed now. The
+sentence read: "The mirror exists because `zig build test` roots at
+`src/root.zig`, and that root re-exports only the version constants today. A
+green `zig build test` compiles none of `src/schema/`." Both halves are false. A
+count over the tree on 2026-10-05 gives the correction: `src/root.zig` declares
+three namespaces beside the two version constants, `schema` at
+`src/root.zig:36`, `consumer` at `:49` and `capi` at `:57`, and all 24 modules
+under `src/schema/` sit in the import graph from that root. A green
+`zig build test` compiles all 24 of them. Run `zig build test` instead.
+
+Copy `build.zig` as well as `build.zig.zon` if you keep the mirror, because the
+`zig` on this host is an anyzig shim that refuses to start without a `build.zig`
+to read `.minimum_zig_version` from.
 
 `refAllDecls` forces analysis. A root that only holds a `pub const` import
 compiles the import and stops, and the run prints `All 0 tests passed`. Read
@@ -474,11 +486,311 @@ Upstream range `accesskit/src/lib.rs:761-855`.
 ### 4.5 One upstream item inside the range that belongs elsewhere
 
 `enum Flag` at `accesskit/src/lib.rs:801-826` and its `mask` method at `:822-826`
-fall inside the `values.zig` range. The type is private upstream and its port
-home is `src/schema/props/table.zig`, which is unsettled. It has no row in
-section 4.4 and it is not in the deletions register. Section 8 names it.
+fall inside the `values.zig` range, so section 4.4 has no row for them. Their
+rows are in section 5.1, which is where the port keeps them.
 
-## 5. The deletions register
+## 5. `src/schema/props/table.zig`
+
+Upstream is `accesskit/src/lib.rs`, in five places: `enum Flag` at `:796-826`,
+`enum PropertyValue` at `:855-886` with its hand-written `Clone` at `:1011-1058`,
+`enum PropertyId` at `:888-1009`, the store at `:1060-1168`, and the `serde` and
+`schemars` writers at `:2793-3160`. The two items this ledger previously routed
+out of range, `Flag` and `PropertyValue`, are rowed here. The file is 2404 lines,
+31 of them tests.
+
+### 5.1 `Flag` and the one-bit mask
+
+| Upstream item | Zig item | Disposition | Reason |
+|---|---|---|---|
+| `#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]` at `:796` and `#[repr(u8)]` at `:800` | `pub const Flag = enum(u8)` at `src/schema/props/table.zig:129` | `translated` | `#[repr(u8)]` becomes `enum(u8)`, and a value type is copyable and comparable without a derive. |
+| `Debug`, `PartialOrd`, `Ord` and `Hash` from that derive | none | `deleted with reason` | The port declares no `format` for `Flag`, no ordering and no digest. A flag reaches a writer through `@tagName` at `node.zig:290`, and `flagSetMembers` gives the members in declaration order. `table.zig` records no reason for the four. |
+| `#[cfg_attr(feature = "serde", …)]`, `schemars` and `enumn` at `:797-799` | none | `deleted with reason` | The port generates no code for another language. Recorded at `docs/30-port-design.md` section 2.2. |
+| `enum Flag` at `:801` | `Flag` at `table.zig:129` | `translated` | Rule Z1. |
+| the 18 variants `Hidden` to `IsSuggestion` at `:802-819` | `Flag.hidden` to `Flag.is_suggestion` at `table.zig:130-147` | `renamed by rule` | Rule Z5, discriminants 0 to 17 unchanged. The discriminant is the bit position, recorded at `table.zig:123-128`. |
+| `impl Flag { fn mask }` at `:822-826` | `pub fn flagMask(flag: Flag) u32` at `table.zig:166` | `renamed by rule` | Rule P1, because the operation takes no `self`. Recorded at `table.zig:161-165`. |
+| no upstream counterpart | `pub const count: usize = 18` at `table.zig:150`, `pub const flagCount` at `:159`, and the `comptime` block at `:153-156` | `added by the port` | `AGENTS.md:57-58` asks for a named bound on every loop and `:106-109` asks for a comptime sweep. The block pins the 18 tags and that the last discriminant is 17. |
+| no upstream counterpart | `flagSetContains` at `:171`, `flagSetUnion` at `:177` and `flagSetDifference` at `:182` | `added by the port` | `flag_methods!` at `:1170` inlines the mask test and the two mask writes. The port publishes the three because the mask is the C ABI type, the same reason `action.zig` carries its own three. |
+| no upstream counterpart | `flagSetMembers(flag_set: u32, out: *[flagCount]Flag)` at `:191` | `added by the port` | It is upstream `action_mask_to_action_vec` at `:390-400` applied to the flag mask, which upstream never wrote. It fills a caller buffer bounded by `flagCount`, so the port never allocates. |
+
+### 5.2 `PropertyId`
+
+| Upstream item | Zig item | Disposition | Reason |
+|---|---|---|---|
+| `#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]` at `:888` and `#[repr(u8)]` at `:892` | `pub const PropertyId = enum(u8)` at `table.zig:210` | `translated` | `#[repr(u8)]` becomes `enum(u8)`, and a value type is copyable and comparable without a derive. |
+| `#[cfg_attr(feature = "serde", …)]`, `schemars` and `enumn::N` at `:889-891` | none | `deleted with reason` | The port generates no code for another language and carries no serializer. Recorded at `docs/30-port-design.md` section 2.2. |
+| `Debug`, `PartialOrd`, `Ord` and `Hash` from that derive | none | `deleted with reason` | The port renders a property id through `@tagName` at `node.zig:318` and orders the store by `@intFromEnum`, so it declares no `format`, no ordering and no digest. `table.zig` records no reason for the four. |
+| `enum PropertyId` at `:893` | `PropertyId` at `table.zig:210` | `translated` | Rule Z1. |
+| the 87 variants at `:895-1005` in 13 families | `PropertyId` at `table.zig:212-322`, in the same 13 families | `renamed by rule` | Rule Z5, discriminants unchanged. Section 5.3 gives one row per property. |
+| variant `Unset` at `:1007-1008` | none | `deleted with reason` | A sorted slice needs no "no slot" byte, so absence is a `null` from `Properties.get`. Recorded at `table.zig:45-51`. |
+| no upstream counterpart | `pub const propertyIdTagCount` at `table.zig:326` and `pub fn propertyIdFromInt` at `:332` | `added by the port` | The C seam and the D-Bus codec each receive one property byte and neither may trust it. The same reason the thirteen `node_enums.zig` gates exist. Recorded at `table.zig:325` and `:328-331`. |
+
+### 5.3 `PropertyId`: one row per property
+
+`PropertyId` carries 87 properties and no sentinel. One row per property runs to
+87 rows and would hide the rule that matters, so the disposition table above
+gives one row for the type and one per family, and the table below gives one row
+per property with both `path:line` values. Rule Z5 copies each discriminant, so
+the count of preceding variant declarations is the same number in both files.
+
+| Upstream family comment | Upstream variants | Zig tags | Payload tags | Properties | Discriminants |
+|---|---|---|---|---:|---|
+| `// NodeIdVec` at `accesskit/src/lib.rs:894` | `Children` at `:895` to `RadioGroup` at `:902` | `children` at `table.zig:212` to `radio_group` at `:219` | `node_id_vec` | 8 | 0 to 7 |
+| `// NodeId` at `accesskit/src/lib.rs:904` | `ActiveDescendant` at `:905` to `PopupFor` at `:911` | `active_descendant` at `table.zig:222` to `popup_for` at `:228` | `node_id` | 7 | 8 to 14 |
+| `// String` at `accesskit/src/lib.rs:913` | `Label` at `:914` to `BrailleRoleDescription` at `:934` | `label` at `table.zig:231` to `braille_role_description` at `:251` | `string` | 21 | 15 to 35 |
+| `// f64` at `accesskit/src/lib.rs:936` | `ScrollX` at `:937` to `NumericValueJump` at `:947` | `scroll_x` at `table.zig:254` to `numeric_value_jump` at `:264` | `f64_` | 11 | 36 to 46 |
+| `// f32` at `accesskit/src/lib.rs:949` | `FontSize` at `:950` to `FontWeight` at `:951` | `font_size` at `table.zig:267` to `font_weight` at `:268` | `f32_` | 2 | 47 to 48 |
+| `// usize` at `accesskit/src/lib.rs:953` | `RowCount` at `:954` to `PositionInSet` at `:962` | `row_count` at `table.zig:271` to `position_in_set` at `:279` | `usize_` | 9 | 49 to 57 |
+| `// Color` at `accesskit/src/lib.rs:964` | `ColorValue` at `:965` to `ForegroundColor` at `:967` | `color_value` at `table.zig:282` to `foreground_color` at `:284` | `color` | 3 | 58 to 60 |
+| `// TextDecoration` at `accesskit/src/lib.rs:969` | `Overline` at `:970` to `Underline` at `:972` | `overline` at `table.zig:287` to `underline` at `:289` | `text_decoration` | 3 | 61 to 63 |
+| `// LengthVec` at `accesskit/src/lib.rs:974` | `CharacterLengths` at `:975` to `WordStarts` at `:976` | `character_lengths` at `table.zig:292` to `word_starts` at `:293` | `length_vec` | 2 | 64 to 65 |
+| `// CoordVec` at `accesskit/src/lib.rs:978` | `CharacterPositions` at `:979` to `CharacterWidths` at `:980` | `character_positions` at `table.zig:296` to `character_widths` at `:297` | `coord_vec` | 2 | 66 to 67 |
+| `// bool` at `accesskit/src/lib.rs:982` | `Expanded` at `:983` to `Selected` at `:984` | `expanded` at `table.zig:300` to `selected` at `:301` | `bool_` | 2 | 68 to 69 |
+| `// Unique enums` at `accesskit/src/lib.rs:986` | `Invalid` at `:987` to `VerticalOffset` at `:998` | `invalid` at `table.zig:304` to `vertical_offset` at `:315` | `invalid`, `toggled`, `live`, `text_direction`, `orientation`, `sort_direction`, `aria_current`, `auto_complete`, `has_popup`, `list_style`, `text_align`, `vertical_offset` | 12 | 70 to 81 |
+| `// Other` at `accesskit/src/lib.rs:1000` | `Transform` at `:1001` to `TreeId` at `:1005` | `transform` at `table.zig:318` to `tree_id` at `:322` | `affine`, `rect`, `text_selection`, `custom_action_vec`, `tree_id` | 5 | 82 to 86 |
+
+| Discriminant | Upstream variant | Zig tag | Payload tag | Descriptor row |
+|---:|---|---|---|---|
+| 0 | `Children` at `accesskit/src/lib.rs:895` | `PropertyId.children` at `table.zig:212` | `node_id_vec` | `table.zig:918` |
+| 1 | `Controls` at `accesskit/src/lib.rs:896` | `PropertyId.controls` at `table.zig:213` | `node_id_vec` | `table.zig:919` |
+| 2 | `Details` at `accesskit/src/lib.rs:897` | `PropertyId.details` at `table.zig:214` | `node_id_vec` | `table.zig:920` |
+| 3 | `DescribedBy` at `accesskit/src/lib.rs:898` | `PropertyId.described_by` at `table.zig:215` | `node_id_vec` | `table.zig:921` |
+| 4 | `FlowTo` at `accesskit/src/lib.rs:899` | `PropertyId.flow_to` at `table.zig:216` | `node_id_vec` | `table.zig:922` |
+| 5 | `LabelledBy` at `accesskit/src/lib.rs:900` | `PropertyId.labelled_by` at `table.zig:217` | `node_id_vec` | `table.zig:923` |
+| 6 | `Owns` at `accesskit/src/lib.rs:901` | `PropertyId.owns` at `table.zig:218` | `node_id_vec` | `table.zig:924` |
+| 7 | `RadioGroup` at `accesskit/src/lib.rs:902` | `PropertyId.radio_group` at `table.zig:219` | `node_id_vec` | `table.zig:925` |
+| 8 | `ActiveDescendant` at `accesskit/src/lib.rs:905` | `PropertyId.active_descendant` at `table.zig:222` | `node_id` | `table.zig:928` |
+| 9 | `ErrorMessage` at `accesskit/src/lib.rs:906` | `PropertyId.error_message` at `table.zig:223` | `node_id` | `table.zig:929` |
+| 10 | `InPageLinkTarget` at `accesskit/src/lib.rs:907` | `PropertyId.in_page_link_target` at `table.zig:224` | `node_id` | `table.zig:930` |
+| 11 | `MemberOf` at `accesskit/src/lib.rs:908` | `PropertyId.member_of` at `table.zig:225` | `node_id` | `table.zig:931` |
+| 12 | `NextOnLine` at `accesskit/src/lib.rs:909` | `PropertyId.next_on_line` at `table.zig:226` | `node_id` | `table.zig:932` |
+| 13 | `PreviousOnLine` at `accesskit/src/lib.rs:910` | `PropertyId.previous_on_line` at `table.zig:227` | `node_id` | `table.zig:933` |
+| 14 | `PopupFor` at `accesskit/src/lib.rs:911` | `PropertyId.popup_for` at `table.zig:228` | `node_id` | `table.zig:934` |
+| 15 | `Label` at `accesskit/src/lib.rs:914` | `PropertyId.label` at `table.zig:231` | `string` | `table.zig:937` |
+| 16 | `Description` at `accesskit/src/lib.rs:915` | `PropertyId.description` at `table.zig:232` | `string` | `table.zig:938` |
+| 17 | `Value` at `accesskit/src/lib.rs:916` | `PropertyId.value` at `table.zig:233` | `string` | `table.zig:939` |
+| 18 | `AccessKey` at `accesskit/src/lib.rs:917` | `PropertyId.access_key` at `table.zig:234` | `string` | `table.zig:940` |
+| 19 | `AuthorId` at `accesskit/src/lib.rs:918` | `PropertyId.author_id` at `table.zig:235` | `string` | `table.zig:941` |
+| 20 | `ClassName` at `accesskit/src/lib.rs:919` | `PropertyId.class_name` at `table.zig:236` | `string` | `table.zig:942` |
+| 21 | `FontFamily` at `accesskit/src/lib.rs:920` | `PropertyId.font_family` at `table.zig:237` | `string` | `table.zig:943` |
+| 22 | `HtmlId` at `accesskit/src/lib.rs:921` | `PropertyId.html_id` at `table.zig:238` | `string` | `table.zig:944` |
+| 23 | `HtmlTag` at `accesskit/src/lib.rs:922` | `PropertyId.html_tag` at `table.zig:239` | `string` | `table.zig:945` |
+| 24 | `InnerHtml` at `accesskit/src/lib.rs:923` | `PropertyId.inner_html` at `table.zig:240` | `string` | `table.zig:946` |
+| 25 | `KeyboardShortcut` at `accesskit/src/lib.rs:924` | `PropertyId.keyboard_shortcut` at `table.zig:241` | `string` | `table.zig:947` |
+| 26 | `Language` at `accesskit/src/lib.rs:925` | `PropertyId.language` at `table.zig:242` | `string` | `table.zig:948` |
+| 27 | `Placeholder` at `accesskit/src/lib.rs:926` | `PropertyId.placeholder` at `table.zig:243` | `string` | `table.zig:949` |
+| 28 | `RoleDescription` at `accesskit/src/lib.rs:927` | `PropertyId.role_description` at `table.zig:244` | `string` | `table.zig:950` |
+| 29 | `StateDescription` at `accesskit/src/lib.rs:928` | `PropertyId.state_description` at `table.zig:245` | `string` | `table.zig:951` |
+| 30 | `Tooltip` at `accesskit/src/lib.rs:929` | `PropertyId.tooltip` at `table.zig:246` | `string` | `table.zig:952` |
+| 31 | `Url` at `accesskit/src/lib.rs:930` | `PropertyId.url` at `table.zig:247` | `string` | `table.zig:953` |
+| 32 | `RowIndexText` at `accesskit/src/lib.rs:931` | `PropertyId.row_index_text` at `table.zig:248` | `string` | `table.zig:954` |
+| 33 | `ColumnIndexText` at `accesskit/src/lib.rs:932` | `PropertyId.column_index_text` at `table.zig:249` | `string` | `table.zig:955` |
+| 34 | `BrailleLabel` at `accesskit/src/lib.rs:933` | `PropertyId.braille_label` at `table.zig:250` | `string` | `table.zig:956` |
+| 35 | `BrailleRoleDescription` at `accesskit/src/lib.rs:934` | `PropertyId.braille_role_description` at `table.zig:251` | `string` | `table.zig:957` |
+| 36 | `ScrollX` at `accesskit/src/lib.rs:937` | `PropertyId.scroll_x` at `table.zig:254` | `f64_` | `table.zig:960` |
+| 37 | `ScrollXMin` at `accesskit/src/lib.rs:938` | `PropertyId.scroll_x_min` at `table.zig:255` | `f64_` | `table.zig:961` |
+| 38 | `ScrollXMax` at `accesskit/src/lib.rs:939` | `PropertyId.scroll_x_max` at `table.zig:256` | `f64_` | `table.zig:962` |
+| 39 | `ScrollY` at `accesskit/src/lib.rs:940` | `PropertyId.scroll_y` at `table.zig:257` | `f64_` | `table.zig:963` |
+| 40 | `ScrollYMin` at `accesskit/src/lib.rs:941` | `PropertyId.scroll_y_min` at `table.zig:258` | `f64_` | `table.zig:964` |
+| 41 | `ScrollYMax` at `accesskit/src/lib.rs:942` | `PropertyId.scroll_y_max` at `table.zig:259` | `f64_` | `table.zig:965` |
+| 42 | `NumericValue` at `accesskit/src/lib.rs:943` | `PropertyId.numeric_value` at `table.zig:260` | `f64_` | `table.zig:966` |
+| 43 | `MinNumericValue` at `accesskit/src/lib.rs:944` | `PropertyId.min_numeric_value` at `table.zig:261` | `f64_` | `table.zig:967` |
+| 44 | `MaxNumericValue` at `accesskit/src/lib.rs:945` | `PropertyId.max_numeric_value` at `table.zig:262` | `f64_` | `table.zig:968` |
+| 45 | `NumericValueStep` at `accesskit/src/lib.rs:946` | `PropertyId.numeric_value_step` at `table.zig:263` | `f64_` | `table.zig:969` |
+| 46 | `NumericValueJump` at `accesskit/src/lib.rs:947` | `PropertyId.numeric_value_jump` at `table.zig:264` | `f64_` | `table.zig:970` |
+| 47 | `FontSize` at `accesskit/src/lib.rs:950` | `PropertyId.font_size` at `table.zig:267` | `f32_` | `table.zig:973` |
+| 48 | `FontWeight` at `accesskit/src/lib.rs:951` | `PropertyId.font_weight` at `table.zig:268` | `f32_` | `table.zig:974` |
+| 49 | `RowCount` at `accesskit/src/lib.rs:954` | `PropertyId.row_count` at `table.zig:271` | `usize_` | `table.zig:977` |
+| 50 | `ColumnCount` at `accesskit/src/lib.rs:955` | `PropertyId.column_count` at `table.zig:272` | `usize_` | `table.zig:978` |
+| 51 | `RowIndex` at `accesskit/src/lib.rs:956` | `PropertyId.row_index` at `table.zig:273` | `usize_` | `table.zig:979` |
+| 52 | `ColumnIndex` at `accesskit/src/lib.rs:957` | `PropertyId.column_index` at `table.zig:274` | `usize_` | `table.zig:980` |
+| 53 | `RowSpan` at `accesskit/src/lib.rs:958` | `PropertyId.row_span` at `table.zig:275` | `usize_` | `table.zig:981` |
+| 54 | `ColumnSpan` at `accesskit/src/lib.rs:959` | `PropertyId.column_span` at `table.zig:276` | `usize_` | `table.zig:982` |
+| 55 | `Level` at `accesskit/src/lib.rs:960` | `PropertyId.level` at `table.zig:277` | `usize_` | `table.zig:983` |
+| 56 | `SizeOfSet` at `accesskit/src/lib.rs:961` | `PropertyId.size_of_set` at `table.zig:278` | `usize_` | `table.zig:984` |
+| 57 | `PositionInSet` at `accesskit/src/lib.rs:962` | `PropertyId.position_in_set` at `table.zig:279` | `usize_` | `table.zig:985` |
+| 58 | `ColorValue` at `accesskit/src/lib.rs:965` | `PropertyId.color_value` at `table.zig:282` | `color` | `table.zig:988` |
+| 59 | `BackgroundColor` at `accesskit/src/lib.rs:966` | `PropertyId.background_color` at `table.zig:283` | `color` | `table.zig:989` |
+| 60 | `ForegroundColor` at `accesskit/src/lib.rs:967` | `PropertyId.foreground_color` at `table.zig:284` | `color` | `table.zig:990` |
+| 61 | `Overline` at `accesskit/src/lib.rs:970` | `PropertyId.overline` at `table.zig:287` | `text_decoration` | `table.zig:993` |
+| 62 | `Strikethrough` at `accesskit/src/lib.rs:971` | `PropertyId.strikethrough` at `table.zig:288` | `text_decoration` | `table.zig:994` |
+| 63 | `Underline` at `accesskit/src/lib.rs:972` | `PropertyId.underline` at `table.zig:289` | `text_decoration` | `table.zig:995` |
+| 64 | `CharacterLengths` at `accesskit/src/lib.rs:975` | `PropertyId.character_lengths` at `table.zig:292` | `length_vec` | `table.zig:998` |
+| 65 | `WordStarts` at `accesskit/src/lib.rs:976` | `PropertyId.word_starts` at `table.zig:293` | `length_vec` | `table.zig:999` |
+| 66 | `CharacterPositions` at `accesskit/src/lib.rs:979` | `PropertyId.character_positions` at `table.zig:296` | `coord_vec` | `table.zig:1002` |
+| 67 | `CharacterWidths` at `accesskit/src/lib.rs:980` | `PropertyId.character_widths` at `table.zig:297` | `coord_vec` | `table.zig:1003` |
+| 68 | `Expanded` at `accesskit/src/lib.rs:983` | `PropertyId.expanded` at `table.zig:300` | `bool_` | `table.zig:1006` |
+| 69 | `Selected` at `accesskit/src/lib.rs:984` | `PropertyId.selected` at `table.zig:301` | `bool_` | `table.zig:1007` |
+| 70 | `Invalid` at `accesskit/src/lib.rs:987` | `PropertyId.invalid` at `table.zig:304` | `invalid` | `table.zig:1010` |
+| 71 | `Toggled` at `accesskit/src/lib.rs:988` | `PropertyId.toggled` at `table.zig:305` | `toggled` | `table.zig:1011` |
+| 72 | `Live` at `accesskit/src/lib.rs:989` | `PropertyId.live` at `table.zig:306` | `live` | `table.zig:1012` |
+| 73 | `TextDirection` at `accesskit/src/lib.rs:990` | `PropertyId.text_direction` at `table.zig:307` | `text_direction` | `table.zig:1013` |
+| 74 | `Orientation` at `accesskit/src/lib.rs:991` | `PropertyId.orientation` at `table.zig:308` | `orientation` | `table.zig:1014` |
+| 75 | `SortDirection` at `accesskit/src/lib.rs:992` | `PropertyId.sort_direction` at `table.zig:309` | `sort_direction` | `table.zig:1015` |
+| 76 | `AriaCurrent` at `accesskit/src/lib.rs:993` | `PropertyId.aria_current` at `table.zig:310` | `aria_current` | `table.zig:1016` |
+| 77 | `AutoComplete` at `accesskit/src/lib.rs:994` | `PropertyId.auto_complete` at `table.zig:311` | `auto_complete` | `table.zig:1017` |
+| 78 | `HasPopup` at `accesskit/src/lib.rs:995` | `PropertyId.has_popup` at `table.zig:312` | `has_popup` | `table.zig:1018` |
+| 79 | `ListStyle` at `accesskit/src/lib.rs:996` | `PropertyId.list_style` at `table.zig:313` | `list_style` | `table.zig:1019` |
+| 80 | `TextAlign` at `accesskit/src/lib.rs:997` | `PropertyId.text_align` at `table.zig:314` | `text_align` | `table.zig:1020` |
+| 81 | `VerticalOffset` at `accesskit/src/lib.rs:998` | `PropertyId.vertical_offset` at `table.zig:315` | `vertical_offset` | `table.zig:1021` |
+| 82 | `Transform` at `accesskit/src/lib.rs:1001` | `PropertyId.transform` at `table.zig:318` | `affine` | `table.zig:1024` |
+| 83 | `Bounds` at `accesskit/src/lib.rs:1002` | `PropertyId.bounds` at `table.zig:319` | `rect` | `table.zig:1025` |
+| 84 | `TextSelection` at `accesskit/src/lib.rs:1003` | `PropertyId.text_selection` at `table.zig:320` | `text_selection` | `table.zig:1026` |
+| 85 | `CustomActions` at `accesskit/src/lib.rs:1004` | `PropertyId.custom_actions` at `table.zig:321` | `custom_action_vec` | `table.zig:1027` |
+| 86 | `TreeId` at `accesskit/src/lib.rs:1005` | `PropertyId.tree_id` at `table.zig:322` | `tree_id` | `table.zig:1028` |
+
+The rule that pins the order is the one at `lib.rs:892` plus rule Z5: the enum is
+`#[repr(u8)]`, the discriminants are copied unchanged, and `table.zig:1629-1639`
+turns that into a compile error by refusing any descriptor row whose position is
+not its discriminant. Upstream's own count of 88 including `Unset` is at
+`lib.rs:1007-1008` and `:1062`.
+
+### 5.4 `PropertyValue`
+
+| Upstream item | Zig item | Disposition | Reason |
+|---|---|---|---|
+| `#[derive(Debug, PartialEq)]` at `:855` | `PropertyValue` at `table.zig:349` | `translated` | A data-carrying enum becomes `union(enum)`, per `docs/24-rust-idiom-mapping.md` §2.2 row for `union(enum)`. |
+| `Debug` from that derive | `pub fn format(self: PropertyValue, writer: *std.Io.Writer)` at `table.zig:486` | `translated` | It is the upstream `fmt::Debug` impl. It is a member because `{f}` does not reach a union on Zig 0.16.0, recorded at `table.zig:479-485`. |
+| `PartialEq` from that derive | `pub fn eql(self: PropertyValue, other: PropertyValue) bool` at `table.zig:444` | `translated` | Zig rejects `==` for a union. Owned payloads compare by their bytes, never by their addresses, recorded at `table.zig:437-443`. |
+| `enum PropertyValue` at `:856-886` | `PropertyValue` at `table.zig:349-535` | `translated` | |
+| the 29 arms at `:857-885` | the 29 fields at `table.zig:352-380` | `renamed by rule` | Rule Z5 for the tag names, with three forced exceptions: `F64` becomes `f64_`, `F32` becomes `f32_` and `Bool` becomes `bool_`, because each collides with a Zig primitive keyword. Recorded at `table.zig:337-343`. |
+| arm `Affine(Box<Affine>)` at `:881` | `affine: Affine` at `table.zig:376` | `translated` | The indirection is deleted and the value is held inline. Recorded at `table.zig:52-57`. |
+| arm `TextSelection(Box<TextSelection>)` at `:883` | `text_selection: TextSelection` at `table.zig:378` | `translated` | The same reason. |
+| arm `None` at `:857` | `none` at `table.zig:352` | `merged` | Upstream writes `None` over a slot to mark absence. The port never stores it: a cleared property leaves the slice, recorded at `table.zig:4-5` and `:350-351`. |
+| `impl Clone for PropertyValue { fn clone }` at `:1012-1044` | `pub fn propertyValueClone(gpa, source)` at `table.zig:622` | `renamed by rule` | Rule P1, because a copy has no `self`. The `gpa` parameter is `AGENTS.md:99`, recorded at `table.zig:613-621`. |
+| `fn clone_from` at `:1046-1057` | `pub fn propertyValueCloneInto(gpa, dest, source)` at `table.zig:678` | `renamed by rule` | Rule P1. It is the buffer-reuse half, recorded at `table.zig:661-669`. |
+| no upstream counterpart | `pub const PropertyValueTag` at `table.zig:538`, `pub fn getTag` at `:388`, `pub fn deinit` at `:399` | `added by the port` | A Zig union names no tag type of its own, and it has no `Drop`. Reading the tag through a member keeps every switch over the payload domain exhaustive, recorded at `table.zig:382-387`. |
+| no upstream counterpart | `PropertyValuePayloadType` at `table.zig:558`, `propertyValueTagCount` at `:596` and `propertyValueFrom` at `:605` | `added by the port` | `propertyValueFrom` reads its payload type out of `PropertyValuePayloadType`, so a caller that pairs a payload with the wrong tag is a compile error. Recorded at `table.zig:553-557` and `:592-595`. |
+| no upstream counterpart | the `comptime` layout block at `table.zig:540-551` | `added by the port` | `AGENTS.md:56`. `PropertyValue` is 56 bytes at alignment 8, where `docs/10-accesskit-core.md:670` predicts 40 by naming `Rect` the largest payload. It is not: upstream boxes `Affine` and this port does not. |
+| no upstream counterpart | the private helpers `sameOwnedBuffer` at `table.zig:791`, `sameListBuffer` at `:831`, `deinitActions` at `:839`, `eqlNodeIds` at `:844`, `eqlActions` at `:852`, `cloneList` at `:860` and `cloneActions` at `:871` | `added by the port` | Zig has no `Drop`, no `PartialEq` and no `clone_from` for these payload types, so each behaviour the derives and the `Clone` impl gave upstream is a named private function. |
+
+#### The 29 arms
+
+| Upstream arm | Zig field |
+|---|---|
+| `None` at `accesskit/src/lib.rs:857` | `PropertyValue.none` at `table.zig:352` |
+| `NodeIdVec(Vec<NodeId>)` at `accesskit/src/lib.rs:858` | `PropertyValue.node_id_vec: std.ArrayList(NodeId)` at `table.zig:353` |
+| `NodeId(NodeId)` at `accesskit/src/lib.rs:859` | `PropertyValue.node_id: NodeId` at `table.zig:354` |
+| `String(String)` at `accesskit/src/lib.rs:860` | `PropertyValue.string: std.ArrayList(u8)` at `table.zig:355` |
+| `F64(f64)` at `accesskit/src/lib.rs:861` | `PropertyValue.f64_: f64` at `table.zig:356` |
+| `F32(f32)` at `accesskit/src/lib.rs:862` | `PropertyValue.f32_: f32` at `table.zig:357` |
+| `Usize(usize)` at `accesskit/src/lib.rs:863` | `PropertyValue.usize_: usize` at `table.zig:358` |
+| `Color(Color)` at `accesskit/src/lib.rs:864` | `PropertyValue.color: Color` at `table.zig:359` |
+| `TextDecoration(TextDecoration)` at `accesskit/src/lib.rs:865` | `PropertyValue.text_decoration: TextDecoration` at `table.zig:360` |
+| `LengthVec(Vec<u8>)` at `accesskit/src/lib.rs:866` | `PropertyValue.length_vec: std.ArrayList(u8)` at `table.zig:361` |
+| `CoordVec(Vec<f32>)` at `accesskit/src/lib.rs:867` | `PropertyValue.coord_vec: std.ArrayList(f32)` at `table.zig:362` |
+| `Bool(bool)` at `accesskit/src/lib.rs:868` | `PropertyValue.bool_: bool` at `table.zig:363` |
+| `Invalid(Invalid)` at `accesskit/src/lib.rs:869` | `PropertyValue.invalid: Invalid` at `table.zig:364` |
+| `Toggled(Toggled)` at `accesskit/src/lib.rs:870` | `PropertyValue.toggled: Toggled` at `table.zig:365` |
+| `Live(Live)` at `accesskit/src/lib.rs:871` | `PropertyValue.live: Live` at `table.zig:366` |
+| `TextDirection(TextDirection)` at `accesskit/src/lib.rs:872` | `PropertyValue.text_direction: TextDirection` at `table.zig:367` |
+| `Orientation(Orientation)` at `accesskit/src/lib.rs:873` | `PropertyValue.orientation: Orientation` at `table.zig:368` |
+| `SortDirection(SortDirection)` at `accesskit/src/lib.rs:874` | `PropertyValue.sort_direction: SortDirection` at `table.zig:369` |
+| `AriaCurrent(AriaCurrent)` at `accesskit/src/lib.rs:875` | `PropertyValue.aria_current: AriaCurrent` at `table.zig:370` |
+| `AutoComplete(AutoComplete)` at `accesskit/src/lib.rs:876` | `PropertyValue.auto_complete: AutoComplete` at `table.zig:371` |
+| `HasPopup(HasPopup)` at `accesskit/src/lib.rs:877` | `PropertyValue.has_popup: HasPopup` at `table.zig:372` |
+| `ListStyle(ListStyle)` at `accesskit/src/lib.rs:878` | `PropertyValue.list_style: ListStyle` at `table.zig:373` |
+| `TextAlign(TextAlign)` at `accesskit/src/lib.rs:879` | `PropertyValue.text_align: TextAlign` at `table.zig:374` |
+| `VerticalOffset(VerticalOffset)` at `accesskit/src/lib.rs:880` | `PropertyValue.vertical_offset: VerticalOffset` at `table.zig:375` |
+| `Affine(Box<Affine>)` at `accesskit/src/lib.rs:881` | `PropertyValue.affine: Affine` at `table.zig:376` |
+| `Rect(Rect)` at `accesskit/src/lib.rs:882` | `PropertyValue.rect: Rect` at `table.zig:377` |
+| `TextSelection(Box<TextSelection>)` at `accesskit/src/lib.rs:883` | `PropertyValue.text_selection: TextSelection` at `table.zig:378` |
+| `CustomActionVec(Vec<CustomAction>)` at `accesskit/src/lib.rs:884` | `PropertyValue.custom_action_vec: std.ArrayList(CustomAction)` at `table.zig:379` |
+| `TreeId(TreeId)` at `accesskit/src/lib.rs:885` | `PropertyValue.tree_id: TreeId` at `table.zig:380` |
+
+### 5.5 The descriptor table and the store
+
+| Upstream item | Zig item | Disposition | Reason |
+|---|---|---|---|
+| the id-to-payload relation, written three times upstream: in the `PropertyId` block comments at `:894-1005`, in the deserializer at `:2891-3001` and in the schemars output at `:3044-3153` | `pub const property_descriptors` at `table.zig:916-1029` | `merged` | One `comptime` table is the single home of the relation, recorded at `table.zig:905-912`. A row holds a `type`, so the array is `comptime` data. |
+| the 23 `macro_rules!` definitions at `:1170-1778` | the same table, read through `propertyDescriptor`, `propertyValueTagOf` and `PropertyPayloadType` | `merged` | Each macro named the payload type beside the property id. The port keeps the relation once and lets the eight accessor modules read it. `table.zig:26` and `:908` say 27 macros at that range; the range holds 23 and the file holds 27, four of them the `serde` and `schemars` writers. `docs/40-plan.md:504-508` records the discrepancy as open. |
+| `struct PropertyIndices([u8; 87])` at `:1060-1062` and `impl Default for PropertyIndices` at `:1064-1068` | none | `deleted with reason` | The store holds a sorted slice of id and value pairs, so the slot array and the sentinel byte that indexed it are both gone. Recorded at `table.zig:45-51`. |
+| `fn value_at` at `:1076-1082` | none | `deleted with reason` | It maps a slot index to a value, and there is no slot index. The port's binary search is `insertionIndex` at `table.zig:1557`. |
+| `impl PartialEq for Properties` at `:1084-1094` | `pub fn Properties.eql(a, b)` at `table.zig:1478` | `translated` | Zig rejects `==` for a struct. The comparison is structural rather than positional: the same ids with the same payloads, whatever order either store was written in. Recorded at `table.zig:1469-1477` and `:58-63`. |
+| `impl PropertyIndices { fn get }` at `:1115-1119` | `Properties.find` at `table.zig:1381` and `Properties.get` at `:1394` | `merged` | One upstream read becomes a binary search that yields a position and a value. Recorded at `table.zig:1376-1380` and `:1388-1393`. |
+| `struct Properties` at `:1071-1074` | `pub const Properties = struct` at `table.zig:1346` | `translated` | Two upstream fields become two others: `gpa: std.mem.Allocator` at `:1349` and `items: std.ArrayList(Property)` at `:1352`, the second a sorted slice of id and value pairs. |
+| field `indices: PropertyIndices` at `:1072` | none | `deleted with reason` | The same reason as the struct. |
+| field `values: Vec<PropertyValue>` at `:1073` | `items: std.ArrayList(Property)` at `table.zig:1352` | `renamed by rule` | Rule Z4 keeps the `snake_case` spelling and the port takes a different name because the slice holds pairs, not bare values. Recorded at `table.zig:1350-1351`. |
+| `Default` from the derive at `:1070` | `pub fn init(gpa: std.mem.Allocator)` at `table.zig:1356` | `translated` | There is no `Default`, because a default store would have to name an allocator. Recorded at `table.zig:1354-1355`. |
+| `Debug` from that derive | none | `deleted with reason` | The port declares no `format` for the store. `Node.format` writes each entry through `PropertyValue.format` at `node.zig:313-321`. `table.zig` records no reason. |
+| `Properties::get_mut` at `:1122-1136` | `pub fn getOrInsert` at `table.zig:1415` | `renamed by rule` | The name says what the call does: it inserts when the store holds none. Recorded at `table.zig:1399-1405`. |
+| `Properties::set` at `:1138-1146` | `pub fn set` at `table.zig:1440` | `translated` | The name is unchanged and the signature is not: the port takes ownership of `value` and can fail, recorded at `table.zig:1429-1439`. |
+| `Properties::clear` at `:1148-1153` | `pub fn clear` at `table.zig:1463` | `translated` | Upstream writes `PropertyValue::None` over the slot. The port removes the entry and releases the value, recorded at `table.zig:1454-1462`. |
+| `Properties::clone` at `:1157-1162` | `pub fn clone(self, gpa)` at `table.zig:1492` | `translated` | Rule P1 for the allocator parameter: a store carries the allocator it was created with, so a copy is bound to the allocator it is given. Recorded at `table.zig:1487-1491`. |
+| `Properties::clone_from` at `:1164-1167` | `pub fn cloneInto(self, out)` at `table.zig:1515` | `translated` | It is the 0.25.0 buffer-reuse change, recorded at `table.zig:1499-1514`. |
+| no upstream counterpart | `Property` at `table.zig:886` with `deinit` at `:891`, `PropertyDescriptor` at `:899`, `propertyDescriptorCount` at `:1033`, `propertyIdCount` at `:1037`, `property_value_tags_by_id` at `:1042`, `propertyDescriptor` at `:1050`, `propertyValueTagOf` at `:1055`, `property_counts_by_tag` at `:1068` and `PropertyPayloadType` at `:1078` | `added by the port` | Upstream holds an id array beside a value array and never pairs them, so the pair and the row are port items. `propertyIdCount` is also the `comptime` bound every walk over the property domain uses, recorded at `table.zig:1035-1036`. |
+| no upstream counterpart | `Properties.deinit` at `table.zig:1365`, `count` at `:1372` and the private `insertionIndex` at `:1557` | `added by the port` | Zig has no `Drop`. `count` and `insertionIndex` exist because the store is a slice and a caller may want a position; recorded at `table.zig:1360-1364`, `:1371` and `:1556`. |
+
+### 5.6 The two run-time projections and the exhaustiveness sweep
+
+`property_descriptors` holds a `type`, so it is `comptime` only. Two arrays are
+derived from it for the readers that run at run time, and a third is derived from
+the second.
+
+| Zig item | What it is | Where the row's reason is recorded |
+|---|---|---|
+| `property_value_tags_by_id` at `table.zig:1042-1046` | The run-time projection: one tag per property, indexed by discriminant. | `table.zig:1039-1041` |
+| `property_counts_by_tag` at `table.zig:1068-1072` | The second projection: how many descriptor rows carry each tag, so a family can count its own rows instead of sweeping all 87. | `table.zig:1059-1067` |
+| the `comptime` block at `table.zig:1577-1655` | Four checks over the table: the tag count equals the row count, every discriminant appears exactly once, a row's declared payload is the payload its tag carries, and the rows stay in `PropertyId` order. Then the three domain asserts and one call to `assertTagsPartitioned()`. | `table.zig:1578-1654` |
+
+A property added without a row, a row written twice, a row whose payload
+disagrees with its tag, and a row out of order are each a compile error. That is
+the compile-time property the 23 upstream `macro_rules!` definitions at
+`lib.rs:1170-1778` gave the Rust type checker, and it is the whole reason the
+descriptor table exists.
+
+### 5.7 The family partition
+
+Seven accessor modules under `src/schema/props/` each publish a getter, a setter
+and a clearer for the properties they own. `table.zig` holds the relation that
+makes "every property has an accessor" a build-time fact.
+
+| Zig item | What it is | Where the row's reason is recorded |
+|---|---|---|
+| `pub const Family` at `table.zig:1129-1137` | The seven owning families. `flags.zig` is absent on purpose: the 18 flags are not `PropertyId` tags and carry no `PropertyValue` variant. | `table.zig:1124-1128` |
+| `familyCount` at `table.zig:1141` | The `comptime` bound on the sweeps that walk the families. | `table.zig:1139-1140` |
+| `familyTags` at `table.zig:1151-1175` | The payload tags one family owns. The 28 tags across the seven arms plus `PropertyValueTag.none` are the whole tag domain, which `propertyValueTagCount()` pins at 29. | `table.zig:1143-1150` |
+| `family_by_tag` at `table.zig:1184-1198` | The reverse lookup, built once so both halves of the claim read a table instead of each sweeping seven lists. | `table.zig:1177-1183` |
+| `assertFamilyReachable` at `table.zig:1226-1307` | Three claims about one family: no id twice, every claimed id carries a tag that family owns, and every row carrying such a tag is claimed. Called once per family from the family module: `colors.zig:272`, `enums.zig:685`, `ids.zig:111`, `numbers.zig:121`, `option.zig:262`, `strings.zig:81` and `vectors.zig:114`. | `table.zig:1209-1225` and the section comment at `:1082-1122` |
+| `assertTagsPartitioned` at `table.zig:1314-1331` | The fourth claim: every descriptor row's tag is owned by exactly one family. Called once, from `table.zig:1649`. | `table.zig:1309-1313` |
+| the private `declaresId` at `table.zig:1202-1207` | The membership test claim 2 uses on the path where the count check has already failed. | `table.zig:1200-1201` |
+
+Claims 1 and 2 make each family a complete statement about its own tags, so
+claim 3 turns seven local statements into a partition of the whole domain. A new
+descriptor row on an existing tag fails its owner; a new row on a new tag fails
+because no family owns that tag. Either way a row with no accessor behind it is a
+compile error, which is what the block in section 5.6 could not say.
+
+The table names one gap and does not close it: the C surface in
+`src/capi/node_properties.zig` is an independent copy that pins 87 and 294 from
+`export_names`, never from `propertyIdCount`. Recorded at `table.zig:1113-1122`.
+
+### 5.8 How to verify one property, one arm and one flag
+
+```sh
+grep -n '^    braille_label = ' src/schema/props/table.zig
+grep -n '^    BrailleLabel,' /tmp/scratch/accesskit/accesskit/src/lib.rs
+```
+
+The two commands give the Zig line and the upstream line. The count of preceding
+variant declarations is the same number in both files, because rule Z5 copies each
+discriminant rather than renumbering the tags. Run `zig build test` for the
+domain itself: section 3.3 records that the root reaches every module under
+`src/schema/`, and `table.zig` is one of them through `src/schema/root.zig:141`.
+Read the count. `table.zig` declares 31 tests, and a run that reports fewer has
+not analysed the file.
+
+A single-file root does not work for this module, for the reason section 3.3
+gives for `values.zig`: `table.zig` imports `../ids.zig`, `../node_enums.zig`,
+`../values.zig` and the two geometry modules, all one level above it, so
+`zig test src/schema/props/table.zig` reports `import of file outside module
+path`. That is a property of the tool and not a defect in the file.
+
+The `comptime` block at `table.zig:1577-1655` re-checks the whole domain on every
+build, and the seven `assertFamilyReachable` calls in the accessor modules run in
+the same evaluation, so one `zig build test` proves all 87 rows, both projections
+and the family partition at once.
+
+## 6. The deletions register
 
 One row per upstream item the port does not carry. The two lists below were
 reconciled: the first column was read off the module doc comments, and the
@@ -517,12 +829,25 @@ Zig declarations.
 | the four `Vec2` assign impls | `geometry.rs:773`, `:795`, `:817`, `:849` | `vec2.zig` | A Zig caller assigns the result. | `vec2.zig:17-21` |
 | `Mul<Vec2> for f64` | `geometry.rs:827-834` | `vec2.zig` | Upstream defines it as `other * self`, which `Vec2.scale` computes. | `vec2.zig:22-24` |
 | `MulAssign for Affine` | `geometry.rs:184-189` | `affine.zig` | A Zig caller assigns the result of `mul`. | `docs/19:1224`, restated for the geometry modules at `point.zig:32-34` |
+| `Debug`, `PartialOrd`, `Ord` and `Hash` from the derive on `Flag` | `lib.rs:796` | `table.zig` | The port declares no `format` for `Flag`, no ordering and no digest. A flag reaches a writer through `@tagName` at `node.zig:290`. | not recorded in `table.zig` |
+| `serde`, `schemars` and `enumn::N` attributes on `Flag` | `lib.rs:797-799` | `table.zig` | The port generates no code for another language. | `docs/30-port-design.md` section 2.2 |
+| `Debug`, `PartialOrd`, `Ord` and `Hash` from the derive on `PropertyId` | `lib.rs:888` | `table.zig` | The port renders a property id through `@tagName` at `node.zig:318` and orders the store by `@intFromEnum`, so it declares no `format`, no ordering and no digest. | not recorded in `table.zig` |
+| `serde`, `schemars` and `enumn::N` attributes on `PropertyId` | `lib.rs:889-891` | `table.zig` | The port generates no code for another language. | `docs/30-port-design.md` section 2.2 |
+| variant `Unset` | `lib.rs:1007-1008` | `table.zig` | A sorted slice needs no "no slot" byte, so absence is a `null` from `Properties.get`, and with 87 tags `PropertyId` cannot hold 87. | `table.zig:45-51` |
+| the `Box` in `Affine(Box<Affine>)` and `TextSelection(Box<TextSelection>)` | `lib.rs:881`, `:883` | `table.zig` | A pointer payload needs a recursive teardown and costs one allocation per node per update for a type the union holds inline. | `table.zig:52-57` |
+| `struct PropertyIndices` and `impl Default for PropertyIndices` | `lib.rs:1060-1068` | `table.zig` | The store holds a sorted slice of id and value pairs, so the slot array and the sentinel byte that indexed it are both gone. | `table.zig:45-51` |
+| `fn value_at` | `lib.rs:1076-1082` | `table.zig` | It maps a slot index to a value, and the port has no slot index. | `table.zig:45-51` |
+| the slot-position comparison in `impl PartialEq for Properties` | `lib.rs:1084-1094` | `table.zig` | A sorted slice makes the comparison structural, and the 0.25.0 change that reuses property buffers on clone broke the slot correspondence upstream compared through. | `table.zig:58-63` |
+| `Debug` from the derive on `Properties` | `lib.rs:1070` | `table.zig` | The port declares no `format` for the store. `Node.format` writes each entry through `PropertyValue.format` at `node.zig:313-321`. | not recorded in `table.zig` |
+| `Default` from the derive on `Properties` | `lib.rs:1070` | `table.zig` | A default store would have to name an allocator, so the port spells the constructor `init(gpa)`. | `table.zig:1354-1355` |
+| `impl Serialize for Properties`, `PropertiesVisitor`, `impl Deserialize for Properties`, `impl JsonSchema for Properties`, and the four `macro_rules!` at `:2794`, `:2806`, `:3019` and `:3029` | `lib.rs:2793-3160` | `table.zig` | The port carries no serializer and generates no schema. | `docs/30-port-design.md` section 2.2 |
 
-Eight rows above say `not recorded in the module doc`. That is a finding, not a
-gap in the register: the deletion is real and the ledger states it. Closing it
-means adding the reason to the module doc comment, not to this document.
+Twelve rows above record no reason in the dropping module's own doc comment.
+That is a finding, not a gap in the register: the deletion is real and the ledger
+states it. Closing it means adding the reason to the module doc comment, not to
+this document.
 
-## 6. The additions register
+## 7. The additions register
 
 One row per Zig item with no upstream counterpart. The reason column names the
 decision that required it.
@@ -549,8 +874,19 @@ decision that required it.
 | `extern struct` on `TextPosition` and `TextSelection` at `values.zig:110` and `:155` | The field order is a contract, because `accesskit_text_position` and `accesskit_text_selection` declare it and `ActionData` carries the value in an `extern union`. | A plain `struct` lets the compiler reorder its fields, and an `extern union` cannot hold a plain struct at all. Recorded at `values.zig:106-109` and `:151-154`. |
 | `extern struct` on `NodeId` and `TreeId` at `ids.zig:41` and `:93` | One scalar for `NodeId` and 16 bytes with no padding for `TreeId`. | `accesskit-c/include/accesskit.h:686` and `:708` declare both, and only `extern` pins the field order. Recorded at `ids.zig:132-146`. |
 | the `coeffs` field on `Affine` at `affine.zig:46`, and `value` and `bytes` on `NodeId` and `TreeId` at `ids.zig:42` and `:96` | Named fields where upstream has a tuple struct with no field name. | `@offsetOf` and `@sizeOf` assertions need a name to name. Recorded in the layout blocks at `affine.zig:49-59` and `ids.zig:132-146`. |
+| `Flag.count` at `table.zig:150`, `flagCount` at `:159` and the `comptime` block at `:153-156` | The 18 flag count and the bound on every walk over the flag domain, pinned at compile time. | `AGENTS.md:57-58` asks for a named bound on every loop and `:106-109` asks for a comptime sweep over every enumerable domain. Recorded at `table.zig:149`, `:158` and `:153-156`. |
+| `flagSetContains` at `table.zig:171`, `flagSetUnion` at `:177` and `flagSetDifference` at `:182` | Set operations on the `u32` flag mask. | `flag_methods!` at `lib.rs:1170` inlines the mask test and the two mask writes. The mask is the C ABI type, so a consumer needs the three without reaching for `std.meta`, the same reason `action.zig` carries its own. |
+| `flagSetMembers(flag_set, out)` at `table.zig:191` | It is upstream `action_mask_to_action_vec` at `lib.rs:390-400` applied to the flag mask, which upstream never wrote. | It fills a caller buffer and returns the filled prefix, so the port never allocates. The bound is `flagCount` and the doc names it at `table.zig:186-190`. |
+| `propertyIdTagCount` at `table.zig:326` and `propertyIdFromInt` at `:332` | The tag count and the checked byte-to-tag gate for one property. | The C seam and the D-Bus codec each receive one of these bytes and neither may trust it, the same reason the thirteen `node_enums.zig` gates exist. Recorded at `table.zig:325` and `:328-331`. |
+| `PropertyValueTag` at `table.zig:538`, `PropertyValue.getTag` at `:388` and `PropertyValue.deinit` at `:399` | The tag type of the payload union, a checked tag reader and one release. | A Zig union names no tag type of its own, and it has no `Drop`. Reading the tag through a member keeps every switch over the payload domain exhaustive. Recorded at `table.zig:537`, `:382-387` and `:392-398`. |
+| `PropertyValuePayloadType` at `table.zig:558`, `propertyValueTagCount` at `:596` and `propertyValueFrom` at `:605` | The payload type of a tag, the size of the tag domain, and a constructor that reads one from the other. | `propertyValueFrom` pairs a payload with a tag at compile time, so a caller that pairs them wrongly is a compile error. Recorded at `table.zig:553-557` and `:592-604`. |
+| the `comptime` layout block at `table.zig:540-551` | `@sizeOf(PropertyValue)` is 56 at alignment 8 and the tag type is one byte. | `AGENTS.md:56`. `docs/10-accesskit-core.md:670` predicts 40 by naming `Rect` the largest payload; it is not, because upstream boxes `Affine` and this port does not. Recorded at `table.zig:532-539`. |
+| the private helpers `sameOwnedBuffer` at `table.zig:791`, `sameListBuffer` at `:831`, `deinitActions` at `:839`, `eqlNodeIds` at `:844`, `eqlActions` at `:852`, `cloneList` at `:860` and `cloneActions` at `:871` | The release, the equality and the clone each owned payload needs. | Zig has no `Drop`, no derived `PartialEq` and no `clone_from` for these types, so each behaviour upstream's derives and `impl Clone` gave is a named private function. |
+| `Property` at `table.zig:886` with `deinit` at `:891`, `PropertyDescriptor` at `:899`, `property_descriptors` at `:916`, `propertyDescriptorCount` at `:1033`, `propertyIdCount` at `:1037`, `property_value_tags_by_id` at `:1042`, `propertyDescriptor` at `:1050`, `propertyValueTagOf` at `:1055`, `property_counts_by_tag` at `:1068` and `PropertyPayloadType` at `:1078` | The one home of the id-to-payload relation, plus the two run-time projections derived from it and the `comptime` bound every walk over the property domain uses. | Upstream wrote that relation three times, in the `PropertyId` block comments, the deserializer and the schemars output, and held an id array beside a value array, never a pair. `propertyIdCount` is also the loop bound `AGENTS.md:57-58` asks for. Recorded at `table.zig:905-915`, `:1031-1041`, `:1048-1057` and `:1059-1077`. |
+| `Properties.deinit` at `table.zig:1365`, `Properties.count` at `:1372` and the private `insertionIndex` at `:1557` | One release for the store, its size, and the binary search that finds a property's position. | Zig has no `Drop`. `count` and `insertionIndex` exist because the store is a slice, so a caller may want a position rather than a value. Recorded at `table.zig:1360-1364`, `:1371` and `:1556`. |
+| `Family` at `table.zig:1129`, `familyCount` at `:1141`, `familyTags` at `:1151`, `family_by_tag` at `:1184`, the private `declaresId` at `:1202`, `assertFamilyReachable` at `:1226` and `assertTagsPartitioned` at `:1314` | The partition of the payload tags across the seven accessor families, and the four compile-time claims that make "every property has an accessor" a build-time fact. | Each descriptor row names an id and a payload type and nothing else, so every check over the table alone passes for a property with a row and no getter. Only the owning family knows which properties it publishes accessors for, so the per-family half of the claim lives in the family module. Recorded at `table.zig:1082-1122`, `:1124-1150`, `:1177-1183` and `:1209-1225`. |
 
-## 7. The invariants that survive the translation
+## 8. The invariants that survive the translation
 
 A symbol map says the names were carried. This table says the behaviour was
 carried. One row per upstream invariant, with the upstream line that
@@ -598,16 +934,47 @@ establishes it and the Zig line that asserts it.
 | `CustomAction` equality compares the description bytes, not the buffer address | `lib.rs:756` | `values.zig:279-303` |
 | `Color` is four bytes and `TextDecoration` is five, both at alignment 1 | `lib.rs:833`, `:846` | `values.zig:348-362` |
 | A failing `CustomAction.init` copies nothing and leaves no allocation to release | `lib.rs:763` | `values.zig:235-244` and `:246-264` |
+| `PropertyId` carries 87 discriminants and no sentinel, so the byte 87 names no property | `lib.rs:1007-1008` and `:1062` | `table.zig:1641-1642`, and the tests at `:1744-1752` and `:1754-1760` |
+| Every descriptor row names a tag its owning family publishes accessors for, so a row with no getter is a compile error | no upstream line: the 23 `macro_rules!` at `lib.rs:1170-1778` generated the accessors and had no separate reachability claim | `assertTagsPartitioned` at `table.zig:1314-1331` and `assertFamilyReachable` at `:1226-1307`, called once per family from the seven `props/` modules and once from `table.zig:1649` |
+| A cleared property is absent rather than a placeholder, so it compares equal to one that was never set | `lib.rs:3407-3414` | `Properties.clear` at `table.zig:1463-1467`, and the tests at `:1904-1918` and `:1920-1932` |
+| Two stores holding the same properties compare equal whatever order either was written in | `lib.rs:3392-3405` | `Properties.eql` at `table.zig:1478-1485`, and the tests at `:1934-1963` and `:1965-1998` |
+| A clone reuses the destination's buffers and drops what the source no longer holds | `lib.rs:3436-3461` | `Properties.cloneInto` at `table.zig:1515-1554`, and the tests at `:2139-2160` and `:2162-2190` |
+| A failed write leaves the store exactly as it was and hands the value back to the caller | no upstream line: Rust allocates through a thread-local global and aborts rather than returning | `table.zig:1413-1414` and `:1436-1439`, and the tests at `:2021-2046`, `:2048-2071` and `:2073-2115` |
+| `PropertyValue` equality reads payload bytes and never buffer addresses, and a NaN payload compares unequal to itself as the derived `PartialEq` did | `lib.rs:855` | `PropertyValue.eql` at `table.zig:444-477`, and the tests at `:2278-2296` and `:2313-2317` |
+| `getOrInsert` appends in place, so a list pusher is amortised O(1) rather than quadratic | `lib.rs:1122-1136` | `Properties.getOrInsert` at `table.zig:1415-1427`, and the test at `:2000-2019` |
+| `PropertyValue` is 56 bytes at alignment 8 with a 29-value one-byte tag, where `docs/10-accesskit-core.md:670` predicts 40 by naming `Rect` the largest payload | `lib.rs:856-886`, boxed at `:881` and `:883` | `table.zig:540-551`, and the test at `:1820-1829` |
+| Each of the 18 flag bit positions is one bit, the positions are dense, and the discriminant is the bit position | `lib.rs:802-819` and `:823` | `flagMask` at `table.zig:166-168`, and the tests at `:2346-2365` and `:2367-2379` |
+| An owned payload is released exactly once, whether the store is released normally, twice, or a value is cloned into itself | no upstream line: Rust frees in `Drop` | `PropertyValue.deinit` at `table.zig:399-435` and `deinitActions` at `:839-842`, and the tests at `:2139-2160`, `:2218-2252` and `:2254-2276` |
 
-## 8. What this ledger does not cover
+## 9. What this ledger does not cover
 
-The property modules under `src/schema/props/` and three schema modules are
-still being written. No row in this document claims them, and nothing in this
-document is evidence about them.
+This section read: "The property modules under `src/schema/props/` and three schema
+modules are still being written." All twelve are written. A count over the tree on
+2026-10-05 gives each one, and every one sits in the import graph from
+`src/root.zig`, so the `test` step analyses all twelve.
+
+| Module | Lines | `test "` declarations |
+|---|---:|---:|
+| `src/schema/props/table.zig` | 2404 | 31 |
+| `src/schema/props/numbers.zig` | 799 | 29 |
+| `src/schema/props/ids.zig` | 756 | 23 |
+| `src/schema/props/enums.zig` | 962 | 20 |
+| `src/schema/update.zig` | 1022 | 19 |
+| `src/schema/props/colors.zig` | 550 | 16 |
+| `src/schema/props/vectors.zig` | 813 | 15 |
+| `src/schema/handlers.zig` | 367 | 11 |
+| `src/schema/props/option.zig` | 455 | 11 |
+| `src/schema/node.zig` | 550 | 9 |
+| `src/schema/props/flags.zig` | 456 | 5 |
+| `src/schema/props/strings.zig` | 750 | 4 |
+
+Eleven of the twelve modules in the table above carry no row in this document,
+and nothing in this document is evidence about them. What is missing is rows, not
+files. `src/schema/props/table.zig` is rowed in section 5. What each of the other
+eleven still needs before it can be ledgered is below.
 
 | Module | What it owns upstream | What it still needs before it can be ledgered |
 |---|---|---|
-| `src/schema/props/table.zig` | `PropertyId` at `lib.rs:893`, `PropertyValue` at `:856`, `Properties` at `:1071`, the private `Flag` at `:801-826`, and the comptime descriptor table | Every `PropertyId` row, every `PropertyValue` arm, the descriptor table and its exhaustiveness sweep. It also owns the two items this ledger routed out of range: `enum Flag` at `lib.rs:801-826`, which falls inside the `values.zig` range, and `PropertyValue` at `:856`, which begins one line past it. |
 | `src/schema/props/flags.zig` | the 18 flag properties at `lib.rs:802-819` and their 18 one-bit accessors | One row per flag, one row per accessor, and the bit-position rule. |
 | `src/schema/props/ids.zig` | the 15 node-id properties | One row per property, per accessor, and the borrow and invalidation statement on each returned reference. |
 | `src/schema/props/strings.zig` | the 21 string properties | One row per property, the owner rule for every allocation, and the `errdefer` on each setter that owns an allocation. |
@@ -618,27 +985,25 @@ document is evidence about them.
 | `src/schema/update.zig` | `TreeInfo` at `lib.rs:3169`, the deprecated `Tree` alias at `:3179`, `TreeUpdate` at `:3208`, `ActionData` at `:3305`, `ActionRequest` at `:3328` | One row per type and per field, and the deletion row for the `Tree` alias, which `docs/23-core-boundary.md` section 7.6 already requires. |
 | `src/schema/handlers.zig` | the three application traits at `lib.rs:3336`, `:3362` and `:3376` | One row per trait method, and the conversion of each borrowed argument into a named pointer. |
 
-Three items sit at the edge of this ledger and are named here rather than
-rowed, so no reader thinks they were missed.
+One item sits at the edge of this ledger and is named here rather than rowed,
+so no reader thinks it was missed.
 
 | Item | Where it sits | Why it has no row |
 |---|---|---|
-| `pub use uuid::Uuid` at `lib.rs:32` and `pub use geometry::{…}` at `lib.rs:35` | above the first in-scope range | The five geometry types are rowed under their own modules. The `Uuid` re-export is rowed in section 5 as dropped. |
-| `enum Flag` at `lib.rs:801-826` and its `mask` method | inside the `values.zig` range | Its port home is `src/schema/props/table.zig`, which is unsettled. |
-| `enum PropertyValue` at `lib.rs:856-891` | one line past the `values.zig` range | Its port home is `src/schema/props/table.zig`. |
+| `pub use uuid::Uuid` at `lib.rs:32` and `pub use geometry::{…}` at `lib.rs:35` | above the first in-scope range | The five geometry types are rowed under their own modules. The `Uuid` re-export is rowed in section 6 as dropped. |
 
-## 9. Reconciliation
+## 10. Reconciliation
 
-Three counts close this ledger, and each is a count of rows in this document.
+Four counts close this ledger, and each is a count of rows in this document.
 
 | Check | Number |
 |---|---:|
-| Rows in the deletions register, section 5 | 30 |
-| Rows in section 5 whose reason the dropping module does not record in its own doc comment | 9 |
-| Rows in the additions register, section 6 | 20 |
-| Rows in the invariants table, section 7 | 40 |
+| Rows in the deletions register, section 6 | 42 |
+| Rows in section 6 whose reason the dropping module does not record in its own doc comment | 12 |
+| Rows in the additions register, section 7 | 31 |
+| Rows in the invariants table, section 8 | 51 |
 
-Those nine rows are the one open item this ledger finds. They fall in eight
+Those twelve rows are the one open item this ledger finds. They fall in nine
 module doc comments: `affine.zig`, `vec2.zig`, `rect.zig`, `size.zig`,
-`role.zig`, `action.zig`, `ids.zig` and `values.zig`. Closing them means one
-line in each doc comment. It does not mean a new row here.
+`role.zig`, `action.zig`, `ids.zig`, `values.zig` and `props/table.zig`. Closing
+them means one line in each doc comment. It does not mean a new row here.

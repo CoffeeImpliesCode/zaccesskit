@@ -7,12 +7,15 @@
 //! adapters implement. This package re-implements all of that in Zig and
 //! links the platform half as C.
 //!
-//! **What this file is.** The module root. Everything a consumer reaches must
-//! be re-exported here. Apart from the two values below it carries no
-//! declarations, because the port has not started: the module layout, the
-//! naming of each shard, and the order in which they land are fixed by
-//! `docs/30-port-design.md`, and the milestones that add them are in
-//! `docs/40-plan.md`.
+//! **What this file is.** The module root. It declares three namespaces — the
+//! schema, the consumer half and the C ABI — and mirrors two values from
+//! `build.zig.zon`. `docs/30-port-design.md` record R2 gives the reasoning for
+//! keeping the three namespaces one level down rather than flattening them.
+//!
+//! **Why each namespace carries a `refAllDecls` test.** A `pub const` nothing
+//! references is a re-export the compiler may skip entirely, so `zig build test`
+//! once reported green having analysed two constants and two tests. Each
+//! namespace gets its reachability test in the same change that adds it.
 //!
 //! **Read first.** `docs/10-accesskit-core.md` is the upstream surface being
 //! ported. `docs/20-zio-and-zig-io.md` is the runtime the port is built on and

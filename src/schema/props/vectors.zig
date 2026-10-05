@@ -74,8 +74,18 @@ pub const ListPushError = std.mem.Allocator.Error || error{
     PropertyTagMismatch,
 };
 
-/// The property ids this module writes, all of them list-valued.
-const owned_property_ids = [_]PropertyId{
+/// The five properties this module writes, all of them list-valued, in upstream
+/// order: the two lengths of `length_vec_property_methods!` at
+/// `accesskit/src/lib.rs:2334-2385`, the two coordinate lists of
+/// `coord_vec_property_methods!` at `:2387-2425`, and `CustomActions` at
+/// `:2679-2682`.
+///
+/// This is the family's whole domain in one place, so
+/// `table.assertFamilyReachable` can hold it against the descriptor table. The
+/// eight `NodeId` lists are not here: they are `props/ids.zig`, and they reach
+/// this module's representation through `getNodeIdVec`, `setNodeIdVec` and
+/// `pushToNodeIdVec`.
+pub const property_ids = [_]PropertyId{
     .character_lengths,
     .word_starts,
     .character_positions,
@@ -84,11 +94,15 @@ const owned_property_ids = [_]PropertyId{
 };
 
 comptime {
-    // Two entries claiming one id would leave the second property with no
-    // accessor at all, and nothing else in the build sees it: this list is the
-    // only place the module's whole domain is written down.
-    for (owned_property_ids, 0..) |first, i| {
-        for (owned_property_ids[i + 1 ..], i + 1..) |second, j| {
+    // The two invocations carry two entries each and `CustomActions` is one,
+    // so five. A row added here without an upstream entry changes the number of
+    // functions this module publishes, so the count is the check.
+    std.debug.assert(property_ids.len == 5);
+    // The duplicate check is kept as its own claim because it is the one
+    // `assertFamilyReachable` cannot make on its own: a repeated id would let
+    // that function's completeness claim pass while a property went unclaimed.
+    for (property_ids, 0..) |first, i| {
+        for (property_ids[i + 1 ..], i + 1..) |second, j| {
             if (first == second) {
                 @compileError(std.fmt.comptimePrint(
                     "property {s} is claimed twice, at entries {d} and {d}",
@@ -97,6 +111,7 @@ comptime {
             }
         }
     }
+    table.assertFamilyReachable(.vectors, property_ids);
 }
 
 /// The UTF-8 byte length of every character in this text run, in run order, or
@@ -329,7 +344,14 @@ pub fn setCustomActions(
     // would then own a buffer the caller also owns, and the second release is a
     // double free. `CustomAction.init` copies the description, so each action is
     // built rather than copied.
-    try list.appendSlice(properties.gpa, values);
+    try list.ensureTotalCapacity(properties.gpa, values.len);
+    for (values) |value| {
+        list.appendAssumeCapacity(try CustomAction.init(
+            properties.gpa,
+            value.id,
+            value.description.items,
+        ));
+    }
     try properties.set(.custom_actions, table.propertyValueFrom(.custom_action_vec, list));
 }
 

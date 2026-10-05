@@ -116,7 +116,10 @@ pub fn mapError(source_path: []const u8, err: Error) DbusError {
         },
         error.TooManyChildren => .{ .name = error_failed, .message = message_too_many_children },
         error.IndexOutOfRange => .{ .name = error_failed, .message = message_index_too_big },
-        error.TooManyCharacters => .{ .name = error_failed, .message = message_too_many_characters },
+        error.TooManyCharacters => .{
+            .name = error_failed,
+            .message = message_too_many_characters,
+        },
         error.UnsupportedTextGranularity => .{
             .name = error_failed,
             .message = message_unsupported_granularity,
@@ -158,9 +161,18 @@ test "mapError answers a reply for every member of the error set" {
     // member rather than a line number in the switch above.
     try testing.expectEqual(error_unknown_object, mapError("/p", error.Defunct).name);
     try testing.expectEqual(error_unknown_object, mapError("/p", error.UnsupportedInterface).name);
-    try testing.expectEqualStrings("Too many children.", mapError("/p", error.TooManyChildren).message);
-    try testing.expectEqualStrings("Index is too big.", mapError("/p", error.IndexOutOfRange).message);
-    try testing.expectEqualStrings("Too many characters.", mapError("/p", error.TooManyCharacters).message);
+    try testing.expectEqualStrings(
+        "Too many children.",
+        mapError("/p", error.TooManyChildren).message,
+    );
+    try testing.expectEqualStrings(
+        "Index is too big.",
+        mapError("/p", error.IndexOutOfRange).message,
+    );
+    try testing.expectEqualStrings(
+        "Too many characters.",
+        mapError("/p", error.TooManyCharacters).message,
+    );
     try testing.expectEqualStrings(
         "Unsupported text granularity.",
         mapError("/p", error.UnsupportedTextGranularity).message,

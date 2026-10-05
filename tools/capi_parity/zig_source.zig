@@ -227,11 +227,19 @@ fn blankMultilineString(out: []u8, start: usize) usize {
     return i;
 }
 
-/// Blanks one quoted literal and returns the offset just past its closing
-/// quote. With `keep_body` the quotes and the text between them survive, which
-/// is what an `@"name"` escaped identifier needs.
+/// Blanks the inside of one quoted literal and returns the offset just past
+/// its closing quote. With `keep_body` the text between the quotes survives,
+/// which is what an `@"name"` escaped identifier needs: its body is an
+/// identifier, not a string.
+///
+/// **Both delimiters stay.** The interior is what carries a phantom symbol, so
+/// blanking it keeps a declaration-shaped string out of the scan, and leaving
+/// the quotes is what lets the scanner still see that a literal is there.
+/// `@export(&fn, .{ .name = "NAME" })` reads `NAME` out of the original source
+/// by offset, and the offset is only findable if the tokenizer sees the opening
+/// quote.
 fn blankQuoted(out: []u8, start: usize, quote: u8, keep_body: bool) usize {
-    out[start] = if (keep_body) quote else ' ';
+    out[start] = quote;
     var i = start + 1;
     while (i < out.len and out[i] != quote) : (i += 1) {
         if (out[i] == '\\' and i + 1 < out.len) {
@@ -242,7 +250,7 @@ fn blankQuoted(out: []u8, start: usize, quote: u8, keep_body: bool) usize {
         if (!keep_body and out[i] != '\n') out[i] = ' ';
     }
     if (i < out.len and out[i] == quote) {
-        out[i] = if (keep_body) quote else ' ';
+        out[i] = quote;
         i += 1;
     }
     return i;
@@ -311,7 +319,12 @@ fn tokenize(
             continue;
         }
         if (c == '@') {
-            try out.append(arena, .{ .text = masked[i .. i + 1], .start = i, .line = line, .kind = .at_sign });
+            try out.append(arena, .{
+                .text = masked[i .. i + 1],
+                .start = i,
+                .line = line,
+                .kind = .at_sign,
+            });
             i += 1;
             continue;
         }
@@ -383,7 +396,16 @@ fn scanSource(
             .at_sign => {
                 if (peekIdent(toks, i + 1)) |next| {
                     if (std.mem.eql(u8, next.text, "export")) {
-                        try readAtExport(arena, file, source, toks, i, currentGuard(&stack), sites, problems);
+                        try readAtExport(
+                            arena,
+                            file,
+                            source,
+                            toks,
+                            i,
+                            currentGuard(&stack),
+                            sites,
+                            problems,
+                        );
                     }
                 }
                 cond = .none;
@@ -398,7 +420,15 @@ fn scanSource(
                 if (std.mem.eql(u8, name, "export")) {
                     if (peekIdent(toks, i + 1)) |next| {
                         if (std.mem.eql(u8, next.text, "fn")) {
-                            try readExportFn(arena, file, toks, i, currentGuard(&stack), sites, problems);
+                            try readExportFn(
+                                arena,
+                                file,
+                                toks,
+                                i,
+                                currentGuard(&stack),
+                                sites,
+                                problems,
+                            );
                         }
                     }
                     cond = .none;
@@ -422,7 +452,8 @@ fn scanSource(
                             arena,
                             file,
                             tok.line,
-                            "a condition names a Guard member this sweep does not know; the guard cannot be read",
+                            "a condition names a Guard member this sweep does not know;" ++
+                                " the guard cannot be read",
                         );
                     }
                     cond = .none;
@@ -560,7 +591,10 @@ fn readAtExport(
         {
             const literal = toks[k + 2];
             const raw = source[literal.start..];
-            const close = std.mem.indexOfScalar(u8, raw, '"') orelse continue;
+            // The literal is blanked in the masked copy and read back from the
+            // original, so the search starts past the opening quote: index 0 is
+            // that quote, not the end of the name.
+            const close = std.mem.indexOfScalarPos(u8, raw, 1, '"') orelse continue;
             symbol = raw[1..close];
             continue;
         }
@@ -596,7 +630,8 @@ fn readAtExport(
                 arena,
                 file,
                 toks[at].line,
-                "`@export(` names a symbol its Zig function does not carry; the C ABI name and the Zig name disagree",
+                "`@export(` names a symbol its Zig function does not carry;" ++
+                    " the C ABI name and the Zig name disagree",
             );
             return;
         }
@@ -621,7 +656,7 @@ test "mask blanks comments, literals and multiline strings, and keeps offsets" {
         \\const b =
         \\    \\line one export fn fourth_phantom
         \\    \\
-        ;
+    ;
     const out = try mask(gpa, source);
     defer gpa.free(out);
     try std.testing.expectEqual(source.len, out.len);
@@ -715,7 +750,10 @@ test "an @export whose name disagrees with its function is a problem" {
     const source =
         \\comptime {
         \\    if (Guard.unix.declaresOn(this_platform)) {
-        \\        @export(&accesskit_unix_adapter_new, .{ .name = "accesskit_unix_adapter_new_typo" });
+        \\        @export(
+        \\            &accesskit_unix_adapter_new,
+        \\            .{ .name = "accesskit_unix_adapter_new_typo" },
+        \\        );
         \\    }
         \\}
     ;

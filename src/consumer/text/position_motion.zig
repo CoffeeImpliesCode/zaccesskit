@@ -86,10 +86,16 @@ const testing = std.testing;
 /// **`error.TreeCycle`** and **`error.NoSuchNode`** come from the run walk.
 /// Allocates nothing.
 pub fn forwardToFormatStart(position_value: Position) QueryError!Position {
-    var runs = try position_inner.followingTextRuns(position_value.inner.node, position_value.root_node);
+    var runs = try position_inner.followingTextRuns(
+        position_value.inner.node,
+        position_value.root_node,
+    );
     while (try runs.next()) |run| {
         if (!position_inner.textAttributesDiffer(position_value.inner.node, run)) continue;
-        return .{ .root_node = position_value.root_node, .inner = .{ .node = run, .character_index = 0 } };
+        return .{
+            .root_node = position_value.root_node,
+            .inner = .{ .node = run, .character_index = 0 },
+        };
     }
     return documentEnd(position_value);
 }
@@ -105,7 +111,8 @@ pub fn forwardToFormatStart(position_value: Position) QueryError!Position {
 /// the bias. Allocates nothing.
 pub fn forwardToFormatEnd(position_value: Position) QueryError!Position {
     const start = try forwardToFormatStart(position_value);
-    return .{ .root_node = position_value.root_node, .inner = try position_inner.biasedToEnd(start.inner, position_value.root_node) };
+    const end_inner = try position_inner.biasedToEnd(start.inner, position_value.root_node);
+    return .{ .root_node = position_value.root_node, .inner = end_inner };
 }
 
 /// The previous format run's start at or before `position`: character zero of
@@ -128,7 +135,10 @@ pub fn backwardToFormatStart(position_value: Position) QueryError!Position {
         };
         if (try position.isFormatStart(candidate)) return candidate;
     }
-    var runs = try position_inner.precedingTextRuns(position_value.inner.node, position_value.root_node);
+    var runs = try position_inner.precedingTextRuns(
+        position_value.inner.node,
+        position_value.root_node,
+    );
     while (try runs.next()) |run| {
         const candidate: Position = .{
             .root_node = position_value.root_node,
@@ -199,7 +209,8 @@ pub fn forwardToWordStart(position_value: Position) QueryError!Position {
 /// the bias. Allocates nothing.
 pub fn forwardToWordEnd(position_value: Position) QueryError!Position {
     const start = try forwardToWordStart(position_value);
-    return .{ .root_node = position_value.root_node, .inner = try position_inner.biasedToEnd(start.inner, position_value.root_node) };
+    const end_inner = try position_inner.biasedToEnd(start.inner, position_value.root_node);
+    return .{ .root_node = position_value.root_node, .inner = end_inner };
 }
 
 /// The previous word start at or before `position`: the listed word start below
@@ -222,7 +233,10 @@ pub fn backwardToWordStart(position_value: Position) QueryError!Position {
     if (slot.index > 0) {
         return .{
             .root_node = position_value.root_node,
-            .inner = .{ .node = position_value.inner.node, .character_index = starts[slot.index - 1] },
+            .inner = .{
+                .node = position_value.inner.node,
+                .character_index = starts[slot.index - 1],
+            },
         };
     }
 
@@ -234,7 +248,10 @@ pub fn backwardToWordStart(position_value: Position) QueryError!Position {
         if (try position.isParagraphStart(candidate)) return candidate;
     }
 
-    var runs = try position_inner.precedingTextRuns(position_value.inner.node, position_value.root_node);
+    var runs = try position_inner.precedingTextRuns(
+        position_value.inner.node,
+        position_value.root_node,
+    );
     while (try runs.next()) |run| {
         const run_starts = schema.vectors.wordStarts(&run.data().properties);
         if (run_starts.len != 0) {
@@ -332,7 +349,8 @@ pub fn forwardToParagraphStart(position_value: Position) QueryError!Position {
     while (true) {
         current = try forwardToLineStart(current);
         if (try position.isDocumentEnd(current)) return current;
-        if (position_inner.isParagraphEnd(try position_inner.biasedToEnd(current.inner, current.root_node))) {
+        const run_end = try position_inner.biasedToEnd(current.inner, current.root_node);
+        if (position_inner.isParagraphEnd(run_end)) {
             return current;
         }
         if (step == step_bound) return error.TreeCycle;
@@ -421,7 +439,8 @@ pub fn backwardToPageStart(position_value: Position) QueryError!Position {
 /// **`error.NoSuchNode`** when the document declares no text run, and
 /// **`error.TreeCycle`** from the descendant scan. Allocates nothing.
 pub fn documentEnd(position_value: Position) QueryError!Position {
-    return .{ .root_node = position_value.root_node, .inner = try position_inner.documentEndInner(position_value.root_node) };
+    const end_inner = try position_inner.documentEndInner(position_value.root_node);
+    return .{ .root_node = position_value.root_node, .inner = end_inner };
 }
 
 /// The start of the document. Upstream `Position::document_start` at
@@ -431,7 +450,8 @@ pub fn documentEnd(position_value: Position) QueryError!Position {
 /// upstream's `.unwrap()` at `text.rs:1409`, and **`error.TreeCycle`** from the
 /// descendant scan. Allocates nothing.
 pub fn documentStart(position_value: Position) QueryError!Position {
-    return .{ .root_node = position_value.root_node, .inner = try position_inner.documentStartInner(position_value.root_node) };
+    const start_inner = try position_inner.documentStartInner(position_value.root_node);
+    return .{ .root_node = position_value.root_node, .inner = start_inner };
 }
 
 comptime {
@@ -498,7 +518,11 @@ fn parentOf(parent: NodeId, index: usize) ParentAndIndex {
     return .{ .parent_id = fullId(parent), .index = index };
 }
 
-fn buildRun(text: []const u8, byte_lengths: []const u8, extras: RunExtras) std.mem.Allocator.Error!Node {
+fn buildRun(
+    text: []const u8,
+    byte_lengths: []const u8,
+    extras: RunExtras,
+) std.mem.Allocator.Error!Node {
     var run = Node.init(test_allocator, .text_run);
     errdefer run.deinit();
     if (extras.font_size) |size| try schema.numbers.setFontSize(&run.properties, size);
@@ -516,6 +540,10 @@ fn put(state: *TreeState, id: NodeId, parent: ?ParentAndIndex, node: *Node) !voi
         .parent_and_index = parent,
         .data = node.*,
     });
+    // SAFETY: the map copied `node` by value on the lines above, so the
+    // caller-owned slot no longer owns the properties, and no statement after
+    // it reads `node`. A read anyway traps in Debug rather than aliasing the
+    // stored copy with two owners.
     node.* = undefined;
 }
 
@@ -674,7 +702,14 @@ test "forwardToWordStart takes the entry after the one the position is on" {
     defer state.deinit(test_allocator);
     _ = try addDocumentRoot(&state, &.{localId(2)});
     // Word starts at characters zero, two and four.
-    _ = try addRun(&state, localId(2), 0, "ab cd ef", &.{ 1, 1, 1, 1, 1, 1, 1 }, .{ .word_starts = &.{ 0, 2, 4 } });
+    _ = try addRun(
+        &state,
+        localId(2),
+        0,
+        "ab cd ef",
+        &.{ 1, 1, 1, 1, 1, 1, 1 },
+        .{ .word_starts = &.{ 0, 2, 4 } },
+    );
 
     // A position already on the second word start advances to the third, so this
     // is a forward movement and not an identity on a boundary.
@@ -686,7 +721,14 @@ test "forwardToWordStart reports a gap as the place the next word begins" {
     var state = testState();
     defer state.deinit(test_allocator);
     _ = try addDocumentRoot(&state, &.{localId(2)});
-    _ = try addRun(&state, localId(2), 0, "ab cd ef", &.{ 1, 1, 1, 1, 1, 1, 1 }, .{ .word_starts = &.{ 0, 2, 4 } });
+    _ = try addRun(
+        &state,
+        localId(2),
+        0,
+        "ab cd ef",
+        &.{ 1, 1, 1, 1, 1, 1, 1 },
+        .{ .word_starts = &.{ 0, 2, 4 } },
+    );
 
     // Character three is in the gap between the second and third word starts, so
     // the insertion point is the third entry.
@@ -743,7 +785,14 @@ test "backwardToWordStart steps to the entry below the one the position is on" {
     var state = testState();
     defer state.deinit(test_allocator);
     _ = try addDocumentRoot(&state, &.{localId(2)});
-    _ = try addRun(&state, localId(2), 0, "ab cd", &.{ 1, 1, 1, 1 }, .{ .word_starts = &.{ 0, 3 } });
+    _ = try addRun(
+        &state,
+        localId(2),
+        0,
+        "ab cd",
+        &.{ 1, 1, 1, 1 },
+        .{ .word_starts = &.{ 0, 3 } },
+    );
 
     // A position sitting **on** the second word start moves back to the first.
     // Both arms of the match at `text.rs:443-446` hand back the insertion index
@@ -761,7 +810,14 @@ test "backwardToWordStart walks back into the preceding run's last word start" {
     var state = testState();
     defer state.deinit(test_allocator);
     _ = try addDocumentRoot(&state, &.{ localId(2), localId(3) });
-    _ = try addRun(&state, localId(2), 0, "ab cd", &.{ 1, 1, 1, 1 }, .{ .word_starts = &.{ 0, 3 } });
+    _ = try addRun(
+        &state,
+        localId(2),
+        0,
+        "ab cd",
+        &.{ 1, 1, 1, 1 },
+        .{ .word_starts = &.{ 0, 3 } },
+    );
     _ = try addRun(&state, localId(3), 1, "ef", &.{ 1, 1 }, .{});
 
     // The second run lists no word start, so the search leaves it and takes the
@@ -842,7 +898,10 @@ test "backwardToLineStart reports LineChainCycle on a previous_on_line cycle" {
     try setRunLink(&state, localId(2), localId(3), null);
     try setRunLink(&state, localId(3), localId(2), null);
 
-    try testing.expectError(error.LineChainCycle, backwardToLineStart(try at(&state, localId(2), 0)));
+    try testing.expectError(
+        error.LineChainCycle,
+        backwardToLineStart(try at(&state, localId(2), 0)),
+    );
 }
 
 // --- Paragraph -----------------------------------------------------------------
@@ -954,15 +1013,21 @@ test "forwardToPageStart and forwardToPageEnd both report the document end" {
 
     // A text document has one page, so a forward page movement has nowhere to go
     // but the end. Upstream says so at `text.rs:554` and `text.rs:558`.
-    try testing.expect(try position.isDocumentEnd(try forwardToPageStart(try at(&state, localId(2), 0))));
-    try testing.expect(try position.isDocumentEnd(try forwardToPageEnd(try at(&state, localId(2), 0))));
+    try testing.expect(try position.isDocumentEnd(
+        try forwardToPageStart(try at(&state, localId(2), 0)),
+    ));
+    try testing.expect(try position.isDocumentEnd(
+        try forwardToPageEnd(try at(&state, localId(2), 0)),
+    ));
 }
 
 test "backwardToPageStart reports the document start" {
     var state = try documentWithRuns(2);
     defer state.deinit(test_allocator);
 
-    try testing.expect(try position.isDocumentStart(try backwardToPageStart(try at(&state, localId(3), 0))));
+    try testing.expect(try position.isDocumentStart(
+        try backwardToPageStart(try at(&state, localId(3), 0)),
+    ));
 }
 
 test "the page movements report NoSuchNode for a document with no text run" {

@@ -77,6 +77,50 @@ comptime {
     std.debug.assert(@hasField(PropertyValueTag, "usize_"));
 }
 
+/// The 22 properties this family publishes a getter, a setter and a clearer
+/// for, in upstream order: the eleven `f64` of `f64_property_methods!` at
+/// `accesskit/src/lib.rs:2207-2242`, the two `f32` of `f32_property_methods!`
+/// at `:2243-2250`, then the nine `usize` of `usize_property_methods!` at
+/// `:2251-2314`.
+///
+/// This is the family's whole domain in one place, so
+/// `table.assertFamilyReachable` can hold it against the descriptor table. The
+/// three widths are one list rather than three because the claim is about
+/// properties rather than payload widths, and the width of each row is already
+/// pinned by the descriptor row this list is checked against.
+pub const property_ids = [_]PropertyId{
+    .scroll_x,
+    .scroll_x_min,
+    .scroll_x_max,
+    .scroll_y,
+    .scroll_y_min,
+    .scroll_y_max,
+    .numeric_value,
+    .min_numeric_value,
+    .max_numeric_value,
+    .numeric_value_step,
+    .numeric_value_jump,
+    .font_size,
+    .font_weight,
+    .row_count,
+    .column_count,
+    .row_index,
+    .column_index,
+    .row_span,
+    .column_span,
+    .level,
+    .size_of_set,
+    .position_in_set,
+};
+
+comptime {
+    // The three invocations carry eleven, two and nine entries. A row added
+    // here without an upstream entry changes the number of functions this
+    // module publishes, so the count is the check.
+    std.debug.assert(property_ids.len == 22);
+    table.assertFamilyReachable(.numbers, property_ids);
+}
+
 /// Reads the `f64` arm. A store holding another arm answers `null`, which is what
 /// `get_f64_property` does when the `PropertyValue::F64` match fails
 /// (`accesskit/src/lib.rs:1251-1255`).

@@ -37,16 +37,10 @@
 
 const std = @import("std");
 
-const action_request = @import("../../capi/action_request.zig");
 const allocation = @import("../../capi/allocation.zig");
 const boundary = @import("../../capi/boundary.zig");
-const consumer = @import("../../consumer/root.zig");
 
 const adapter = @import("adapter.zig");
-const change_handler = @import("change_handler.zig");
-const elements = @import("elements.zig");
-const filters = @import("filters.zig");
-const queued_events = @import("queued_events.zig");
 const subclass = @import("subclass.zig");
 const syscalls = @import("syscalls.zig");
 

@@ -382,7 +382,10 @@ pub const Handler = struct {
     /// **Errors.** `error.OutOfMemory` and `QueryError`.
     fn insertTextChangeIfNeeded(self: *Handler, node: NodeRef) !void {
         if (consumer.node_ref.properties.role(node) != .text_run) return;
-        const parent = try consumer.node_ref.hierarchy.filteredParent(node, filters.filter_fn) orelse return;
+        const parent = try consumer.node_ref.hierarchy.filteredParent(
+            node,
+            filters.filter_fn,
+        ) orelse return;
         try self.insertTextChangeForParent(parent);
     }
 
@@ -430,7 +433,11 @@ pub const Handler = struct {
     /// holds gets a fresh one that the event keeps alive.
     ///
     /// **Errors.** `error.OutOfMemory`.
-    fn detachedSlotFor(self: *Handler, node_id: FullNodeId, state: *const TreeState) HandlerError!*const ProviderSlot {
+    fn detachedSlotFor(
+        self: *Handler,
+        node_id: FullNodeId,
+        state: *const TreeState,
+    ) HandlerError!*const ProviderSlot {
         if (state.nodeById(node_id) != null) return self.registry.slotFor(self.platform, node_id);
         const slot = try self.registry.detachedSlotFor(self.platform, node_id);
         self.queue.takeOwnership(slot) catch |err| {
@@ -771,7 +778,10 @@ test "one selected child takes the optimized selection path" {
     try testing.expectEqual(@as(usize, 2), queue.len());
     try testing.expectEqual(EventId.selection_item_element_selected, queue.at(0).?.simple.event_id);
     const change = queue.at(1).?;
-    try testing.expectEqual(syscalls.PropertyId.selection_item_is_selected, change.property_changed.property_id);
+    try testing.expectEqual(
+        syscalls.PropertyId.selection_item_is_selected,
+        change.property_changed.property_id,
+    );
     try testing.expectEqual(false, change.property_changed.old.bool_);
     try testing.expectEqual(true, change.property_changed.new.bool_);
 }
@@ -849,8 +859,9 @@ test "more changes than the limit invalidate the container instead of enumeratin
     const state = tree.stateOf();
     option_index = 0;
     while (option_index < option_count) : (option_index += 1) {
-        const option = state.nodeById(state.rootId().withSameTree(.{ .value = 3 + option_index })) orelse
-            return error.MissingNode;
+        const option = state.nodeById(
+            state.rootId().withSameTree(.{ .value = 3 + option_index }),
+        ) orelse return error.MissingNode;
         try handler.nodeAdded(option);
     }
     try handler.enqueueSelectionChanges(state);

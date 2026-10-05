@@ -70,12 +70,10 @@ const CActionRequest = boundary.CActionRequest;
 const CTreeUpdate = boundary.CTreeUpdate;
 const TreeUpdateFactory = boundary.TreeUpdateFactory;
 
-const FullNodeId = consumer.tree_index.FullNodeId;
 const JInt = values.JInt;
 const JFloat = jni.JFloat;
 const JniTable = jni.JniTable;
 const JObject = jni.JObject;
-const JValue = jni.JValue;
 const NodeIdMap = node_id_map.NodeIdMap;
 const NodeRef = consumer.node_id.NodeRef;
 const PlatformAction = platform_action.PlatformAction;
@@ -85,8 +83,6 @@ const Tree = consumer.tree.Tree;
 const TreeState = consumer.tree_state.TreeState;
 
 const geometry = consumer.node_ref.geometry;
-const hierarchy = consumer.node_ref.hierarchy;
-const predicates = consumer.node_ref.predicates;
 const properties = consumer.node_ref.properties;
 const set_state = consumer.node_ref.set_state;
 const text_position = consumer.text.position;

@@ -107,12 +107,10 @@ const tree_state = @import("../tree_state.zig");
 const FilteredChildrenIterator = @import("../iterators/children.zig").FilteredChildrenIterator;
 const FilteredSiblingsIterator = @import("../iterators/following.zig").FilteredSiblingsIterator;
 
-const FilterResult = @import("../filter.zig").FilterResult;
 const FullNodeId = tree_index.FullNodeId;
 const NodeRef = node_ids.NodeRef;
 const QueryError = tree_state.QueryError;
 const TextPosition = schema.TextPosition;
-const treeWalkStepBound = tree_state.treeWalkStepBound;
 
 const assert = std.debug.assert;
 const testing = std.testing;
@@ -339,17 +337,40 @@ pub fn comparable(
 pub fn textAttributesDiffer(a: NodeRef, b: NodeRef) bool {
     const left = a.data().properties;
     const right = b.data().properties;
-    if (!std.mem.eql(u8, schema.strings.fontFamily(&left) orelse "", schema.strings.fontFamily(&right) orelse "")) return true;
-    if (!std.mem.eql(u8, schema.strings.language(&left) orelse "", schema.strings.language(&right) orelse "")) return true;
+    if (!std.mem.eql(
+        u8,
+        schema.strings.fontFamily(&left) orelse "",
+        schema.strings.fontFamily(&right) orelse "",
+    )) return true;
+    if (!std.mem.eql(
+        u8,
+        schema.strings.language(&left) orelse "",
+        schema.strings.language(&right) orelse "",
+    )) return true;
     if (!sameFloat(schema.numbers.fontSize(&left), schema.numbers.fontSize(&right))) return true;
-    if (!sameFloat(schema.numbers.fontWeight(&left), schema.numbers.fontWeight(&right))) return true;
-    if (!std.meta.eql(schema.colors.backgroundColor(&left), schema.colors.backgroundColor(&right))) return true;
-    if (!std.meta.eql(schema.colors.foregroundColor(&left), schema.colors.foregroundColor(&right))) return true;
+    if (!sameFloat(
+        schema.numbers.fontWeight(&left),
+        schema.numbers.fontWeight(&right),
+    )) return true;
+    if (!std.meta.eql(
+        schema.colors.backgroundColor(&left),
+        schema.colors.backgroundColor(&right),
+    )) return true;
+    if (!std.meta.eql(
+        schema.colors.foregroundColor(&left),
+        schema.colors.foregroundColor(&right),
+    )) return true;
     if (!std.meta.eql(schema.colors.overline(&left), schema.colors.overline(&right))) return true;
-    if (!std.meta.eql(schema.colors.strikethrough(&left), schema.colors.strikethrough(&right))) return true;
+    if (!std.meta.eql(
+        schema.colors.strikethrough(&left),
+        schema.colors.strikethrough(&right),
+    )) return true;
     if (!std.meta.eql(schema.colors.underline(&left), schema.colors.underline(&right))) return true;
     if (!std.meta.eql(schema.enums.textAlign(&left), schema.enums.textAlign(&right))) return true;
-    if (!std.meta.eql(schema.enums.verticalOffset(&left), schema.enums.verticalOffset(&right))) return true;
+    if (!std.meta.eql(
+        schema.enums.verticalOffset(&left),
+        schema.enums.verticalOffset(&right),
+    )) return true;
     return false;
 }
 
@@ -689,7 +710,7 @@ test "upgrade answers null for a node that is not a text run" {
     const label = Node.init(test_allocator, .label);
     try put(&state, localId(1), null, label);
 
-    const weak = TextPosition{ .node_id = localId(1), .character_index = 0 };
+    const weak: TextPosition = .{ .node_id = localId(1), .character_index = 0 };
     try testing.expect(upgrade(&state, weak, fullId(localId(1))) == null);
     try testing.expect(clampedUpgrade(&state, weak, fullId(localId(1))) == null);
 }
@@ -702,10 +723,10 @@ test "upgrade answers null for an index past the end of the run" {
     // Two characters, so index two is the end of the run and index three is past
     // it. A port that compared against `character_index < len` would reject the
     // end of the run, which is a position the whole layer relies on.
-    const at_end = TextPosition{ .node_id = localId(1), .character_index = 2 };
+    const at_end: TextPosition = .{ .node_id = localId(1), .character_index = 2 };
     try testing.expect(upgrade(&state, at_end, fullId(localId(1))) != null);
 
-    const past_end = TextPosition{ .node_id = localId(1), .character_index = 3 };
+    const past_end: TextPosition = .{ .node_id = localId(1), .character_index = 3 };
     try testing.expect(upgrade(&state, past_end, fullId(localId(1))) == null);
 }
 
@@ -714,7 +735,7 @@ test "clampedUpgrade pulls an index past the end back to the end of the run" {
     defer state.deinit(test_allocator);
     try put(&state, localId(1), null, try runWith("ab", &.{ 1, 1 }));
 
-    const past_end = TextPosition{ .node_id = localId(1), .character_index = 9 };
+    const past_end: TextPosition = .{ .node_id = localId(1), .character_index = 9 };
     const clamped = clampedUpgrade(&state, past_end, fullId(localId(1))) orelse
         return error.NodeMissingFromFixture;
     try testing.expectEqual(@as(usize, 2), clamped.character_index);
@@ -845,7 +866,10 @@ test "isParagraphEnd answers false for a run with no value rather than unwrappin
     errdefer run.deinit();
     try put(&state, localId(1), null, run);
 
-    try testing.expect(!isParagraphEnd(.{ .node = try refOf(&state, localId(1)), .character_index = 0 }));
+    try testing.expect(!isParagraphEnd(.{
+        .node = try refOf(&state, localId(1)),
+        .character_index = 0,
+    }));
 }
 
 test "isDocumentStart and isDocumentEnd answer only at the two outer ends" {

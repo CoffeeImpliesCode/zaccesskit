@@ -739,5 +739,8 @@ test "the thirteen interfaces hold fifty-one method slots between them" {
     inline for (implemented_interfaces) |Interface| {
         total += @typeInfo(Interface.VTable).@"struct".fields.len - 1;
     }
-    try std.testing.expectEqual(@as(usize, 4 + 6 + 2 + 2 + 1 + 3 + 7 + 1 + 5 + 3 + 6 + 3 + 9), total);
+    try std.testing.expectEqual(
+        @as(usize, 4 + 6 + 2 + 2 + 1 + 3 + 7 + 1 + 5 + 3 + 6 + 3 + 9),
+        total,
+    );
 }

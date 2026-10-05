@@ -415,7 +415,8 @@ comptime {
     // `src/schema/update.zig:562-563` already pins the same two numbers, so a
     // disagreement between the two modules is a compile error in one of them.
     if (@sizeOf(ActionDataPayload) != @sizeOf(schema.TextSelection)) @compileError(
-        "the payload union must be exactly its widest member, or a member sits at a non-zero offset",
+        "the payload union must be exactly its widest member, " ++
+            "or a member sits at a non-zero offset",
     );
     if (@alignOf(ActionDataPayload) != @alignOf(schema.TextSelection)) @compileError(
         "the payload union must carry the strictest alignment among its members",
@@ -588,7 +589,10 @@ test "the constructor allocates one handle and leaks nothing when it fails" {
 
     var fail_index: usize = 0;
     while (fail_index <= first_success_index) : (fail_index += 1) {
-        var failing: std.testing.FailingAllocator = .init(testing.allocator, .{ .fail_index = fail_index });
+        var failing: std.testing.FailingAllocator = .init(
+            testing.allocator,
+            .{ .fail_index = fail_index },
+        );
         const outcome = customActionCreate(failing.allocator(), 5, "");
         if (fail_index == 0) {
             try testing.expectError(error.OutOfMemory, outcome);
@@ -612,7 +616,10 @@ test "every refused description copy leaves the previous one in place" {
         defer releaseCustomAction(testing.allocator, action);
         try setDescription(action, testing.allocator, "first");
 
-        var failing: std.testing.FailingAllocator = .init(testing.allocator, .{ .fail_index = fail_index });
+        var failing: std.testing.FailingAllocator = .init(
+            testing.allocator,
+            .{ .fail_index = fail_index },
+        );
         const outcome = setDescription(action, failing.allocator(), "second");
         if (fail_index == 0) {
             try testing.expectError(error.OutOfMemory, outcome);

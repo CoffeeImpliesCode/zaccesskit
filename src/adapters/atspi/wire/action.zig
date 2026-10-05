@@ -37,7 +37,11 @@ pub const Action = struct {
     /// `Action` that borrows them.
     ///
     /// **Errors.** This function does not fail.
-    pub fn init(localized_name: []const u8, description: []const u8, key_binding: []const u8) Action {
+    pub fn init(
+        localized_name: []const u8,
+        description: []const u8,
+        key_binding: []const u8,
+    ) Action {
         return .{
             .localized_name = localized_name,
             .description = description,
@@ -60,6 +64,17 @@ pub const Action = struct {
         try writeString(w, self.description);
         try writeString(w, self.key_binding);
     }
+};
+
+/// The signature goose derives for `Action` from the three string members
+/// alone, checked against the declared constant. A port that declared `(sss)`
+/// over a differently ordered struct would pass the first test and fail this
+/// one.
+const derived_signature: [:0]const u8 = blk: {
+    const len = goose.core.value.Value.reprLength(Action);
+    var buf: [len]u8 = undefined;
+    goose.core.value.Value.getRepr(Action, len, 0, &buf);
+    break :blk buf[0..len :0];
 };
 
 /// Writes one D-Bus string: four-aligned, a `u32` byte count, the bytes, a NUL.

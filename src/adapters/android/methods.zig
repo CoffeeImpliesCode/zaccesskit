@@ -18,6 +18,9 @@
 //! **A name alone does not identify a method here.** `GetMethodID` takes three
 //! strings, and three names in this set are shared:
 //!
+//! The `obtain` and `<init>` rows below exceed 100 columns. A Markdown table
+//! row is one indivisible line, so neither can wrap without breaking the table.
+//!
 //! | Name | Rows | Why |
 //! |---|---|---|
 //! | `obtain` | 3 | `AccessibilityEvent.obtain(int)`, `AccessibilityNodeInfo.obtain(View, int)` and `RangeInfo.obtain(int, float, float, float)` are three unrelated factories |
@@ -549,11 +552,13 @@ test "every registered native method carries the signature the map records" {
         .{ .name = "runCallback", .signature = "(Landroid/view/View;J)V" },
         .{
             .name = "createAccessibilityNodeInfo",
-            .signature = "(JLandroid/view/View;I)Landroid/view/accessibility/AccessibilityNodeInfo;",
+            .signature = "(JLandroid/view/View;I)" ++
+                "Landroid/view/accessibility/AccessibilityNodeInfo;",
         },
         .{
             .name = "findFocus",
-            .signature = "(JLandroid/view/View;I)Landroid/view/accessibility/AccessibilityNodeInfo;",
+            .signature = "(JLandroid/view/View;I)" ++
+                "Landroid/view/accessibility/AccessibilityNodeInfo;",
         },
         .{
             .name = "performAction",

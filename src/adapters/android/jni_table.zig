@@ -972,7 +972,12 @@ fn inertClass(env: JniEnv, name: [:0]const u8) JClass {
     return null;
 }
 
-fn inertMethodId(env: JniEnv, class: JClass, name: [:0]const u8, signature: [:0]const u8) JMethodId {
+fn inertMethodId(
+    env: JniEnv,
+    class: JClass,
+    name: [:0]const u8,
+    signature: [:0]const u8,
+) JMethodId {
     _ = env;
     _ = class;
     _ = name;
@@ -1450,7 +1455,10 @@ test "the real binding over a null environment answers the JNI default" {
     try testing.expectEqual(@as(JObject, null), table.findClass("android/view/View"));
     try testing.expectEqual(@as(JObject, null), table.getMethodId(null, "a", "()V"));
     try testing.expectEqual(@as(JObject, null), table.getStaticMethodId(null, "a", "()V"));
-    try testing.expectEqual(@as(JObject, null), table.getStaticFieldId(null, "a", "Ljava/lang/String;"));
+    try testing.expectEqual(
+        @as(JObject, null),
+        table.getStaticFieldId(null, "a", "Ljava/lang/String;"),
+    );
     try testing.expectEqual(@as(JObject, null), table.getStaticObjectField(null, null));
     try testing.expectEqual(@as(JObject, null), table.callObjectMethod(null, null, &.{}));
     try testing.expectEqual(@as(JObject, null), table.callStaticObjectMethod(null, null, &.{}));
@@ -1594,7 +1602,10 @@ test "the inert table answers the JNI default without an environment" {
     try testing.expectEqual(@as(JObject, null), table.findClass("android/view/View"));
     try testing.expectEqual(@as(JObject, null), table.getMethodId(null, "a", "()V"));
     try testing.expectEqual(@as(JObject, null), table.getStaticMethodId(null, "a", "()V"));
-    try testing.expectEqual(@as(JObject, null), table.getStaticFieldId(null, "a", "Ljava/lang/String;"));
+    try testing.expectEqual(
+        @as(JObject, null),
+        table.getStaticFieldId(null, "a", "Ljava/lang/String;"),
+    );
     try testing.expectEqual(@as(JObject, null), table.getStaticObjectField(null, null));
     try testing.expectEqual(@as(JObject, null), table.callObjectMethod(null, null, &.{}));
     try testing.expectEqual(@as(JObject, null), table.callStaticObjectMethod(null, null, &.{}));

@@ -27,20 +27,27 @@
 //! it reached. The seed is `random.default_seed` unless a sweep names another,
 //! and `Random` is a pure function of the seed, so the same seed and the same
 //! case number reach the same inputs on every host. To replay one case, run
-//! this file with the printed seed:
+//! the harness with the printed seed:
 //!
 //! ```text
-//! zig test test/fuzz/property_table.zig
+//! zig build fuzz
 //! ```
 //!
-//! The fuzz target replays its committed corpus through the same entry point
-//! under any runner, so the corpus is exercised by a plain `zig test` and not
-//! only by `zig build fuzz`.
+//! That is a build step and not a bare `zig test` on this file, and the reason
+//! is the module root. `zig test` on this file reports `import of file outside
+//! module path` for every `@import("../../src/...")` here, because a module
+//! reaches only paths under the directory that holds its root source file.
+//! `fuzz_root.zig` sits at the repository root for that reason and imports
+//! this file, so `zig test fuzz_root.zig` is what compiles it.
 //!
-//! **What is not here.** `src/capi/` does not exist, so the harness checks the
-//! header's recorded numbers rather than a compiled C fixture, and the
-//! `accesskit_opt_*` rows have no Zig counterpart to compare against. Both are
-//! named in `abi.zig` rather than glossed over.
+//! The committed corpus is replayed through the same entry point the fuzzer
+//! drives, so `zig build test` exercises it and not only `zig build fuzz`.
+//!
+//! **What is not here.** The harness reads the conformance table out of
+//! `include/zaccesskit.h` and checks every row it can check against a Zig type
+//! in the schema layer. It compiles no C, so a header row with no Zig
+//! counterpart is reported and not verified. `zig build capi-parity` is the
+//! step that compares the header against what `src/capi/` exports.
 
 const std = @import("std");
 
@@ -50,18 +57,15 @@ const abi = @import("abi.zig");
 
 const table = @import("../../src/schema/props/table.zig");
 const ids = @import("../../src/schema/ids.zig");
-const values = @import("../../src/schema/values.zig");
 const action_mod = @import("../../src/schema/action.zig");
 const node_enums = @import("../../src/schema/node_enums.zig");
 const tree_index = @import("../../src/consumer/tree_index.zig");
 
 const testing = std.testing;
-const assert = std.debug.assert;
 
 const Random = random.Random;
 const SliceForm = generate.SliceForm;
 
-const PropertyValue = table.PropertyValue;
 const PropertyValueTag = table.PropertyValueTag;
 const PropertyId = table.PropertyId;
 const Properties = table.Properties;
@@ -107,7 +111,7 @@ pub const max_input_len: usize = 256;
 /// Each entry is embedded at compile time, so a missing case is a build failure
 /// rather than a skip. `corpus_lengths` pins the length of each, so a truncated
 /// merge fails instead of replaying a shorter input.
-pub const corpus_lengths = [_]usize{ 0, 64, 192 };
+pub const corpus_lengths = [_]usize{ 0, 256, 768 };
 
 pub const corpus = [_][]const u8{
     @embedFile("corpus/case_01_empty.bin"),
@@ -240,7 +244,7 @@ test "a byte at or past the last property names no property and never a default"
         }
     }
     try testing.expectEqual(@as(usize, 256), cases);
-    try testing.expectEqual(@as(u8, 87), @intCast(table.propertyIdCount));
+    try testing.expectEqual(@as(u8, 87), @as(u8, @intCast(table.propertyIdCount)));
     std.debug.print(
         "[tree-index/property-table] propertyIdFromInt: {d} bytes, " ++
             "{d} refused at or past {d}\n",
@@ -323,7 +327,7 @@ test "a mask bit above the last member yields no member and never overflows" {
         try checkFlagMask(fixed[index]);
     }
     while (index < action_mod.actionCount * 8) : (index += 1) {
-        const mask = source.next();
+        const mask: u32 = @truncate(source.next());
         cases += 1;
         try checkActionMask(mask);
         try checkFlagMask(mask);
@@ -339,7 +343,7 @@ fn checkActionMask(mask: u32) !void {
     const members = action_mod.actionSetMembers(mask, &buffer);
     try testing.expect(members.len <= action_mod.actionCount);
     var expect_present = false;
-    for (members, 0..) |member, _| {
+    for (members) |member| {
         try testing.expect(@intFromEnum(member) < action_mod.actionCount);
         expect_present = action_mod.actionSetContains(mask, member);
         try testing.expect(expect_present);
@@ -347,7 +351,7 @@ fn checkActionMask(mask: u32) !void {
     // Every member the mask carries and no other: the count is the popcount
     // over the declared domain, not a lower bound.
     var carried: usize = 0;
-    inline for (comptime action_mod.action_values) |member| {
+    inline for (comptime std.enums.values(action_mod.Action)) |member| {
         if (action_mod.actionSetContains(mask, member)) carried += 1;
     }
     try testing.expectEqual(carried, members.len);
@@ -375,10 +379,10 @@ test "every tag stores, reads back and releases, in every slice shape" {
         const tag = tags[tag_index];
         var form_index: usize = 0;
         while (form_index < SliceForm.count) : (form_index += 1) {
-            const form: SliceForm = @enumFromInt(@intCast(form_index));
+            const form: SliceForm = @enumFromInt(form_index);
             cases += 1;
 
-            const built = try generate.buildValue(&source, gpa, tag, form);
+            var built = try generate.buildValue(&source, gpa, tag, form);
             defer built.deinit(gpa);
             try testing.expectEqual(tag, built.getTag());
 
@@ -395,12 +399,15 @@ test "every tag stores, reads back and releases, in every slice shape" {
 
             // Store it under a property that declares that payload, then read
             // it back through both doors the store offers.
-            const id = propertyIdForTag(tag);
+            const id = try propertyIdForTag(tag);
             try testing.expectEqual(tag, table.propertyValueTagOf(id));
 
             var store = Properties.init(gpa);
             defer store.deinit();
             try store.set(id, built);
+            // The store took a copy and owns the value now, so this scope must
+            // not release it a second time.
+            built = .none;
             try testing.expectEqual(@as(usize, 1), store.count());
             try testing.expectEqual(tag, store.get(id).?.getTag());
             try testing.expect(store.get(id).?.eql(copied));
@@ -439,15 +446,15 @@ test "a store answers through a model after a random sequence of writes" {
 
     var step: usize = 0;
     while (step < store_step_count) : (step += 1) {
-        const id = generate.pickPropertyId(&source);
-        const roll = source.below(10);
+        const id = try generate.pickPropertyId(&source);
+        const roll = try source.below(10);
 
         if (roll < 5) {
             // A set, with the payload the table declares for this property, so
             // a stale discriminant after a sorted-slice shift shows up as a
             // tag the descriptor does not declare.
             const tag = table.propertyValueTagOf(id);
-            const value = try generate.buildValue(&source, counted, tag, formFor(source));
+            const value = try generate.buildValue(&source, counted, tag, try formFor(&source));
             const copy = try table.propertyValueClone(counted, value);
             try store.set(id, value);
             try model.set(id, copy);
@@ -455,7 +462,7 @@ test "a store answers through a model after a random sequence of writes" {
             // A repeated set of the same property, which is the overwrite path
             // that has to release the value it displaces.
             const tag = table.propertyValueTagOf(id);
-            const value = try generate.buildValue(&source, counted, tag, formFor(source));
+            const value = try generate.buildValue(&source, counted, tag, try formFor(&source));
             const copy = try table.propertyValueClone(counted, value);
             try store.set(id, value);
             try model.set(id, copy);
@@ -464,8 +471,12 @@ test "a store answers through a model after a random sequence of writes" {
             model.clear(id);
         } else if (roll < 9) {
             const tag = table.propertyValueTagOf(id);
-            const default = try generate.buildValue(&source, counted, tag, .single);
-            const copy = try table.propertyValueClone(counted, default);
+            var default = try generate.buildValue(&source, counted, tag, .single);
+            defer default.deinit(counted);
+            var copy = try table.propertyValueClone(counted, default);
+            defer copy.deinit(counted);
+            // `getOrInsert` copies the value it is given, so this scope still
+            // owns both of the values it built.
             const inserted = try store.getOrInsert(id, default);
             const model_inserted = try model.getOrInsert(id, copy);
             try testing.expectEqual(inserted.getTag(), model_inserted.getTag());
@@ -493,8 +504,8 @@ test "a store answers through a model after a random sequence of writes" {
     );
 }
 
-fn formFor(source: *Random) SliceForm {
-    return @enumFromInt(@as(u8, @intCast(source.below(SliceForm.count))));
+fn formFor(source: *Random) random.DrawError!SliceForm {
+    return @enumFromInt(@as(u8, @intCast(try source.below(SliceForm.count))));
 }
 
 /// Every entry is in ascending id order, carries the payload its property
@@ -519,39 +530,62 @@ test "a repeated set releases the value it displaces and keeps the new one" {
     var counter = Counting.init(gpa);
     const counted = counter.allocator();
 
-    // One property, one owned payload at a time. A `set` that failed to
-    // release would raise `live` once per overwrite; a `set` that released
-    // twice would trip the testing allocator underneath.
-    var store = Properties.init(counted);
-    defer store.deinit();
-
     const tags = comptime std.enums.values(PropertyValueTag);
-    var steady_live: usize = 0;
+    var distinct: usize = 0;
     var cases: usize = 0;
-    var step: usize = 0;
-    while (step < 64) : (step += 1) {
-        const tag = tags[step % tags.len];
-        if (tag == .none) continue;
-        const id = propertyIdForTag(tag);
-        cases += 1;
-        try store.set(id, try generate.buildValue(&Random.init(sweep_seed +% step), counted, tag, .single));
-        try testing.expectEqual(tag, store.get(id).?.getTag());
-        try testing.expectEqual(@as(usize, 1), store.count());
-        if (step == 0) {
-            steady_live = counter.live;
-            continue;
+    {
+        // One property per payload tag, one owned payload in each. A `set` that
+        // failed to release would raise `live` once per overwrite; a `set` that
+        // released twice would trip the testing allocator underneath. The
+        // block ends the store, so the count below is measured with nothing
+        // held rather than with twenty-eight values still in it.
+        var store = Properties.init(counted);
+        defer store.deinit();
+
+        // Whether the store already holds the property for a tag. The walk is
+        // `tags.len` wide, which is the count `abi.tag_count` records.
+        //
+        // The figure compared below is the live count either side of one
+        // `set`, and not a figure per tag: `live` is what the whole store
+        // costs, so a number fixed on the first write of a tag would also carry
+        // every property written before it.
+        var held = [_]bool{false} ** tags.len;
+        var step: usize = 0;
+        while (step < 64) : (step += 1) {
+            const tag_index = step % tags.len;
+            const tag = tags[tag_index];
+            if (tag == .none) continue;
+            const id = try propertyIdForTag(tag);
+            cases += 1;
+            const live_before = if (held[tag_index]) counter.live else null;
+            // The same seed for every write of this tag, so an overwrite
+            // stores the value it stored before and a live count that moved
+            // across one would mean the displaced value was kept, or released
+            // twice.
+            var seed_source = Random.init(sweep_seed +% @as(u64, @intCast(tag_index)));
+            const value = try generate.buildValue(&seed_source, counted, tag, .single);
+            try store.set(id, value);
+            try testing.expectEqual(tag, store.get(id).?.getTag());
+            if (live_before) |before| {
+                // A repeat releases the value it displaces and takes the new
+                // one, so the store costs what it cost a step earlier.
+                try testing.expectEqual(before, counter.live);
+            } else {
+                held[tag_index] = true;
+                distinct += 1;
+            }
+            // The store holds one property per tag it has seen, so an overwrite
+            // of a property it already holds must not grow it.
+            try testing.expectEqual(distinct, store.count());
         }
-        // The store holds one value, so the live count is a function of that
-        // one value and not of how many overwrites came before it.
-        try testing.expectEqual(steady_live, counter.live);
     }
 
     try testing.expectEqual(counter.live, counter.allocs - counter.frees);
     try testing.expectEqual(@as(usize, 0), counter.live);
     std.debug.print(
-        "[tree-index/property-table] overwrite sweep {d} sets, steady live {d}, " ++
+        "[tree-index/property-table] overwrite sweep {d} sets over {d} tags, " ++
             "allocs {d}, frees {d}\n",
-        .{ cases, steady_live, counter.allocs, counter.frees },
+        .{ cases, tags.len, counter.allocs, counter.frees },
     );
 }
 
@@ -568,12 +602,9 @@ test "every stored property releases once when the store is released" {
     var case_count: usize = 0;
     for (tags) |tag| {
         if (tag == .none) continue;
-        try store.set(propertyIdForTag(tag), try generate.buildValue(
-            &Random.init(sweep_seed +% case_count),
-            counted,
-            tag,
-            .maximal,
-        ));
+        var seed_source = Random.init(sweep_seed +% case_count);
+        const value = try generate.buildValue(&seed_source, counted, tag, .maximal);
+        try store.set(try propertyIdForTag(tag), value);
         case_count += 1;
     }
     try testing.expectEqual(@as(usize, 28), store.count());
@@ -610,9 +641,9 @@ test "the tree index map stays consistent across a random sequence of reads and 
     var cases: usize = 0;
     var step: usize = 0;
     while (step < index_step_count) : (step += 1) {
-        const pick = source.below(tree_domain);
+        const pick = try source.below(tree_domain);
         const id = assigned[pick];
-        const roll = source.below(10);
+        const roll = try source.below(10);
 
         if (roll < 5) {
             const next_before = map.next;
@@ -633,11 +664,17 @@ test "the tree index map stays consistent across a random sequence of reads and 
             const unseen = treeIdFromBytes(@splat(0xfe));
             const before = map.next;
             try testing.expect(map.getIndex(unseen) == null);
-            try testing.expect(map.getId(TreeIndex.init(before)) == null or before > 0);
+            try testing.expect(map.getId(TreeIndex.init(before)) == null);
             try testing.expectEqual(before, map.next);
             cases += 1;
         } else {
-            try testing.expect(map.getIndex(id) != null);
+            // A read of a tree the map may never have registered, so the two
+            // doors must agree about whichever state it is in. The sweep below
+            // proves the round trip for every number the map handed out.
+            if (map.getIndex(id)) |number| {
+                try testing.expectEqual(id, map.getId(number).?);
+                try testing.expectEqual(number, map.getIndex(id).?);
+            }
             cases += 1;
         }
 
@@ -677,8 +714,6 @@ fn checkIndexInvariants(map: *const TreeIndexMap) !void {
 
 test "a copy of the map answers as the source did and neither follows the other" {
     const gpa = testing.allocator;
-    var source = Random.init(sweep_seed);
-
     var map = TreeIndexMap.empty;
     defer map.deinit(gpa);
     var index: usize = 0;
@@ -712,7 +747,7 @@ test "every header row a payload tag projects onto is declared with its offset" 
 
     var cases: usize = 0;
     var projected: usize = 0;
-    inline for (comptime std.enums.values(PropertyValueTag)) |tag| {
+    for (comptime std.enums.values(PropertyValueTag)) |tag| {
         const name = abi.tagProjection(tag) orelse {
             cases += 1;
             continue;
@@ -748,15 +783,29 @@ test "every header row a payload tag projects onto is declared with its offset" 
     );
 }
 
+/// Why the descriptor table names no property for a payload tag.
+///
+/// A named error and not a default value, because a tag that no property
+/// carries is a defect in `table.property_descriptors` itself. `ParseError` in
+/// `abi.zig` is the same shape for the same reason.
+pub const TagLookupError = error{
+    /// No row of `property_descriptors` carries `tag`.
+    NoPropertyCarriesTag,
+};
+
 /// The property that declares the payload `tag` carries.
 ///
 /// The walk over the domain is `table.propertyIdCount` wide, which is the count
 /// of rows in `property_descriptors`. A tag with no property is a defect in the
 /// table itself, so it is a named error and not a skip.
-fn propertyIdForTag(tag: PropertyValueTag) PropertyId {
+fn propertyIdForTag(tag: PropertyValueTag) TagLookupError!PropertyId {
+    // The walk is over `descriptor_pairs` and not over `property_descriptors`,
+    // because a descriptor carries the payload type and a type is only
+    // readable at comptime. The count is the same width either way, which is
+    // what the doc comment above names.
     var index: usize = 0;
-    while (index < table.propertyIdCount) : (index += 1) {
-        const row = table.property_descriptors[index];
+    while (index < descriptor_pairs.len) : (index += 1) {
+        const row = descriptor_pairs[index];
         if (row.tag == tag) return row.id;
     }
     return error.NoPropertyCarriesTag;
@@ -781,7 +830,8 @@ pub const FuzzContext = struct {
 fn fuzzOne(context: FuzzContext, smith: *std.testing.Smith) anyerror!void {
     var buffer: [max_input_len]u8 = undefined;
     smith.bytes(&buffer);
-    const length: u8 = smith.valueRangeAtMost(u8, 0, max_input_len);
+    const drawn_len = smith.valueRangeAtMost(u16, 0, @intCast(max_input_len));
+    const length: usize = @intCast(drawn_len);
     const drawn: u64 = smith.value(u64);
     return replayOne(context, buffer[0..length], drawn);
 }
@@ -801,11 +851,18 @@ pub fn replayOne(context: FuzzContext, input: []const u8, seed: u64) !void {
     var offset: usize = 0;
     var round: usize = 0;
     while (round < rounds) : (round += 1) {
-        const byte = input[offset];
-        offset += 1;
-        if (offset == input.len) offset = 0;
+        // An empty input still runs one round, so the op byte comes from the
+        // generator rather than from a byte the input does not have. The draw
+        // happens either way, so the seed reaches the same state for a corpus
+        // case whatever its length.
+        var byte: u64 = source.next();
+        if (input.len != 0) {
+            byte = input[offset];
+            offset += 1;
+            if (offset == input.len) offset = 0;
+        }
 
-        const id = generate.pickPropertyId(&source);
+        const id = try generate.pickPropertyId(&source);
         const tag = table.propertyValueTagOf(id);
         switch (byte & 3) {
             0 => {
@@ -814,7 +871,10 @@ pub fn replayOne(context: FuzzContext, input: []const u8, seed: u64) !void {
             },
             1 => store.clear(id),
             2 => {
-                const default = try generate.buildValue(&source, context.gpa, tag, .empty);
+                var default = try generate.buildValue(&source, context.gpa, tag, .empty);
+                defer default.deinit(context.gpa);
+                // `getOrInsert` copies the value it is given, so this scope
+                // still owns the value it built.
                 _ = try store.getOrInsert(id, default);
             },
             3 => {
@@ -836,10 +896,13 @@ test "the committed corpus drives the entry the fuzzer drives" {
         const input = corpus[index];
         try testing.expectEqual(corpus_lengths[index], input.len);
         cases += 1;
-        try replayOne(.{ .gpa = gpa, .seed = sweep_seed }, input, sweep_seed +% @as(u64, @intCast(index)));
+        // The seed offset is per case so a failure names one input rather than
+        // replaying the whole corpus identically.
+        const seed_offset: u64 = @intCast(index);
+        try replayOne(.{ .gpa = gpa, .seed = sweep_seed }, input, sweep_seed +% seed_offset);
         // The same input twice must reach the same store, which is what makes
         // a failure reproducible from the corpus alone.
-        try replayOne(.{ .gpa = gpa, .seed = sweep_seed }, input, sweep_seed +% @as(u64, @intCast(index)));
+        try replayOne(.{ .gpa = gpa, .seed = sweep_seed }, input, sweep_seed +% seed_offset);
     }
     std.debug.print(
         "[tree-index/property-table] corpus {d} cases, {d} bytes replayed twice\n",
@@ -862,22 +925,68 @@ test "fuzz: the property table and the tree index map" {
 /// The walk over the domain is `table.propertyIdCount` wide. This exists so a
 /// caller that wants the whole domain has one name for it.
 pub fn everyPropertyId() []const PropertyId {
-    comptime var out: [table.propertyIdCount]PropertyId = undefined;
-    comptime var index: usize = 0;
-    inline while (index < table.propertyIdCount) : (index += 1) {
-        out[index] = @enumFromInt(@as(u8, @intCast(index)));
-    }
-    comptime return &out;
+    return &every_property_id;
 }
+
+/// The one copy of that domain, built once at comptime.
+///
+/// A file-scope `const` and not a `var`, so the harness holds no mutable
+/// global. A walk that rebuilt the array per call would return a pointer to a
+/// local, which is what the previous form did.
+const every_property_id: [table.propertyIdCount]PropertyId = blk: {
+    var out: [table.propertyIdCount]PropertyId = undefined;
+    for (&out, 0..) |*slot, index| {
+        slot.* = @enumFromInt(@as(u8, @intCast(index)));
+    }
+    break :blk out;
+};
 
 test "the property domain and the descriptor table cannot drift" {
     const domain = everyPropertyId();
     try testing.expectEqual(table.propertyIdCount, domain.len);
-    var index: usize = 0;
-    while (index < domain.len) : (index += 1) {
-        try testing.expectEqual(index, @intFromEnum(domain[index]));
-        try testing.expectEqual(table.propertyValueTagOf(domain[index]), table.property_descriptors[index].tag);
-        const id = propertyIdForTag(table.property_descriptors[index].tag);
-        try testing.expectEqual(domain[index], id);
+    try testing.expectEqual(domain.len, descriptor_pairs.len);
+
+    for (descriptor_pairs) |row| {
+        // A row names a declared property and the payload that property
+        // declares, so a row and a discriminant cannot disagree.
+        try testing.expectEqual(row.tag, table.propertyValueTagOf(row.id));
+        // Several properties share one payload tag, so the canonical property
+        // for a tag is the first row that declares it, and that row has to
+        // declare the tag the walk reached it by.
+        const id = try propertyIdForTag(row.tag);
+        try testing.expectEqual(row.tag, table.propertyValueTagOf(id));
+    }
+
+    // Every declared property appears in exactly one row, so the table is a
+    // permutation of the domain and not a shorter or a repeated list.
+    for (domain) |id| {
+        var rows: usize = 0;
+        for (descriptor_pairs) |row| {
+            if (row.id == id) rows += 1;
+        }
+        try testing.expectEqual(@as(usize, 1), rows);
     }
 }
+
+/// One descriptor row without the payload type, so the array reads at runtime.
+pub const DescriptorPair = struct {
+    /// The property the row describes.
+    id: PropertyId,
+    /// The payload that property declares.
+    tag: PropertyValueTag,
+};
+
+/// Every row of `table.property_descriptors`, in the order that table holds
+/// them, with the payload type dropped.
+///
+/// The type is the only field that cannot be read at runtime, and dropping it
+/// is what lets a lookup walk the table without unrolling it into the binary
+/// once per query.
+const descriptor_pairs: [table.propertyIdCount]DescriptorPair = blk: {
+    var out: [table.propertyIdCount]DescriptorPair = undefined;
+    for (&out, 0..) |*slot, index| {
+        const row = table.property_descriptors[index];
+        slot.* = .{ .id = row.id, .tag = row.tag };
+    }
+    break :blk out;
+};

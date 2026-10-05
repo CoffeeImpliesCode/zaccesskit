@@ -33,12 +33,33 @@
         },
     },
     // Only these paths are packaged and hashed. Keep it to what a build needs.
+    //
+    // `test`, `include` and `tools` are here because three declared steps read
+    // them, and `.paths` is the only place that says so. The `test` step
+    // compiles `fuzz_root.zig`, which reaches `test/fuzz/` and embeds
+    // `include/zaccesskit.h`, so a copy without either of them cannot run its
+    // own gate. The `capi-parity` step is rooted at
+    // `tools/capi_parity/main.zig`. `fuzz_root.zig` is its own entry because a
+    // file at the repository root is named by itself and not by a directory
+    // that holds it.
+    //
+    // What a consumer receives grows by about 0.6 megabytes: the harness and
+    // its corpus, the header the harness measures, and the parity tool. A
+    // dependent that imports the module compiles none of it, so the cost is
+    // download size and nothing else.
+    //
+    // `.paths` is not the package fingerprint, which is the name and the
+    // version, so widening it breaks no existing dependent.
     .paths = .{
         "build.zig",
         "build.zig.zon",
         "src",
+        "test",
+        "tools",
+        "include",
         "docs",
         "README.md",
         "AGENTS.md",
+        "fuzz_root.zig",
     },
 }

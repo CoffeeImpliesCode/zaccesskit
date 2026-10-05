@@ -308,8 +308,12 @@ test "the queue hands each event the slot it was given" {
     var queue = QueuedEvents.init(testing.allocator);
     defer queue.deinit(syscalls.unavailablePlatform());
 
-    try queue.append(.{ .simple = .{ .slot = slotFor(0x1111), .event_id = .automation_focus_changed } });
-    try queue.append(.{ .simple = .{ .slot = slotFor(0x2222), .event_id = .automation_focus_changed } });
+    try queue.append(.{
+        .simple = .{ .slot = slotFor(0x1111), .event_id = .automation_focus_changed },
+    });
+    try queue.append(.{
+        .simple = .{ .slot = slotFor(0x2222), .event_id = .automation_focus_changed },
+    });
 
     // Two events for two nodes must name two providers, or a focus change on
     // one node is raised on the other.
@@ -350,7 +354,9 @@ test "raise reports a raised event as raised and a refused one as refused" {
     try testing.expectEqual(cases.len, RaiseStatus.count);
     inline for (cases) |entry| {
         var queue = QueuedEvents.init(testing.allocator);
-        try queue.append(.{ .simple = .{ .slot = slotFor(0x10), .event_id = .automation_focus_changed } });
+        try queue.append(.{
+            .simple = .{ .slot = slotFor(0x10), .event_id = .automation_focus_changed },
+        });
 
         const report = queue.raise(platformAnswering(entry.status));
         try testing.expectEqual(@as(usize, 1), report.total());
@@ -420,7 +426,9 @@ test "the two event arms reach the two platform slots" {
     // A walk that sent both arms to one slot would raise a property change as
     // a plain event, and the two calls take different arguments.
     var plain = QueuedEvents.init(testing.allocator);
-    try plain.append(.{ .simple = .{ .slot = slotFor(0x10), .event_id = .automation_focus_changed } });
+    try plain.append(.{
+        .simple = .{ .slot = slotFor(0x10), .event_id = .automation_focus_changed },
+    });
     const plain_report = plain.raise(platformAnswering(.raised));
     try testing.expectEqual(@as(usize, 1), plain_report.raised);
 
@@ -439,7 +447,9 @@ test "the two event arms reach the two platform slots" {
 
 test "deinit releases the array and a second release reaches an empty one" {
     var queue = QueuedEvents.init(testing.allocator);
-    try queue.append(.{ .simple = .{ .slot = slotFor(0x10), .event_id = .automation_focus_changed } });
+    try queue.append(.{
+        .simple = .{ .slot = slotFor(0x10), .event_id = .automation_focus_changed },
+    });
     try testing.expectEqual(@as(usize, 1), queue.len());
 
     queue.deinit(syscalls.unavailablePlatform());

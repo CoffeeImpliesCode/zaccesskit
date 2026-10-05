@@ -441,7 +441,7 @@ export fn accesskit_tree_info_new(root: NodeIdContent) callconv(.c) ?*accesskit_
 /// would be undefined behaviour instead of a contract this port can state.
 export fn accesskit_tree_info_free(tree: ?*accesskit_tree_info) callconv(.c) void {
     allocation.clearError();
-    const handle = tree orelse terminate("accesskit_tree_info_free", "the handle was null");
+    const handle = tree orelse terminate();
     treeInfoFree(handle);
 }
 
@@ -486,11 +486,7 @@ export fn accesskit_tree_info_set_toolkit_name(
     toolkit_name: [*c]const u8,
 ) callconv(.c) void {
     allocation.clearError();
-    treeInfoSetToolkitName(tree, marshal.c_string_to_slice(toolkit_name)) catch
-        terminate(
-            "accesskit_tree_info_set_toolkit_name",
-            "the copy of the toolkit name did not fit in memory",
-        );
+    treeInfoSetToolkitName(tree, marshal.c_string_to_slice(toolkit_name)) catch terminate();
 }
 
 /// Copies `length` bytes of `toolkit_name` into the tree info's own storage.
@@ -507,10 +503,7 @@ export fn accesskit_tree_info_set_toolkit_name_with_length(
         tree,
         marshal.c_bytes_to_slice(toolkit_name, length),
         length,
-    ) catch terminate(
-        "accesskit_tree_info_set_toolkit_name_with_length",
-        "the copy of the toolkit name did not fit in memory",
-    );
+    ) catch terminate();
 }
 
 /// Clears `toolkit_name` and releases the copy the library holds.
@@ -529,11 +522,7 @@ export fn accesskit_tree_info_set_toolkit_version(
     toolkit_version: [*c]const u8,
 ) callconv(.c) void {
     allocation.clearError();
-    treeInfoSetToolkitVersion(tree, marshal.c_string_to_slice(toolkit_version)) catch
-        terminate(
-            "accesskit_tree_info_set_toolkit_version",
-            "the copy of the toolkit version did not fit in memory",
-        );
+    treeInfoSetToolkitVersion(tree, marshal.c_string_to_slice(toolkit_version)) catch terminate();
 }
 
 /// Copies `length` bytes of `toolkit_version` into the tree info's own storage.
@@ -550,10 +539,7 @@ export fn accesskit_tree_info_set_toolkit_version_with_length(
         tree,
         marshal.c_bytes_to_slice(toolkit_version, length),
         length,
-    ) catch terminate(
-        "accesskit_tree_info_set_toolkit_version_with_length",
-        "the copy of the toolkit version did not fit in memory",
-    );
+    ) catch terminate();
 }
 
 /// Clears `toolkit_version` and releases the copy the library holds.
@@ -706,12 +692,12 @@ fn assertPointerShaped(signature: anytype) void {
 /// (`docs/11-accesskit-c-abi.md:1421`).
 ///
 /// `std.process.exit` rather than `panic` or `unreachable` because the house
-/// rules forbid both on this boundary, and `exit` rather than `abort` because
-/// `exit` flushes the diagnostic below before the process leaves. The status is
-/// 1, and upstream's signal is `SIGABRT`; a caller cannot observe the
-/// difference, because it is already dead.
-fn terminate(comptime function_name: []const u8, reason: []const u8) noreturn {
-    std.debug.print("zaccesskit: {s}: {s}\n", .{ function_name, reason });
+/// rules forbid both on this boundary. The status is 1, and upstream's signal
+/// is `SIGABRT`; a caller cannot observe the difference, because it is already
+/// dead. This call prints nothing and returns nothing, so which export saw the
+/// violation is not reported; the header sentence quoted above is the record of
+/// it.
+fn terminate() noreturn {
     std.process.exit(1);
 }
 
@@ -818,15 +804,12 @@ const CountingAllocator = struct {
 
     /// Asserts that every pointer this allocator saw released went back exactly
     /// once, returns how many distinct pointers that was, and releases the
-    /// counter.
+    /// counter. A count other than one is reported as `error.NotOneRelease` and
+    /// not printed, so the error name is the record of which property failed.
     fn expectOneReleaseEach(self: *CountingAllocator) ReleaseCountError!usize {
         var iterator = self.released.iterator();
         while (iterator.next()) |entry| {
             if (entry.value_ptr.* != 1) {
-                std.debug.print(
-                    "pointer 0x{x} was released {d} times\n",
-                    .{ entry.key_ptr.*, entry.value_ptr.* },
-                );
                 return error.NotOneRelease;
             }
         }

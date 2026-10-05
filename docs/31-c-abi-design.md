@@ -1,6 +1,13 @@
 # 31 — The C ABI of `zaccesskit`
 
-**Branch: shape.** The contract is new. No `zaccesskit` header is published, no consumer links a `zaccesskit` symbol, and no artefact carries a `zaccesskit` ABI version. Every decision below is an offer, not a migration.
+**Branch: shape.** The contract is new. The header `include/zaccesskit.h` exists and
+ships with the package, because `build.zig.zon:53-64` names `include` in `.paths`.
+No consumer links a `zaccesskit` symbol and no artefact carries a `zaccesskit` ABI
+version, because `build.zig` declares no library step. This document was written
+before the header existed and read: "No `zaccesskit` header is published, no
+consumer links a `zaccesskit` symbol, and no artefact carries a `zaccesskit` ABI
+version." The first clause is false now. Every decision below is an offer, not a
+migration.
 
 **Scope.** The exported C surface, its ownership contract, the header artefact and the verification that backs both. The Zig module layout, the adapter interface and the milestone order belong to `docs/30-port-design.md` and `docs/40-plan.md`.
 
@@ -101,12 +108,12 @@ Reads as: A source reading of the signature list at that revision. It establishe
 
 ### 2.5 Record E: aggregates passed and returned by value
 
-**Priority:** make a C caller of `accesskit_affine_inverse` get the value it gets from upstream, on every target the port claims. **Constraint, measured from the header on 2026-10-05:** **105** declarations return a value by value, 104 of them on a Linux target and 1 behind `_WIN32`; 104 return a `struct accesskit_*` and the last is `accesskit_last_error`, whose `accesskit_error` return is a C enum. **57** declarations take at least one aggregate by value, **77** aggregate parameters in all, across **11** types; **31** both return and take. Upstream at `8b6ed37` gives **104**, **57**, **77**, **11** and **31** for the same five figures, so the port adds the enum return above and changes no parameter. Nine return `accesskit_affine` at 48 bytes and align 8, which is past the aggregate return budget on the x86-64 System V convention, so the result travels through a hidden pointer and every named argument shifts. `accesskit_affine_inverse` takes one 48-byte aggregate and returns another; `accesskit_affine_mul` takes two and returns one. Section 9.3 records the correction.
+**Priority:** make a C caller of `accesskit_affine_inverse` get the value it gets from upstream, on every target the port claims. **Constraint, measured from the header on 2026-10-05:** **103** declarations return a struct by value, 102 of them on a Linux target and 1 behind `_WIN32` (`accesskit_windows_adapter_handle_wm_getobject`, returning `accesskit_opt_lresult`). `accesskit_last_error` is not one of the 103: it returns `accesskit_error`, a bare-tag C enum, not a struct. **42** declarations take at least one aggregate by value, **58** aggregate parameters in all, across **9** types; **28** both return and take by value. Those are the figures by value, and by value is what this record is about. The larger figures — 57 declarations, 77 parameters, 11 types, 31 on both sides, 105 returning — are **by value plus by pointer** and are recorded here only so a reader who meets them elsewhere knows what they are: 444 declarations, 449 parameters and 22 types cross a struct by pointer, which is a different ABI fact, because only the address is contract. Nine return `accesskit_affine` at 48 bytes and align 8, which is past the aggregate return budget on the x86-64 System V convention, so the result travels through a hidden pointer and every named argument shifts. `accesskit_affine_inverse` takes one 48-byte aggregate and returns another; `accesskit_affine_mul` takes two and returns one. Sections 9.3 and 9.4 record the correction and the reconciliation with `docs/40`.
 
 ```text
-Evidence: A masked lexical scan of the shipped header, and the same scan over the pinned upstream header, on 2026-10-05: 105 declarations in `include/zaccesskit.h` return a value by value, 104 of them a `struct accesskit_*`, 57 take at least one such aggregate by value, 77 aggregate parameters in all across 11 types, and 31 both return and accept aggregates. The same scan over `include/accesskit.h` at `8b6ed37` returns 104, 57, 77, 11 and 31. Nine return `accesskit_affine` by value and eleven return `accesskit_rect`. An `extern struct` has in-memory layout matching the C ABI for the target, and `export` makes a function externally visible and makes it use the C ABI.
+Evidence: A masked lexical scan of `include/zaccesskit.h` on 2026-10-05, cross-checked against `cc -E -P` on the same file: 498 unique declarations, of which 103 return a `struct accesskit_*` by value, 42 take at least one such aggregate by value, 58 aggregate parameters in all across 9 types, and 28 both return and take by value. A separate scan of the same declarations classifying *pointers to* structs gives 444 declarations, 449 parameters and 22 types. Nine return `accesskit_affine` by value and eleven return `accesskit_rect`. The method, the per-type censuses and the derivation of the superseded 57 / 77 / 11 / 31 / 105 figures are in `docs/40-capi-build-map.md` sections 1.2 and 3.4. The upstream header `accesskit-c/include/accesskit.h` at `8b6ed37c20ed4c59390e253407983333053662ba` is **not in this tree**, so no upstream figure is claimed here; the earlier `104 / 57 / 77 / 11 / 31` reading came from the same pointer-blind classifier and is withdrawn rather than restated. An `extern struct` has in-memory layout matching the C ABI for the target, and `export` makes a function externally visible and makes it use the C ABI.
 Subject:  AccessKit/accesskit-c @ 8b6ed37c20ed4c59390e253407983333053662ba
-Source:   include/accesskit.h
+Source:   include/zaccesskit.h (the pinned upstream header at the named revision is not vendored in this tree)
 Reads as: A text count of the declarations, which establishes that they exist and how many. It establishes no register assignment and no lowering behaviour. The Zig sentences are read from `doc/langref.html` at `ziglang/zig @ 24fdd5b7a4c1c8b5deb5b56756b9dbc8e08c86a8, stable-0.16`; they settle layout and the convention of an exported function, and say nothing about aggregate classification, hidden return pointers or stack layout.
 ```
 
@@ -122,7 +129,7 @@ One row per ownership category. The last column carries the sentence identifier 
 
 | # | Category | Owner after the call | Who must call what | Once | A second call |
 |---|---|---|---|---|---|
-| 1 | An aggregate returned by value: all 105 returning functions, including the 12 whose interior pointer borrows | The caller, outright. It borrows nothing | Nothing | Read as often as it likes | Reading again is fine. Nothing to release twice |
+| 1 | An aggregate returned by value: all 103 declarations that return a struct by value, including the 12 whose interior pointer borrows | The caller, outright. It borrows nothing | Nothing | Read as often as it likes | Reading again is fine. Nothing to release twice |
 | 2 | `accesskit_node_ids` from the 8 node-id-list getters; `accesskit_lengths` from the 2 byte-slice getters; `accesskit_opt_coords` from the 2 float-slice getters. In all three `values` borrows | The node owns the array; the caller owns the returned struct | Nothing | As row 1 | Releasing `values` frees storage the node still owns |
 | 3 | The array or `char *` a setter receives, with or without a length | The caller, before and after | Nothing. The setter copies | n/a | n/a. The input is never retained |
 | 4 | The `char *` a string getter returns | The caller | `accesskit_string_free` | Once | Double free |
@@ -257,7 +264,7 @@ Reads as: A source reading of the standard library at the 0.16.0 tag. It establi
 | Callback typedef | Signature-deep | A name-only check misses a changed parameter |
 | Opaque handle | Identity and alignment only | No layout exists to compare |
 
-Four exclusions make it a check rather than a ritual, and each is a refusal to guess: a declaration the classifier cannot place is a compile error; an expectation whose name matches no rule is a compile error; a self-check runs, because a sweep that matched nothing is otherwise indistinguishable from one that matched everything; and the four `translate-c` hazards are pinned at **zero**, so a future change introducing one fails the build until someone raises the count deliberately. The aggregate count from record E is not pinned at zero, because it is 105 today; it is pinned as a number the sweep must cover, and the self-check catches a regression in that coverage.
+Four exclusions make it a check rather than a ritual, and each is a refusal to guess: a declaration the classifier cannot place is a compile error; an expectation whose name matches no rule is a compile error; a self-check runs, because a sweep that matched nothing is otherwise indistinguishable from one that matched everything; and the four `translate-c` hazards are pinned at **zero**, so a future change introducing one fails the build until someone raises the count deliberately. The aggregate count from record E is not pinned at zero, because 42 declarations cross a struct by value today; it is pinned as a number the sweep must cover, and the self-check catches a regression in that coverage. The by-pointer figure — 444 declarations — is not swept against the calling convention at all, because a pointer crosses as an address and no register assignment depends on the pointee's layout.
 
 **What it proves:** that the hand-written Zig declarations and the shipped header agree, on the target and configuration the test ran, over the declarations the list names, paired by name. **What it does not prove:** that the foreign code ran; that every declaration was analysed, since a declaration no reached path references is never analysed; that the aggregate convention agrees, because a sweep compares layout and a register assignment is not layout; portability to another target or compiler. **A better candidate, and why this one is still chosen:** a C fixture that `static_assert`s every size and offset and links the shipped library proves more, because it uses the C compiler's own answers, and it exists as check 3 in section 6. It cannot replace the sweep, because it runs only when the test runs and a sweep is the cheaper thing to extend when a field is added. **Cost imposed on consumers:** none. **Counterchoice:** no sweep at all genuinely wins when the ABI is small enough that one reviewer reads both artefacts on every commit and the package has no test step. That is not this package. **Grade and origin:** obligation, carried from the four-grade table in `special-cases.md` recipe 1. This document chose the grade; the recipe states the mechanisms and what each misses.
 
@@ -506,7 +513,31 @@ A C consumer recompiles when a struct field is added, removed, reordered or rety
 
 ## 6. Verification
 
-Five checks. Each states what it proves and what it does not. **None of them has run**: the port has no `src/root.zig` declaration, no test tree, no C artefact and no configured CI, so no rung above declared target has been reached.
+Five checks. Each states what it proves and what it does not. **This record reports
+no outcome for any of them.** It read: "**None of them has run**: the port has no
+`src/root.zig` declaration, no test tree, no C artefact and no configured CI, so no
+rung above declared target has been reached." Three of those four grounds are false
+now. The fourth still holds.
+
+The four grounds it gave, and what a count over the tree says about each on
+2026-10-05:
+
+- **`src/root.zig` declaration: false.** The root declares five names, `schema` at
+  `src/root.zig:36`, `consumer` at `:49`, `capi` at `:57`, `version` at `:68` and
+  `minimum_zig_version` at `:74`. Each namespace carries a `refAllDecls` test.
+- **Test tree: false.** `test/` holds the C consumer at
+  `test/c_consumer/consumer.c`, the committed corpus at `test/fuzz/corpus/` and
+  the harness at `test/fuzz/property_table.zig`. `build.zig:74` wires four native
+  shards: `test-Debug` at `build.zig:76`, `test-ReleaseSafe` at `:82`, `fuzz-Debug`
+  at `:158` and `fuzz-ReleaseSafe` at `:174`. Check 1 now has a step of its own,
+  `capi-parity` at `build.zig:203`.
+- **C artefact: half false.** `src/capi/` holds 14 modules, 22294 lines and 220
+  `test "` declarations, and all 14 are in the import graph from `src/root.zig`.
+  No library is still produced. `build.zig` declares no library step and no install
+  step, and `build.zig:5-6` says the same. So the C ABI has a source and no
+  binary.
+- **Configured CI: true, and still.** The repository root holds no `.github`
+  directory, no `.gitlab-ci.yml` and no other CI configuration file.
 
 | # | Check | Proves | Does not prove |
 |---|---|---|---|
@@ -533,7 +564,18 @@ Source:   accesskit/src/, src/
 Reads as: A bounded text count over two directory trees at those revisions. It establishes where those constructs occur and where they do not, in those two trees. It says nothing about the adapter crates, which the count did not read, and it counts occurrences rather than classifying them.
 ```
 
-**What cannot be verified here.** Everything above is a plan. This run cannot establish that the port compiles at all, that any check reaches, that the C header and the Zig declarations agree, because neither artefact exists, that the aggregate convention matches, because no call has crossed a boundary, that `union(enum)` and `extern struct` differ, because only the sizes were measured, that any layout holds on a foreign target, or that any notice obligation is satisfied, because the files do not exist. The only facts this document establishes by measurement are the two probe results in section 4.0, each labelled with its toolchain, its host and its single configuration.
+**What cannot be verified here.** Everything above is a plan, and this record
+carries no run for any of it. What it cannot establish is unchanged in kind: that
+the port compiles, that any check reaches, that the C header and the Zig
+declarations agree, that the aggregate convention matches, because no call has
+crossed a boundary, that `union(enum)` and `extern struct` differ, because only
+the sizes were measured, that any layout holds on a foreign target, or that any
+notice obligation is satisfied. One ground in the sentence above is false now,
+and it is the load-bearing one. Both artefacts exist, so whether the C header and
+the Zig declarations agree is now a question about two files that are both on
+disk. Nothing in this record answers it. The only facts this document establishes
+by measurement remain the two probe results in section 4.0, each labelled with
+its toolchain, its host and its single configuration.
 
 ---
 
@@ -574,10 +616,12 @@ Eight items, each naming the thing that would settle it. None is invented.
 
 ## 9. Corrections
 
-Three claims in this document and in the shipped header were measured and refuted on
-2026-10-05, and all three are corrected below. `docs/40-capi-build-map.md` holds the
-measurements: section 1.2 for the aggregate census, section 7.1 for the language
-modes, and the note under section 8 for the `*_free` count.
+Four claims in this document and in the shipped header were measured on
+2026-10-05, and each is corrected below. `docs/40-capi-build-map.md` holds the
+measurements: section 1.2 and section 3.4 for the aggregate census, section 7.1
+for the language modes, and the note under section 8 for the `*_free` count.
+Section 9.3 is the odd one out: it corrects a correction, because 9.3's own
+first replacement was wrong in the same direction as the error it was fixing.
 
 ### 9.1 The `*_free` count, section 3 row 16
 
@@ -612,13 +656,75 @@ names so a reader can tell a different compiler apart from a different header.
 
 ### 9.3 The aggregate figures, section 2.5
 
-**Was:** 103 declarations return a struct by value, 42 take at least one, 58
-aggregate parameters across 9 types, and 28 both return and take.
+**Was, twice, and both corrections were wrong in the same direction.** The
+figures this section first carried — **103** returning by value, **42** taking at
+least one, **58** parameters across **9** types, **28** on both sides — were
+right. They were then replaced here with **105**, **57**, **77** across **11**
+types and **31**, on the strength of `docs/40-capi-build-map.md` section 1.2,
+which reported those as a measured divergence from this document. The divergence
+was `docs/40`'s own classifier: it classified a parameter or a return as "by
+value" whenever the type text *named* a struct, without looking at whether the
+declarator carried a `*`. Every one of the five replacement figures is that
+error, and the arithmetic closes exactly in `docs/40` section 3.4.
 
-**Now:** 105, 57, 77 across 11 types, and 31. The port adds two declarations to
-upstream's 496 and removes none: `accesskit_set_allocator` at line 6472, which
-returns `void`, and `accesskit_last_error` at line 6484, which returns the C enum
-`accesskit_error` that upstream does not declare. The second is the whole difference
-between 104 and 105. The four parameter figures are the same in both headers, and
-excluding every `accesskit_opt_*` from the parameter set leaves them unchanged,
-because no optional is ever passed by value here.
+**Now, re-measured on 2026-10-05 against `include/zaccesskit.h`:** **103**
+declarations return a struct by value, **42** take at least one aggregate by
+value, **58** aggregate parameters across **9** types, **28** both return and
+take by value. The original figures stand. What the port adds is two
+declarations, `accesskit_set_allocator`, which returns `void`, and
+`accesskit_last_error`, which returns the C enum `accesskit_error` — neither is
+a struct by value, so neither moves any figure here. Excluding every
+`accesskit_opt_*` from the parameter set changes nothing, because no optional is
+ever passed by value; and no by-value parameter sits behind a preprocessor
+guard, since the same 42 / 58 / 9 falls out of the 446 declarations a Linux
+build sees.
+
+### 9.4 The reconciliation with `docs/40`, and the two marginal cases
+
+**Which document was right.** On the by-value parameter split, this document was
+right and `docs/40` was wrong; on the by-value return count, this document's
+original 103 was right and both its own 105 and the 105 adopted here were
+wrong. Being the older document is not by itself a reason to suspect it, and
+being corrected three times today is not by itself a reason to keep the
+corrections; what settles it is that re-running the classifier against the
+header returns 42 / 58 / 9 / 28 and 103 with no interpretation left over.
+
+**The classification itself, which is the part that matters for section 6.2.** A
+struct passed by value crosses the boundary in a register or on the stack, so
+its size, layout and alignment are contract, and a caller built with a different
+classification corrupts its own stack. A struct passed by pointer crosses as an
+address; only the address is contract. Measured separately: **42 declarations,
+58 parameters, 9 types** by value; **444 declarations, 449 parameters, 22
+types** by pointer; **16 declarations in both sets**, listed in `docs/40`
+section 1.2. `rect` is the most frequent by-value parameter at 10 across 9
+declarations, and 15 `rect` parameters cross by pointer, so fifteen of the
+misattributed entries were `rect` and the type whose classification carries the
+most weight was the one the old classifier got wrong most often.
+
+**The two marginal cases `docs/40` section 3.4 named, each resolved against the
+header.**
+
+- **`custom_actions` — deleted.** `accesskit_node_custom_actions` at
+  `include/zaccesskit.h:5094` returns `struct accesskit_custom_actions *`, a
+  pointer, and takes `const struct accesskit_node *`. The type occurs in exactly
+  two positions in the header — that return and the
+  `accesskit_custom_actions_free` parameter at line 5083 — and in neither is it a
+  value. It is not a by-value type at all.
+- **`tree_id` — kept, and it was never marginal.**
+  `accesskit_tree_update_get_tree_id` at `include/zaccesskit.h:5357` returns
+  `struct accesskit_tree_id` by value and is inside the 103;
+  `accesskit_node_set_tree_id` at 2819 and `accesskit_tree_update_set_tree_id` at
+  5364 pass `accesskit_tree_id` by value and are inside the 42 and the 58. It was
+  counted correctly the whole time, and describing it as an edge case invited
+  exactly the doubt it did not need.
+
+**Downstream.** `docs/40` sections 1.2, 3.4, 4 row 1 and 6.2 and this document's
+sections 2.5 and 9.3 carry the corrected figures. Three places outside both
+documents quote the wrong ones and are reported rather than edited, because this
+run's file boundary forbids them: `src/capi/tree_info.zig:42-54`, whose module
+doc quotes 105, 104 and 103 and names `custom_actions` and `tree_id` as the two
+marginal cases; `docs/45-plan-status.md:232-233` and `:480-481`, which state
+"105 declarations return an aggregate by value while 77 parameters across 57
+declarations pass one". `src/capi/tree_update.zig:501-503` cites section 1.2 for
+`accesskit_tree_id` crossing by value, and that citation is correct under the
+corrected figures and needs no change.

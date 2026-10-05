@@ -318,6 +318,10 @@ pub const AndroidInjectingAdapter = struct {
         block.* = .{
             .gpa = gpa,
             .env = table.env,
+            // SAFETY: `inner` is filled at the last step of this constructor,
+            // and `teardown` reads it only to test for the not-yet-filled
+            // state rather than to dereference it, so no path observes it
+            // before it is written.
             .inner = undefined,
             .host = null,
             .runnable = null,
@@ -385,6 +389,9 @@ pub const AndroidInjectingAdapter = struct {
     /// and this is the check that makes the promise true.
     fn teardown(target: *AndroidInjectingAdapter, table: JniTable) void {
         if (@intFromPtr(target.inner) == 0) {
+            // SAFETY: the guard proved the pointer is already null, so the
+            // field holds no live adapter, and the block is freed on the last
+            // line of this function, so this value is never read back.
             target.inner = undefined;
         }
         if (target.host != null) table.deleteGlobalRef(target.host);
@@ -532,6 +539,8 @@ fn eventsRelease(events: QueuedEvents) void {
 /// convention here is `.c`; a port that ever added it would have to switch these
 /// five to `.winapi`, and this comment is where that change belongs.
 const native_method_table = blk: {
+    // SAFETY: the loop below writes all five rows before `break :blk`, so no
+    // read observes the array before every element is initialised.
     var rows: [registered_native_count]jni.JNINativeMethod = undefined;
     for (registered_natives, 0..) |native, index| {
         rows[index] = .{
@@ -741,6 +750,8 @@ const Recorder = struct {
     /// What `registerNativeMethods` answers.
     registration_answer: JInt = 0,
     /// The rows `RegisterNatives` was handed, kept so a test can read the five.
+    // SAFETY: `answeredRegister` fills `registered_count` rows and a test
+    // reads only the first `registered_count`, so the rest is never observed.
     registered: [registered_native_count]jni.JNINativeMethod = undefined,
     /// How many rows it was handed.
     registered_count: usize = 0,
@@ -974,11 +985,13 @@ test "the five rows RegisterNatives takes are the five the map records" {
         .{ .name = "runCallback", .signature = "(Landroid/view/View;J)V" },
         .{
             .name = "createAccessibilityNodeInfo",
-            .signature = "(JLandroid/view/View;I)Landroid/view/accessibility/AccessibilityNodeInfo;",
+            .signature = "(JLandroid/view/View;I)" ++
+                "Landroid/view/accessibility/AccessibilityNodeInfo;",
         },
         .{
             .name = "findFocus",
-            .signature = "(JLandroid/view/View;I)Landroid/view/accessibility/AccessibilityNodeInfo;",
+            .signature = "(JLandroid/view/View;I)" ++
+                "Landroid/view/accessibility/AccessibilityNodeInfo;",
         },
         .{ .name = "performAction", .signature = "(JLandroid/view/View;IILandroid/os/Bundle;)Z" },
         .{ .name = "onHoverEvent", .signature = "(JLandroid/view/View;IFF)Z" },

@@ -716,7 +716,7 @@ comptime {
     // I1 and I4 cannot be compile-time claims, and the default value is why.
     // An empty `nodes` satisfies neither, so the run-time check in
     // `tree_validate.zig` is load-bearing rather than decorative.
-    const blank = TreeState{};
+    const blank: TreeState = .{};
     assert(blank.nodes.count() == 0);
     assert(blank.root_id.local.eql(blank.focus_id.local));
     assert(blank.root_id.tree_index == blank.focus_id.tree_index);

@@ -84,14 +84,13 @@ pub const Descriptor = struct {
 /// only two ways it changes, so a count that is not one after `create` means
 /// a caller reached the object without holding a reference.
 pub fn Object(comptime StateType: type, comptime Interfaces: type) type {
-    // The bound every loop over the descriptor tuple uses. It is the number
-    // of interfaces the object answers for, which is fixed when the type is
-    // formed and is never a run-time count. The derivation is one word per
-    // interface of `Descriptors`, and `Descriptors` is a tuple literal, so
-    // the count is its length.
-    const interface_count = Interfaces.len;
-
-    comptime std.debug.assert(interface_count > 0);
+    // An object that answers for nothing has no word to hang the three
+    // `IUnknown` thunks on, so the count is checked before the type is
+    // formed. The bound itself is declared on the returned struct, as
+    // `interface_count`, which is the name every use in the struct and every
+    // caller outside it reads. There is one declaration of it, so no use in
+    // the struct can pick up a second, different count.
+    comptime std.debug.assert(Interfaces.len > 0);
 
     return struct {
         const Self = @This();
@@ -104,8 +103,14 @@ pub fn Object(comptime StateType: type, comptime Interfaces: type) type {
         /// it to find the index of the interface it holds.
         pub const Descriptors = Interfaces;
 
-        /// How many interfaces this object answers for.
-        pub const interface_count = interface_count;
+        /// How many interfaces this object answers for, and the bound every
+        /// walk over `Descriptors` uses.
+        ///
+        /// The derivation is one word per interface of `Descriptors`, and
+        /// `Descriptors` is a tuple literal, so the count is its length. The
+        /// type is formed once, so the count is a `comptime` value and never
+        /// a run-time one.
+        pub const interface_count = Interfaces.len;
 
         /// The vtable words, one per interface, at consecutive offsets. Word
         /// zero is at offset zero, so the object address and the first
@@ -181,7 +186,7 @@ pub fn Object(comptime StateType: type, comptime Interfaces: type) type {
         pub fn indexOf(comptime Interface: type) ?comptime_int {
             comptime {
                 var found: ?comptime_int = null;
-                inline for (Descriptors, 0..) |descriptor, candidate| {
+                for (Descriptors, 0..) |descriptor, candidate| {
                     if (descriptor.Interface == Interface) found = candidate;
                 }
                 return found;
@@ -288,7 +293,9 @@ pub fn Object(comptime StateType: type, comptime Interfaces: type) type {
         }
 
         /// `AddRef` as word `index` receives it.
-        fn addRefThunkFor(comptime index: comptime_int) *const fn (*const IUnknown) callconv(.winapi) u32 {
+        fn addRefThunkFor(
+            comptime index: comptime_int,
+        ) *const fn (*const IUnknown) callconv(.winapi) u32 {
             comptime std.debug.assert(index >= 0);
             comptime std.debug.assert(index < interface_count);
             const Outer = Self;
@@ -302,7 +309,9 @@ pub fn Object(comptime StateType: type, comptime Interfaces: type) type {
         }
 
         /// `Release` as word `index` receives it.
-        fn releaseThunkFor(comptime index: comptime_int) *const fn (*const IUnknown) callconv(.winapi) u32 {
+        fn releaseThunkFor(
+            comptime index: comptime_int,
+        ) *const fn (*const IUnknown) callconv(.winapi) u32 {
             comptime std.debug.assert(index >= 0);
             comptime std.debug.assert(index < interface_count);
             const Outer = Self;
@@ -322,18 +331,18 @@ pub fn Object(comptime StateType: type, comptime Interfaces: type) type {
         }
 
         /// `S_OK`, the status a successful COM call returns.
-        fn sOk() Hresult {
+        fn s_ok() Hresult {
             return @bitCast(@as(u32, @bitCast(win32.foundation.S_OK)));
         }
 
         /// `E_INVALIDARG`, the status for an absent out-parameter.
-        fn eInvalidArg() Hresult {
+        fn e_invalidarg() Hresult {
             return @bitCast(@as(u32, @bitCast(win32.foundation.E_INVALIDARG)));
         }
 
         /// `E_NOINTERFACE`, the status for an identifier this object does not
         /// answer.
-        fn eNoInterface() Hresult {
+        fn e_nointerface() Hresult {
             return @bitCast(@as(u32, @bitCast(win32.foundation.E_NOINTERFACE)));
         }
     };
@@ -341,8 +350,16 @@ pub fn Object(comptime StateType: type, comptime Interfaces: type) type {
 
 // --- Tests -----------------------------------------------------------------
 
+// Every test below releases its holders on the success path and frees the
+// object on the failure path. The release is the assertion that the count
+// reached zero, and a `defer` body may not `try`, so it cannot live in a
+// `defer`. This is the shape "add and release move the count" already uses.
+
 const test_interfaces = .{
-    .{ .Interface = bindings.IRawElementProviderSimple, .Iid = win32.ui.accessibility.IID_IRawElementProviderSimple },
+    .{
+        .Interface = bindings.IRawElementProviderSimple,
+        .Iid = win32.ui.accessibility.IID_IRawElementProviderSimple,
+    },
     .{ .Interface = bindings.IToggleProvider, .Iid = win32.ui.accessibility.IID_IToggleProvider },
     .{ .Interface = bindings.IInvokeProvider, .Iid = win32.ui.accessibility.IID_IInvokeProvider },
 };
@@ -380,7 +397,10 @@ const com_test_base_vtables = blk: {
 test "the words sit one pointer apart and the first word is the object" {
     try std.testing.expectEqual(@as(usize, 0), @offsetOf(TestNode, "words"));
     try std.testing.expectEqual(@sizeOf(usize), @sizeOf(IUnknown));
-    try std.testing.expectEqual(@as(usize, 0), @offsetOf(TestNode, "ref_count") - @offsetOf(TestNode, "words"));
+    try std.testing.expectEqual(
+        @as(usize, 0),
+        @offsetOf(TestNode, "ref_count") - @offsetOf(TestNode, "words"),
+    );
 }
 
 test "a fresh object holds one reference and reads back the state it was given" {
@@ -388,13 +408,14 @@ test "a fresh object holds one reference and reads back the state it was given" 
         .tree_id = 3,
         .node_id = .{ .value = 9 },
     });
-    defer {
-        try std.testing.expectEqual(@as(u32, 0), object.release());
-        object.gpa.destroy(object);
-    }
+    // The release is the check, so it runs here rather than in a `defer`.
+    errdefer object.gpa.destroy(object);
     try std.testing.expectEqual(@as(u32, 1), object.ref_count.load(.acq_rel));
     try std.testing.expectEqual(@as(u64, 3), object.state.tree_id);
     try std.testing.expectEqual(@as(u64, 9), object.state.node_id.value);
+
+    try std.testing.expectEqual(@as(u32, 0), object.release());
+    object.gpa.destroy(object);
 }
 
 test "add and release move the count and stop at one" {
@@ -416,10 +437,8 @@ test "an interface pointer reads back to the object that holds it" {
         .tree_id = 7,
         .node_id = .{ .value = 8 },
     });
-    defer {
-        try std.testing.expectEqual(@as(u32, 0), object.release());
-        object.gpa.destroy(object);
-    }
+    // The release is the check, so it runs here rather than in a `defer`.
+    errdefer object.gpa.destroy(object);
 
     inline for (test_interfaces, 0..) |descriptor, index| {
         const word = object.iface(index);
@@ -427,6 +446,9 @@ test "an interface pointer reads back to the object that holds it" {
         try std.testing.expectEqual(object, found);
         try std.testing.expectEqual(word, found.iface(index));
     }
+
+    try std.testing.expectEqual(@as(u32, 0), object.release());
+    object.gpa.destroy(object);
 }
 
 test "QueryInterface answers each implemented identifier and holds a reference" {
@@ -434,12 +456,8 @@ test "QueryInterface answers each implemented identifier and holds a reference" 
         .tree_id = 5,
         .node_id = .{ .value = 6 },
     });
-    defer {
-        while (object.ref_count.load(.acq_rel) > 0) {
-            try std.testing.expect(object.release() > 0 or true);
-        }
-        object.gpa.destroy(object);
-    }
+    // The release is the check, so it runs here rather than in a `defer`.
+    errdefer object.gpa.destroy(object);
 
     var out: ?*anyopaque = null;
     const status = object.queryInterface(0, iid_unknown, &out);
@@ -452,6 +470,14 @@ test "QueryInterface answers each implemented identifier and holds a reference" 
     try std.testing.expectEqual(@as(u32, 0), @bitCast(second));
     try std.testing.expectEqual(@as(u32, 3), object.ref_count.load(.acq_rel));
     try std.testing.expect(out.? == @as(*anyopaque, @ptrCast(object.iface(1))));
+
+    // Each match added a holder, so the count drops back to zero in three
+    // steps: the two `QueryInterface` successes and the one `create` handed
+    // out.
+    try std.testing.expectEqual(@as(u32, 2), object.release());
+    try std.testing.expectEqual(@as(u32, 1), object.release());
+    try std.testing.expectEqual(@as(u32, 0), object.release());
+    object.gpa.destroy(object);
 }
 
 test "QueryInterface refuses an identifier the object does not answer" {
@@ -459,16 +485,17 @@ test "QueryInterface refuses an identifier the object does not answer" {
         .tree_id = 2,
         .node_id = .{ .value = 1 },
     });
-    defer {
-        try std.testing.expectEqual(@as(u32, 0), object.release());
-        object.gpa.destroy(object);
-    }
+    // The release is the check, so it runs here rather than in a `defer`.
+    errdefer object.gpa.destroy(object);
 
     var out: ?*anyopaque = @ptrFromInt(0xdead);
     const status = object.queryInterface(0, win32.ui.accessibility.IID_ISelectionProvider, &out);
     try std.testing.expectEqual(@as(u32, 0x80004002), @bitCast(status));
     try std.testing.expect(out.? == @as(*anyopaque, @ptrFromInt(0xdead)));
     try std.testing.expectEqual(@as(u32, 1), object.ref_count.load(.acq_rel));
+
+    try std.testing.expectEqual(@as(u32, 0), object.release());
+    object.gpa.destroy(object);
 }
 
 test "the base vtable of each word reaches the object through that word" {
@@ -479,10 +506,8 @@ test "the base vtable of each word reaches the object through that word" {
         .tree_id = 11,
         .node_id = .{ .value = 12 },
     });
-    defer {
-        try std.testing.expectEqual(@as(u32, 0), object.release());
-        object.gpa.destroy(object);
-    }
+    // The release is the check, so it runs here rather than in a `defer`.
+    errdefer object.gpa.destroy(object);
 
     const second = com_test_base_vtables[1];
     try std.testing.expectEqual(@as(u32, 2), second.AddRef(object.iface(1)));
@@ -491,10 +516,16 @@ test "the base vtable of each word reaches the object through that word" {
     const first = com_test_base_vtables[0];
     try std.testing.expectEqual(@as(u32, 2), first.AddRef(object.iface(0)));
     try std.testing.expectEqual(@as(u32, 1), first.Release(object.iface(0)));
+
+    try std.testing.expectEqual(@as(u32, 0), object.release());
+    object.gpa.destroy(object);
 }
 
 test "the descriptor tuple fixes the word order" {
-    try std.testing.expectEqual(@as(?comptime_int, 0), TestNode.indexOf(bindings.IRawElementProviderSimple));
+    try std.testing.expectEqual(
+        @as(?comptime_int, 0),
+        TestNode.indexOf(bindings.IRawElementProviderSimple),
+    );
     try std.testing.expectEqual(@as(?comptime_int, 1), TestNode.indexOf(bindings.IToggleProvider));
     try std.testing.expectEqual(@as(?comptime_int, 2), TestNode.indexOf(bindings.IInvokeProvider));
     try std.testing.expect(TestNode.indexOf(bindings.ISelectionProvider) == null);

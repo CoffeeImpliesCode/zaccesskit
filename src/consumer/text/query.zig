@@ -41,8 +41,6 @@ const NodeRef = @import("../node_id.zig").NodeRef;
 const Point = schema.Point;
 const Position = position.Position;
 const QueryError = tree_state.QueryError;
-const Rect = schema.Rect;
-const TextDirection = schema.TextDirection;
 const TreeState = tree_state.TreeState;
 const WeakRange = range.WeakRange;
 

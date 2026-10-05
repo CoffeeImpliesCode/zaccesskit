@@ -75,6 +75,10 @@ comptime {
     std.debug.assert(bindings.len == 21);
     std.debug.assert(@intFromEnum(bindings[0].id) == 15);
     std.debug.assert(@intFromEnum(bindings[bindings.len - 1].id) == 35);
+    // The rows of `bindings` are the family's domain, so the reachability
+    // claim is over the same rows rather than over a second list. A property
+    // with a descriptor row and no binding here is a compile error.
+    table.assertFamilyReachable(.strings, property_ids);
 }
 
 /// Copies `bytes` into a fresh array and then hands that array to the store,
@@ -648,6 +652,19 @@ const bindings = [_]Binding{
         .set = setBrailleRoleDescription,
         .clear = clearBrailleRoleDescription,
     },
+};
+
+/// The identifiers of the 21 rows above, projected out of `bindings`.
+///
+/// Derived rather than written out a second time, because a hand-kept second
+/// list is a second source of truth for the same 21 properties and the two
+/// could disagree. `assertFamilyReachable` takes this list, so the reachability
+/// claim is made over the rows that carry the functions rather than over a
+/// parallel declaration of them.
+const property_ids: [bindings.len]PropertyId = blk: {
+    var collected: [bindings.len]PropertyId = undefined;
+    for (bindings, 0..) |binding, index| collected[index] = binding.id;
+    break :blk collected;
 };
 
 test "every string property round trips through set then get, and clears" {

@@ -188,7 +188,8 @@ pub const blocked = [blocked_count]Blocked{
     },
     .{
         .symbol = "iosQueuedEventsRaise",
-        .today = "It posts every notification, with a null argument where upstream would pass a node.",
+        .today = "It posts every notification, with a null argument where upstream " ++
+            "would pass a node.",
         .unblocked_by = "AK/ios/src/event.rs:44-52, the PlatformNode argument",
     },
 };
@@ -430,7 +431,7 @@ const callbacks: objc.Callbacks = .{
 /// nothing.
 pub fn iosQueuedEventsRaise(events: *IosQueuedEvents) void {
     if (@intFromPtr(events) == 0) {
-        terminate("accesskit_ios_queued_events_raise", "the handle was null");
+        terminate();
     }
     const gpa = events.gpa;
     const platform = events.platform;
@@ -507,7 +508,7 @@ pub fn iosAdapterNew(
 /// declared allocator. A second call on the same pointer is a use-after-free.
 pub fn iosAdapterFree(adapter: *IosAdapter) void {
     if (@intFromPtr(adapter) == 0) {
-        terminate("accesskit_ios_adapter_free", "the adapter was null");
+        terminate();
     }
     const gpa = adapter.gpa;
     if (adapter.observer) |observer| {
@@ -544,7 +545,7 @@ pub fn iosAdapterUpdateIfActive(
     update_factory_userdata: ?*anyopaque,
 ) ?*IosQueuedEvents {
     if (@intFromPtr(adapter) == 0) {
-        terminate("accesskit_ios_adapter_update_if_active", "the adapter was null");
+        terminate();
     }
     switch (adapter.state) {
         .inactive => return null,
@@ -552,10 +553,7 @@ pub fn iosAdapterUpdateIfActive(
     }
     const handed = update_factory(update_factory_userdata);
     const block = handed orelse {
-        terminate(
-            "accesskit_ios_adapter_update_if_active",
-            "the tree update factory returned null",
-        );
+        terminate();
     };
     const update = takeTransferredUpdate(block);
     switch (adapter.state) {
@@ -620,7 +618,7 @@ pub fn iosAdapterUpdateIfActive(
 /// produces no events.
 pub fn iosAdapterViewDidAppear(adapter: *IosAdapter) ?*IosQueuedEvents {
     if (@intFromPtr(adapter) == 0) {
-        terminate("accesskit_ios_adapter_view_did_appear", "the adapter was null");
+        terminate();
     }
     const ctx = adapter.platform.context;
     if (!adapter.platform.any_assistive_tech_running(ctx)) return null;
@@ -649,7 +647,7 @@ pub fn iosAdapterViewDidAppear(adapter: *IosAdapter) ?*IosQueuedEvents {
 /// asks the container, so the view itself is not an element.
 pub fn iosAdapterIsAccessibilityElement(adapter: *IosAdapter) bool {
     if (@intFromPtr(adapter) == 0) {
-        terminate("accesskit_ios_adapter_is_accessibility_element", "the adapter was null");
+        terminate();
     }
     _ = getOrInitContext(adapter);
     return false;
@@ -673,7 +671,7 @@ pub fn iosAdapterIsAccessibilityElement(adapter: *IosAdapter) bool {
 /// this is recorded rather than left in a comment.
 pub fn iosAdapterAccessibilityElements(adapter: *IosAdapter) ?*anyopaque {
     if (@intFromPtr(adapter) == 0) {
-        terminate("accesskit_ios_adapter_accessibility_elements", "the adapter was null");
+        terminate();
     }
     switch (adapter.state) {
         .inactive => return null,
@@ -702,7 +700,7 @@ pub fn iosAdapterAccessibilityElements(adapter: *IosAdapter) ?*anyopaque {
 /// which is upstream's answer for a point that names nothing.
 pub fn iosAdapterHitTest(adapter: *IosAdapter, x: f64, y: f64) ?*anyopaque {
     if (@intFromPtr(adapter) == 0) {
-        terminate("accesskit_ios_adapter_hit_test", "the adapter was null");
+        terminate();
     }
     const id = hitTestIdentifier(adapter, x, y) catch |failure| {
         reportQueryFailure(failure);
@@ -726,7 +724,7 @@ pub fn iosAdapterHitTest(adapter: *IosAdapter, x: f64, y: f64) ?*anyopaque {
 /// stands for the state that holds no tree.
 pub fn iosAdapterDebug(adapter: *const IosAdapter) ?[*:0]u8 {
     if (@intFromPtr(adapter) == 0) {
-        terminate("accesskit_ios_adapter_debug", "the adapter was null");
+        terminate();
     }
     const gpa = allocation.allocator();
     const text = debugText(gpa, adapter.state) orelse {
@@ -829,7 +827,7 @@ pub fn iosSubclassingAdapterForWindow(
 /// port's class but no owner answers as a view with no adapter.
 pub fn iosSubclassingAdapterFree(adapter: *IosSubclassingAdapter) void {
     if (@intFromPtr(adapter) == 0) {
-        terminate("accesskit_ios_subclassing_adapter_free", "the adapter was null");
+        terminate();
     }
     const gpa = adapter.gpa;
     if (adapter.previous_class) |previous| {
@@ -853,7 +851,7 @@ pub fn iosSubclassingAdapterUpdateIfActive(
     update_factory_userdata: ?*anyopaque,
 ) ?*IosQueuedEvents {
     if (@intFromPtr(adapter) == 0) {
-        terminate("accesskit_ios_subclassing_adapter_update_if_active", "the adapter was null");
+        terminate();
     }
     return iosAdapterUpdateIfActive(adapter.adapter, update_factory, update_factory_userdata);
 }
@@ -1515,12 +1513,13 @@ fn openPlatform(gpa: Allocator) ?objc.Platform {
 
 /// Ends the process for a violation the header says ends it.
 ///
-/// `src/capi/tree_info.zig:713-716` is the same two lines and the same reason:
-/// the C ABI reports an unrecoverable contract violation by ending the process,
-/// because a `null` return is an ordinary answer for most of its functions and
-/// would be read as one.
-fn terminate(function_name: [:0]const u8, reason: [:0]const u8) noreturn {
-    std.debug.print("zaccesskit: {s}: {s}\n", .{ function_name, reason });
+/// `src/capi/tree_info.zig` is the same call and the same reason: the C ABI
+/// reports an unrecoverable contract violation by ending the process, because a
+/// `null` return is an ordinary answer for most of its functions and would be
+/// read as one. This call prints nothing, so which of the eleven call sites saw
+/// the violation is not reported; the header sentence each one names is the
+/// record of it.
+fn terminate() noreturn {
     std.process.exit(1);
 }
 

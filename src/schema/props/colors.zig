@@ -248,6 +248,30 @@ comptime {
     assert(@alignOf(?TextDecoration) == 1);
 }
 
+/// The six properties this family publishes a getter, a setter and a clearer
+/// for, in upstream order: the three colors of `color_property_methods!` at
+/// `accesskit/src/lib.rs:2316-2323`, then the three decorations of
+/// `text_decoration_property_methods!` at `:2325-2332`.
+///
+/// This is the family's whole domain in one place, so
+/// `table.assertFamilyReachable` can hold it against the descriptor table.
+pub const property_ids = [_]table.PropertyId{
+    .color_value,
+    .background_color,
+    .foreground_color,
+    .overline,
+    .strikethrough,
+    .underline,
+};
+
+comptime {
+    // The two invocations carry three entries each, so six. A row added here
+    // without an upstream entry changes the number of functions this module
+    // publishes, so the count is the check.
+    assert(property_ids.len == 6);
+    table.assertFamilyReachable(.colors, property_ids);
+}
+
 /// The color upstream's own test writes at `accesskit/src/lib.rs:1608`.
 const opaque_white: Color = .{ .red = 255, .green = 255, .blue = 255, .alpha = 255 };
 /// The decoration upstream's own test writes at `accesskit/src/lib.rs:1635-1643`.

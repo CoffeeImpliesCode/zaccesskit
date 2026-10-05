@@ -678,7 +678,27 @@ comptime {
             }
         }
     }
+
+    // The rows of the two tables above are the family's domain, so the
+    // reachability claim is over the same rows. A property with a descriptor
+    // row and no entry in either table is a compile error.
+    table.assertFamilyReachable(.enums, property_ids);
 }
+
+/// The identifiers of the 2 boolean rows and the 12 enum rows above, in that
+/// order, which is the family's whole domain.
+///
+/// Derived rather than written out a second time, because a hand-kept second
+/// list is a second source of truth for the same 14 properties and the two
+/// could disagree.
+const property_ids: [bool_properties.len + enum_properties.len]table.PropertyId = blk: {
+    var collected: [bool_properties.len + enum_properties.len]table.PropertyId = undefined;
+    for (bool_properties, 0..) |row, index| collected[index] = row.id;
+    for (enum_properties, 0..) |row, index| {
+        collected[bool_properties.len + index] = row.id;
+    }
+    break :blk collected;
+};
 
 /// Stores every tag of `T` in turn, reads each one back, and clears the property
 /// between tags. A setter that stores one tag and drops the rest fails on the

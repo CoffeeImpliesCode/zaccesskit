@@ -27,3 +27,8 @@ HANDOFF.md
 
 # scratch
 /tmp/
+
+# Object files an agent probe left in the repository root. The house
+# scratch rule sends every build artifact under /home/tmp2; a .o in the
+# root is an agent that ran a probe in the wrong directory.
+*.o

@@ -26,6 +26,14 @@
 //! errors. That is the compile-time property the 27 upstream `macro_rules!`
 //! definitions gave the Rust type checker.
 //!
+//! **A row with no accessor behind it, and why the block below cannot see it.**
+//! Every check in that block reads `property_descriptors` alone, so all of them
+//! pass for a property that has a row and no getter, setter or clearer: the
+//! row is well formed and the property exists. Such a property is reachable
+//! only through `Properties.set`, whose sole assertion is `value != .none`.
+//! `assertFamilyReachable` closes that, and its own section below explains how
+//! seven local statements become a partition of the domain.
+//!
 //! **A function that returns a type is named in the type namespace.** Zig's own
 //! rule, which this module keeps: `PropertyPayloadType` and
 //! `PropertyValuePayloadType` answer `type`, so they take `PascalCase` even
@@ -1048,12 +1056,278 @@ pub fn propertyValueTagOf(id: PropertyId) PropertyValueTag {
     return property_value_tags_by_id[@intFromEnum(id)];
 }
 
+/// How many rows of `property_descriptors` carry each payload tag, indexed by
+/// the tag's discriminant.
+///
+/// The second run-time projection of the table, derived from it the same way
+/// `property_value_tags_by_id` is, so the two cannot disagree. It exists for
+/// `assertFamilyReachable`: a family sweeping all 87 rows to find the ones it
+/// owns costs 87 backwards branches per family and all seven families share
+/// one comptime branch quota, while summing the per-tag counts costs one
+/// addition per tag the family owns.
+pub const property_counts_by_tag: [propertyValueTagCount()]usize = counts: {
+    var collected = [_]usize{0} ** propertyValueTagCount();
+    for (property_descriptors) |row| collected[@intFromEnum(row.tag)] += 1;
+    break :counts collected;
+};
+
 /// The payload type `id` carries, read from its row.
 ///
 /// `comptime`, so a caller may write a generic accessor over the domain and
 /// pin the return type at the call site.
 pub fn PropertyPayloadType(comptime id: PropertyId) type {
     return propertyDescriptor(id).payload;
+}
+
+// -- Family reachability ----------------------------------------------------
+//
+// The seven accessor families in this directory partition the payload tags,
+// and a partition is the only thing that makes "every property has an
+// accessor" a build-time fact rather than a review habit. Each family declares
+// the properties it publishes a getter, a setter and a clearer for.
+//
+// `assertFamilyReachable` holds the three claims that are about one family,
+// and every family calls it:
+//
+// 0. No id twice, so a family's length is the number of properties it claims.
+// 1. Every id the family declares carries a tag that family owns.
+// 2. Every descriptor row carrying a tag that family owns is declared by it.
+//
+// `assertTagsPartitioned` holds the one claim that is about all seven at
+// once, and this module's comptime block calls it once:
+//
+// 3. Every descriptor row's tag is owned by exactly one family.
+//
+// Claims 1 and 2 make each family a complete statement about its own tags, so
+// claim 3 turns seven local statements into a partition of the whole domain: a
+// new descriptor row on an existing tag fails its owner, and a new descriptor
+// row on a new tag fails because no family owns that tag. Either way a row with
+// no accessor behind it is a compile error, which is what the rest of this
+// module's comptime checks could not say.
+//
+// **Why the family owns tags rather than naming properties.** A tag names one
+// payload shape and one accessor family reads it, so a family's tag set is
+// short and fixed by the 27 upstream macro families, while its property list
+// moves every time a property is added. Assigning ownership by tag is what
+// lets claim 2 be a completeness check rather than a restatement: a new row on
+// an owned tag has no way to appear without the owning family failing.
+//
+// **What this does not cover, and why.** The C surface in
+// `src/capi/node_properties.zig` is an independent copy: it pins 87 and 294
+// from `export_names`, never from `propertyIdCount`, so a property added here
+// and not there is invisible to both halves. Bridging the two would mean the
+// schema table reading a generated export list, which inverts the dependency
+// from a pure value layer onto a code generator. `zig build capi-parity`
+// compares the header against `src/capi/*.zig` and is where that half is
+// checked, so the gap is named rather than closed.
+
+/// The accessor families that own payload tags.
+///
+/// `flags.zig` is absent on purpose: the 18 flags live in one `u32` on `Node`,
+/// are not `PropertyId` tags and carry no `PropertyValue` variant, so no
+/// descriptor row can name one.
+pub const Family = enum {
+    ids,
+    numbers,
+    strings,
+    enums,
+    colors,
+    vectors,
+    option,
+};
+
+/// How many families there are, and the `comptime` bound on the sweeps that
+/// walk them.
+pub const familyCount: usize = @typeInfo(Family).@"enum".fields.len;
+
+/// The payload tags `family` owns, and no other family does.
+///
+/// The 28 tags listed across the seven arms plus `PropertyValueTag.none` are
+/// the whole tag domain, which `propertyValueTagCount()` pins at 29. That
+/// arithmetic is why claim 3 of `assertFamilyReachable` can be exhaustive: a
+/// tag in no family is a tag no row can carry, so a new `PropertyValue` variant
+/// has to appear in one of these arms or claim 3 fires on the first row that
+/// uses it.
+pub fn familyTags(comptime family: Family) []const PropertyValueTag {
+    return switch (family) {
+        .ids => &.{ .node_id, .node_id_vec },
+        .numbers => &.{ .f64_, .f32_, .usize_ },
+        .strings => &.{.string},
+        .enums => &.{
+            .bool_,
+            .invalid,
+            .toggled,
+            .live,
+            .text_direction,
+            .orientation,
+            .sort_direction,
+            .aria_current,
+            .auto_complete,
+            .has_popup,
+            .list_style,
+            .text_align,
+            .vertical_offset,
+        },
+        .colors => &.{ .color, .text_decoration },
+        .vectors => &.{ .length_vec, .coord_vec, .custom_action_vec },
+        .option => &.{ .affine, .rect, .text_selection, .tree_id },
+    };
+}
+
+/// The family that owns each payload tag, or `null` when no family does.
+///
+/// Built once, here, so both halves of the reachability claim read a lookup
+/// rather than each sweeping the seven tag lists: seven comptime blocks share
+/// one branch quota, and a per-family scan of the 13-tag enums list across 87
+/// descriptor rows is 1131 branches, which exhausts it on the third family
+/// analysed. This table is 29 entries wide and is built in 28 steps.
+const family_by_tag: [propertyValueTagCount()]?Family = owners: {
+    var collected = [_]?Family{null} ** propertyValueTagCount();
+    for (std.enums.values(Family)) |family| {
+        for (familyTags(family)) |tag| {
+            if (collected[@intFromEnum(tag)]) |first| {
+                @compileError(std.fmt.comptimePrint(
+                    "tag `{s}` is owned by props/{s}.zig and props/{s}.zig; one family each",
+                    .{ @tagName(tag), @tagName(first), @tagName(family) },
+                ));
+            }
+            collected[@intFromEnum(tag)] = family;
+        }
+    }
+    break :owners collected;
+};
+
+/// Whether `claimed` names `id`. A `comptime` domain, read only on the path
+/// where the count check has already failed.
+fn declaresId(comptime claimed: []const PropertyId, id: PropertyId) bool {
+    for (claimed) |candidate| {
+        if (candidate == id) return true;
+    }
+    return false;
+}
+
+/// Holds `claimed` to the properties whose descriptor tag `family` owns, and
+/// fails the build otherwise.
+///
+/// `comptime` and never called at run time, because each of the three claims it
+/// cannot hold ends in `@compileError`. `claimed` is taken by value rather
+/// than as a slice so its length is a comptime value and the loop unrolls: a
+/// loop over a slice of unknown length is not unrolled, and seven of those
+/// against the default quota of 1000 branches is what exhausted it.
+///
+/// **Claim 2 is a count, not a sweep.** Claim 1 says every id in `claimed`
+/// carries a tag this family owns and claim 0 says the ids are distinct, so
+/// `claimed` is a subset of the descriptor rows carrying an owned tag. A subset
+/// of the same cardinality is the set, so `claimed.len` equal to the sum of
+/// `property_counts_by_tag` over the family's tags says every such row is
+/// claimed without reading any of them. That matters because the seven families
+/// share one comptime branch quota and a per-family sweep of all 87 rows
+/// exhausts it on the third family analysed.
+pub fn assertFamilyReachable(comptime family: Family, comptime claimed: anytype) void {
+    // The default comptime branch quota is 1000 for one evaluation, and this
+    // body is evaluated once per family, so the seven of them between them
+    // exceed it. It is set once and for all rather than tuned down to the
+    // smallest passing number: a quota is a budget, not a bound, and a figure
+    // derived from the domain would break the build the day a family's table
+    // grew by one row.
+    //
+    // The quota is set here rather than at the seven call sites so the figure
+    // and the code it covers stay in one place.
+    @setEvalBranchQuota(1_000_000);
+    const name = @tagName(family);
+
+    // Claim 0: no id twice. A duplicate plus a missing row would leave
+    // `claimed.len` equal to the owned row count and let the defect through,
+    // so this is a claim of its own rather than part of claim 2.
+    //
+    // The seen set is a bitmask rather than a `propertyDescriptorCount` array
+    // of booleans and rather than a pairwise comparison, because writing one
+    // entry of a comptime array copies the whole array and comparing every
+    // pair costs `claimed.len` squared. `PropertyId` is dense and `u128` holds
+    // 128 discriminants, so one shift and one or per id is enough for any
+    // domain this table could hold.
+    var seen: u128 = 0;
+    for (claimed, 0..) |id, index| {
+        const bit = @as(u128, 1) << @intCast(@intFromEnum(id));
+        if (seen & bit != 0) {
+            @compileError(std.fmt.comptimePrint(
+                "props/{s}.zig lists `{s}` at entry {d} and again; one entry per property",
+                .{ name, @tagName(id), index },
+            ));
+        }
+        seen |= bit;
+
+        // Claim 1: every declared id carries a tag this family owns, read from
+        // the table the seven families built between them. Without it a family
+        // could claim a property and read the wrong arm, and a second family
+        // could also claim it and both would be checked against nothing.
+        const tag = propertyValueTagOf(id);
+        if (family_by_tag[@intFromEnum(tag)] != family) {
+            @compileError(std.fmt.comptimePrint(
+                "props/{s}.zig claims `{s}`, whose descriptor row carries tag `{s}`; " ++
+                    "props/{s}.zig owns that tag",
+                .{
+                    name,
+                    @tagName(id),
+                    @tagName(tag),
+                    if (family_by_tag[@intFromEnum(tag)]) |owner| @tagName(owner) else "no family",
+                },
+            ));
+        }
+    }
+
+    // The rows carrying a tag this family owns, counted over the family's tags
+    // rather than over `claimed`. Summing per claimed id would count a tag with
+    // three rows once for each of the three properties that share it, which is
+    // 9 where the table holds 3.
+    var owned_rows: usize = 0;
+    for (familyTags(family)) |tag| owned_rows += property_counts_by_tag[@intFromEnum(tag)];
+
+    // Claim 2, by the bijection argued above.
+    if (claimed.len != owned_rows) {
+        // Name the row rather than the counts alone. This sweep reads all
+        // `propertyDescriptorCount` rows, which is the cost the count check
+        // exists to avoid, so it runs only on this path.
+        for (property_descriptors, 0..) |row, index| {
+            if (family_by_tag[@intFromEnum(row.tag)] == family and
+                !declaresId(&claimed, row.id))
+            {
+                @compileError(std.fmt.comptimePrint(
+                    "descriptor row {d} is `{s}` and carries tag `{s}`, which " ++
+                        "props/{s}.zig owns; that family declares no accessor for it",
+                    .{ index, @tagName(row.id), @tagName(row.tag), name },
+                ));
+            }
+        }
+        @compileError(std.fmt.comptimePrint(
+            "props/{s}.zig lists {d} properties but {d} carry a tag it owns",
+            .{ name, claimed.len, owned_rows },
+        ));
+    }
+}
+
+/// Holds the seven tag lists above to a partition of the tag domain, and fails
+/// the build otherwise.
+///
+/// One call, from this module's own comptime block, because the claim is about
+/// the seven families together and not about any one of them.
+pub fn assertTagsPartitioned() void {
+    comptime {
+        // `none` is the absence tag: no descriptor row carries it and no family
+        // publishes an accessor for it, so it stays unowned by design.
+        if (family_by_tag[@intFromEnum(PropertyValueTag.none)] != null) {
+            @compileError("PropertyValueTag.none is the absence tag and no family owns it");
+        }
+        for (property_descriptors, 0..) |row, index| {
+            if (family_by_tag[@intFromEnum(row.tag)] == null) {
+                @compileError(std.fmt.comptimePrint(
+                    "descriptor row {d} is `{s}` and carries tag `{s}`, which no " ++
+                        "family owns; add the tag to one arm of `familyTags`",
+                    .{ index, @tagName(row.id), @tagName(row.tag) },
+                ));
+            }
+        }
+    }
 }
 
 /// The properties one node carries.
@@ -1367,6 +1641,12 @@ comptime {
     std.debug.assert(propertyIdCount == 87);
     std.debug.assert(propertyIdTagCount == propertyIdCount);
     std.debug.assert(propertyValueTagCount() == 29);
+
+    // The seven families partition the payload tags, so every row above is
+    // reachable through the family that owns its tag. The per-family half of
+    // that claim lives in each family's own module, because only the family
+    // knows which properties it publishes accessors for.
+    assertTagsPartitioned();
     // `Property` and `Properties` are plain structs and nothing outside this
     // module depends on their size, so no pin is taken on either. Only
     // `PropertyValue` is pinned: its size is the largest payload plus the tag,
@@ -1867,7 +2147,8 @@ test "clone copies every property and shares no buffer" {
 
     // Distinct buffers for every owned payload, so releasing one store leaves
     // the other whole.
-    const source_bytes = (source.get(.label) orelse return error.SourceLabelAbsent).string.items.ptr;
+    const source_bytes =
+        (source.get(.label) orelse return error.SourceLabelAbsent).string.items.ptr;
     const copy_bytes = (copy.get(.label) orelse return error.CopyLabelAbsent).string.items.ptr;
     try testing.expect(source_bytes != copy_bytes);
     try testing.expectEqualStrings("label", copy.get(.label).?.string.items);
@@ -1891,7 +2172,8 @@ test "cloneInto reuses the destination buffers and drops what is gone" {
         testing.allocator,
         "gone",
     )));
-    const kept_buffer = (out.get(.label) orelse return error.DestinationLabelAbsent).string.items.ptr;
+    const kept_buffer =
+        (out.get(.label) orelse return error.DestinationLabelAbsent).string.items.ptr;
 
     try source.cloneInto(&out);
     try testing.expect(source.eql(&out));

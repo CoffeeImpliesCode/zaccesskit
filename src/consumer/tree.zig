@@ -316,7 +316,10 @@ pub const Tree = struct {
         // two, which are `getOrCreateIndex`'s own two map inserts, leaked, and
         // indices from the third onward did not, because those fail inside
         // `applyUpdate`, which does release.
-        const assigned_index = state.tree_index_map.getOrCreateIndex(gpa, owned_update.tree_id) catch |err| {
+        const assigned_index = state.tree_index_map.getOrCreateIndex(
+            gpa,
+            owned_update.tree_id,
+        ) catch |err| {
             owned_update.deinit(gpa);
             return err;
         };
