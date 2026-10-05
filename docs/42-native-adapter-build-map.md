@@ -782,13 +782,14 @@ unpacks to 648 `.zig` files and 64 MB. Its `build.zig.zon` declares
 `.version = "42.0.39-preview"`, `.minimum_zig_version = "0.14.0"` and no
 dependencies, so a 0.16.0 build may fetch it and nothing in it opens a header.
 
-**Four files sit outside the analysis graph, and three of the four do not
-compile against that pin.** `build.zig.zon` names only `zio`, so
-`bindings.zig`, `com.zig`, `error_codes.zig` and `window_handle.zig` are
+**Four files sat outside the analysis graph, and three of the four did not
+compile against that pin.** `build.zig.zon` named only `zio`, so
+`bindings.zig`, `com.zig`, `error_codes.zig` and `window_handle.zig` were
 reached by no shard. Compiling copies of the four against the pinned tree with
 Zig 0.16.0 gives this table. `build-obj` roots at the file, so it analyses the
 container and not the unreferenced declarations. `test --test-no-exec` reaches
-the bodies and the `test` blocks.
+the bodies and the `test` blocks. This table is the measurement before the
+change; the decision below records what the port did with it.
 
 | File | `build-obj`, three targets | `test --test-no-exec` on `x86_64-linux` | On the other two rows |
 |---|---|---|---|
@@ -810,13 +811,12 @@ The `error_codes.zig` comment above that assertion says the SDK gives every
 `UIA_E_*` code facility `15`. That is false. Three of the four carry facility
 `WIN32` and one carries facility `19`, so the oracle, not the port, is wrong.
 
-`window_handle.zig` has no caller for a second reason. The C seam declares the
+`window_handle.zig` had no caller for a second reason. The C seam declares the
 handle as `boundary.Hwnd`, and `src/capi/boundary.zig:84` spells that
 `?*anyopaque`. `bindings.zig` declares it as `*opaque{}`, which is not
-nullable. A wrapper over the binding's handle cannot satisfy a seam that wants
-an optional one, so nothing in the adapter could name this type without a
-conversion the seam never asks for. The seam chose nullable before the pin
-existed, and the port has used the raw handle everywhere since.
+nullable, so the wrapper and the seam could not both hold the value. The seam
+chose nullable before the pin existed, and the port has used the raw handle
+everywhere since. The decision below settles it.
 
 **`bindings.zig` has no defect, and it cannot be analysed for two of the three
 rows in the matrix.** Its `VTable` fields are `callconv(.winapi)`, and
@@ -826,19 +826,60 @@ architecture reaches `else => unreachable`. `aarch64-linux` fails with
 `error: calling convention 'aarch64_aapcs_win' not supported by compiler
 backend 'stage2_llvm'` and `powerpc64-linux` fails with `error: reached
 unreachable code`. Both rows are in `cross-test.profile.sh:38-42` and
-`CROSS_REQUIRE_RUNNERS=1` turns a foreign build failure into a failure, so the
-pin needs the tests that read a `VTable` scoped to an architecture where
-`.winapi` resolves before any row goes green.
+`CROSS_REQUIRE_RUNNERS=1` turns a foreign build failure into a failure. The
+decision below scopes those tests rather than claiming them.
 
-**Decision.** The pin is adoptable and is not adopted, and the blocker is not
-the absence of a package. It needs the defects above fixed, the tests that read
-a `VTable` scoped, and one `zig build` to compute the `.hash` that
-`build.zig.zon` requires. The `HWND` defect is a design question rather than a
-misspelling, because `src/capi/boundary.zig:84` wants `?*anyopaque` and
-zigwin32 gives `*opaque{}`, and the decision about which type owns "no window"
-belongs to whoever owns the C seam. Until all of that is done the port claims
-nothing from the COM layer, and `src/adapters/windows/root.zig` records the
-measurement so no reader takes the count in `zig build test` for coverage of it.
+**Decision, taken 2026-10-06.** The pin is adopted. `build.zig.zon` names
+`win32` at the commit above with the `.hash` that `zig build` computed from the
+resolved tree, `build.zig` hands the module to all six module roots, and
+`src/adapters/windows/root.zig` reaches the four files through one name,
+`WindowsBoundary`. The measured result: `zig build test` runs 1475 tests per
+shard against 1451 before, and `cross-test` reports `x86_64-linux` 1475,
+`aarch64-linux` 1465, `powerpc64-linux` 1465.
+
+| Recorded defect | Fix | Evidence |
+|---|---|---|
+| `com.zig:367` | `Object` takes the descriptor tuple by value | a tuple *type* in Zig 0.16.0 carries no `.len` and cannot be indexed, so a `type` parameter cannot read one descriptor. `bindings.zig` was not the file at fault |
+| `error_codes.zig:44`, `:51`, `:58`, `:66` | the four codes are read from `bindings.uia` | they are declared in `win32/ui/accessibility.zig`, not `win32/foundation.zig`, and each is a plain `u32`, so the double `@bitCast` became one |
+| `error_codes.zig:159` | the oracle, not the port | three codes carry facility `4` and `INVALIDOPERATION` carries `19`; the test now asserts `(bits >> 16) & 0x3FF` per code |
+| `window_handle.zig:51`, `:64`, `:99` | `raw` is `?Hwnd` and the wrapper is a plain `struct` | see below |
+
+**The `HWND` decision.** `WindowHandle.raw` is `?bindings.Hwnd` and the wrapper
+is a plain `struct`, not an `extern struct`. The binding's `HWND` is
+`*opaque{}`, so the type cannot express "no window" at all, while
+`src/capi/boundary.zig:84` spells the same handle as `?*anyopaque` and the SDK
+types it as a `HWND` that may be `NULL`. The wrapper therefore owns the
+optional. **The cost at the C seam is one line and one behaviour change.** The
+header declares one pointer and the seam type is one optional pointer, so the
+value crossing the boundary is the same size and the same address. In Zig a C
+caller that passes `NULL` now reads `isNull` as `true` instead of dispatching a
+message to address zero. The wrapper is not an `extern struct` because it never
+crosses into C by value, so a C layout promise buys nothing, and it would
+freeze the field list with the nullability that is a Zig decision.
+
+**Four further defects, found because the first one masked them.** The table
+above records what the first compile stopped at. The three that follow were
+never reached and were not in it: `create` assigned a `*const anyopaque` where
+the vtable field wants `*const VTable`; the four `@fieldParentPtr("words", …)`
+calls treated a pointer to word `index` as a pointer to the array, so they
+would have read `index` words below the object; `release` returned the count
+before the decrement while its own doc comment and its tests say after; and
+`queryInterface` declared `ppv` non-optional, so the `E_INVALIDARG` branch it
+documents could not compile. All four are fixed.
+
+**The `.winapi` rows, as an admission and not a claim.** `bindings.zig`
+declares `winapi_resolves`, which is `builtin.cpu.arch == .x86_64` and is
+measured rather than derived: `x86_64` compiles, `aarch64` reaches
+`error: calling convention 'aarch64_aapcs_win' not supported by compiler
+backend 'stage2_llvm'`, `powerpc64` and `riscv64` reach `else => unreachable`
+at `lib/std/builtin.zig:137`, and `x86` accepts the convention and then fails
+the 64-bit layout assertions in the same file. Ten tests are scoped to it, four
+in `bindings.zig` and six in `com.zig`, and each answers
+`error.SkipZigTest` elsewhere. **So `aarch64-linux` and `powerpc64-linux` do
+not execute this code at all.** They compile every other statement of all four
+files and run the other thirteen tests, which is the whole of the 1475 against
+1465 gap. The two rows are coverage of everything except a calling convention
+the compiler does not have.
 
 The AT-SPI side of the same finding took the other branch. `goose` supplied the
 D-Bus types there, so those modules now write their own body bytes and are
@@ -853,8 +894,8 @@ The adapter runs nowhere. Every item below is absent, not unverified.
 
 | Missing | Where the port stops today |
 |---|---|
-| the type half of the boundary | `syscalls.zig` declares the event, property and window-message identifiers itself, and no module in the analysis graph names a COM interface |
-| the COM object base | `com.zig` holds it and does not compile. No object has a vtable pointer, a reference count or a `QueryInterface` |
+| the type half of the boundary | **present since 2026-10-06.** `bindings.zig` names all 13 interfaces, all 26 types and the 181-constant census, and `zig build test` runs its 6 tests |
+| the COM object base | **present since 2026-10-06.** `com.zig` compiles and its 8 tests run: an object has a vtable pointer per interface, a reference count and a `QueryInterface` that answers `IUnknown`, the three implemented identifiers and `E_NOINTERFACE` for anything else |
 | the node layer | `node.rs` is 1539 lines and `text.rs` is 652 upstream. No `PlatformNode` exists, so `ProviderSlot.interface` is a stable address with a `null` interface and every raise is refused by the seam |
 | the 51 vtable slots | no interface is implemented, so no UI Automation client can call the adapter |
 | the `VARIANT` owner | `docs/16` section 9.4 records that the adapter never names `VariantInit` or `VariantClear` because `windows-rs` frees the value in `Drop`. Zig has no such lifetime, so no owner exists |

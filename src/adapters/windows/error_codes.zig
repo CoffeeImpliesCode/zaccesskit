@@ -8,8 +8,9 @@
 //! **Why the port needs this file at all.** Upstream returns `windows::core::Error`,
 //! which is a newtype over `HRESULT` with a `Debug` and a `Display`. Zig has
 //! no `HRESULT` in the standard library, so the port names the codes itself and
-//! converts with `@bitCast`. That conversion is the whole risk in this file and
-//! it is pinned by the test at the end.
+//! converts with `@bitCast`. That conversion is the whole risk in this file,
+//! and the two sweeps below it pin it: one against the SDK's own bit layout
+//! and one against the facility each code carries.
 //!
 //! **What this file does not hold.** No error set, because nothing here can
 //! fail: every function returns a value. The thunks that return a status to a
@@ -38,24 +39,26 @@ pub fn notImplemented() Hresult {
 
 /// `UIA_E_ELEMENTNOTAVAILABLE`, the code for a node the tree no longer holds.
 ///
-/// Upstream `util.rs:360-362`. The constant is declared as an `HRESULT`-typed
-/// value in the binding, so the cast is a bit cast in both directions.
+/// Upstream `util.rs:360-362`. The four `UIA_E_*` codes are declared in
+/// `win32/ui/accessibility.zig` at the pinned commit, not in
+/// `win32/foundation.zig`, and each is a plain `u32` there, so the cast is
+/// one `@bitCast` from the constant to the packed `HRESULT` the port returns.
 pub fn elementNotAvailable() Hresult {
-    return @bitCast(@as(u32, @bitCast(bindings.win32.foundation.UIA_E_ELEMENTNOTAVAILABLE)));
+    return @bitCast(bindings.uia.UIA_E_ELEMENTNOTAVAILABLE);
 }
 
 /// `UIA_E_ELEMENTNOTENABLED`, the code for an action on a disabled node.
 ///
 /// Upstream `util.rs:364-366`.
 pub fn elementNotEnabled() Hresult {
-    return @bitCast(@as(u32, @bitCast(bindings.win32.foundation.UIA_E_ELEMENTNOTENABLED)));
+    return @bitCast(bindings.uia.UIA_E_ELEMENTNOTENABLED);
 }
 
 /// `UIA_E_INVALIDOPERATION`, the code for an action the node does not allow.
 ///
 /// Upstream `util.rs:368-370`.
 pub fn invalidOperation() Hresult {
-    return @bitCast(@as(u32, @bitCast(bindings.win32.foundation.UIA_E_INVALIDOPERATION)));
+    return @bitCast(bindings.uia.UIA_E_INVALIDOPERATION);
 }
 
 /// `UIA_E_NOTSUPPORTED`, the code for a property this node does not carry.
@@ -63,7 +66,7 @@ pub fn invalidOperation() Hresult {
 /// Upstream `util.rs:372-374`. This is the code the `GetPropertyValue` thunk
 /// answers for a property outside the 41 the adapter serves.
 pub fn notSupported() Hresult {
-    return @bitCast(@as(u32, @bitCast(bindings.win32.foundation.UIA_E_NOTSUPPORTED)));
+    return @bitCast(bindings.uia.UIA_E_NOTSUPPORTED);
 }
 
 /// `S_OK`, the code for a call that succeeded.
@@ -127,7 +130,10 @@ pub fn requiredParam(comptime T: type, param: ?*const T) ?*const T {
 
 test "the status code and the integer are the same bits" {
     try std.testing.expectEqual(@as(u32, 0), toBits(ok()));
-    try std.testing.expectEqual(@as(u32, 0x80004005), toBits(invalidArg()));
+    // `E_INVALIDARG` is `HRESULT_FROM_WIN32(ERROR_INVALID_PARAMETER)`, so it is
+    // `0x80070057`: severity one, facility seven and code `0x57`. The earlier
+    // expectation of `0x80004005` was `E_FAIL` and was wrong.
+    try std.testing.expectEqual(@as(u32, 0x80070057), toBits(invalidArg()));
     try std.testing.expectEqual(@as(u32, 0x80004001), toBits(notImplemented()));
     try std.testing.expectEqual(@as(u32, 0x80004005), toBits(fail()));
     try std.testing.expectEqual(ok(), fromBits(0));
@@ -145,25 +151,35 @@ test "only the success code reports no failure" {
     try std.testing.expect(isFailure(notSupported()));
 }
 
-test "the four UI Automation codes carry the UIA facility" {
-    // The SDK gives every `UIA_E_*` code the facility `15`, so the high byte
-    // is `0x80` and the facility nibble is `0x0F`. A code that lost its
-    // facility would still be a failure, so the bit test above would pass and
-    // this one would not.
+test "the four UI Automation codes keep the facility the SDK gave each one" {
+    // The SDK does not give all four codes one facility, so there is no single
+    // mask to assert and the earlier claim that they all carried facility
+    // `15` was wrong. A status code is one severity bit, a ten-bit facility
+    // above it and sixteen bits of code, so the facility of each code is
+    // `(bits >> 16) & 0x3FF`. Measured from the pinned binding:
+    // `ELEMENTNOTAVAILABLE`, `ELEMENTNOTENABLED` and `NOTSUPPORTED` carry
+    // facility `4`, and `INVALIDOPERATION` carries facility `19`. A code that
+    // lost its facility still reads as a failure, so the bit test above would
+    // pass and this one would not.
     inline for (.{
         elementNotAvailable(),
         elementNotEnabled(),
-        invalidOperation(),
         notSupported(),
     }) |status| {
-        try std.testing.expectEqual(@as(u32, 0x800C0000), toBits(status) & 0xFFFFF000);
+        try std.testing.expectEqual(@as(u32, 4), (toBits(status) >> 16) & 0x3FF);
     }
+    try std.testing.expectEqual(@as(u32, 19), (toBits(invalidOperation()) >> 16) & 0x3FF);
 }
 
-test "the three unprefixed codes carry the COM facility" {
-    inline for (.{ invalidArg(), notImplemented(), fail() }) |status| {
-        try std.testing.expectEqual(@as(u32, 0x80004000), toBits(status) & 0xFFFFF000);
+test "the three unprefixed codes keep the facility the SDK gave each one" {
+    // The SDK does not give all three codes one facility. `E_NOTIMPL` and
+    // `E_FAIL` are plain COM codes and carry facility `0`; `E_INVALIDARG` is
+    // `HRESULT_FROM_WIN32` and carries facility `7`. So this is three
+    // measured facilities rather than one mask.
+    inline for (.{ notImplemented(), fail() }) |status| {
+        try std.testing.expectEqual(@as(u32, 0), (toBits(status) >> 16) & 0x3FF);
     }
+    try std.testing.expectEqual(@as(u32, 7), (toBits(invalidArg()) >> 16) & 0x3FF);
 }
 
 test "a required parameter passes a pointer through and rejects an absent one" {

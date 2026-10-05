@@ -14,18 +14,20 @@
 //! arithmetic and the message table are all plain Zig and are all covered by
 //! tests in the modules that own them.
 //!
-//! **What needs the real platform.** Three things, and only three:
+//! **What still needs the real platform.** Two things, and only two:
 //!
-//! 1. `bindings.zig`, `com.zig` and `error_codes.zig`, which need the pinned
-//!    `zigwin32` package. `build.zig.zon` does not name it, so those three
-//!    files are outside the Linux analysis graph and nothing here imports them.
-//!    They are the COM node layer: the thirteen vtables, the `VARIANT` writer
-//!    and the status codes a UI Automation client reads.
-//! 2. The `extern "win32"` bodies inside `syscalls.zig`, which are behind
+//! 1. The `extern "win32"` bodies inside `syscalls.zig`, which are behind
 //!    `if (builtin.os.tag == .windows)` and so are **unverified** on this host.
-//! 3. The node layer that fills `ProviderSlot.interface`. Until it exists, every
+//! 2. The node layer that fills `ProviderSlot.interface`. Until it exists, every
 //!    provider slot is a stable address with a `null` interface, and every raise
 //!    is refused by the seam rather than faked.
+//!
+//! `bindings.zig`, `com.zig`, `error_codes.zig` and `window_handle.zig` are no
+//! longer on that list. `build.zig.zon` names `zigwin32` and `build.zig` hands
+//! it to every shard, so the four files are in the analysis graph, their 22
+//! tests run in `zig build test`, and `WindowsBoundary` is the one name that
+//! reaches all four. What the four files do not do is implement any interface,
+//! so the node layer above is still the gap.
 //!
 //! **Loop bounds.** No loop in this file outside a test.
 //!
@@ -44,6 +46,20 @@ const adapter = @import("adapter.zig");
 const subclass = @import("subclass.zig");
 const syscalls = @import("syscalls.zig");
 const schema = @import("../../schema/root.zig");
+
+/// The COM boundary, as one namespace. These four files carry the type half
+/// of the Windows boundary and the object model, and they reach
+/// `@import("win32")`, which `build.zig` now names for every shard. Nothing
+/// below calls them yet: the node layer that fills `ProviderSlot.interface`
+/// does not exist. They are reached here so their tests run, and the
+/// `refAllDecls` test at the end of this file is what forces their bodies to
+/// be analysed rather than only their containers.
+pub const WindowsBoundary = struct {
+    pub const bindings = @import("bindings.zig");
+    pub const com = @import("com.zig");
+    pub const error_codes = @import("error_codes.zig");
+    pub const window_handle = @import("window_handle.zig");
+};
 
 const ActionHandler = boundary.ActionHandler;
 const ActivationHandler = boundary.ActivationHandler;
@@ -695,4 +711,16 @@ test "the whole lifecycle runs under the testing allocator and leaks nothing" {
     // The pair holds nothing, so every block the library took came back through
     // the pair and not through a free it did not own.
     try testing.expectEqual(@as(usize, 0), pair.liveBlocks());
+}
+
+test "the COM boundary is reached, so its tests run and its bodies are analysed" {
+    // `WindowsBoundary` is a re-export nothing below calls, and Zig analyses
+    // lazily, so naming it compiles without looking at one of the four files.
+    // This sweep is what makes the COM layer part of the graph: it forces the
+    // declarations of all four, and with them the 22 tests they declare.
+    testing.refAllDecls(WindowsBoundary);
+    testing.refAllDecls(WindowsBoundary.com);
+    testing.refAllDecls(WindowsBoundary.error_codes);
+    testing.refAllDecls(WindowsBoundary.window_handle);
+    testing.refAllDecls(WindowsBoundary.bindings);
 }

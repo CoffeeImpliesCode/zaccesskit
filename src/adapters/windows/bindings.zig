@@ -35,6 +35,40 @@
 //! value, and that each class holds the count the map re-derived.
 
 const std = @import("std");
+const builtin = @import("builtin");
+
+/// Whether this compiler and target can express a `callconv(.winapi)`
+/// function pointer, which every vtable field in the pinned binding is.
+///
+/// Measured with Zig 0.16.0 on this host, one `zig test --test-no-exec` per
+/// architecture, reading the first error of each:
+///
+/// | Architecture | What the compiler does |
+/// |---|---|
+/// | `x86_64-linux` | compiles |
+/// | `aarch64-linux` | no `aarch64_aapcs_win` in `stage2_llvm` |
+/// | `powerpc64-linux` | `error: reached unreachable code` at `lib/std/builtin.zig:137` |
+/// | `riscv64-linux` | the same `unreachable` |
+/// | `x86-linux` | accepts the convention, then fails the 64-bit layout assertions in this file |
+///
+/// The `aarch64-linux` diagnostic in full is `error: calling convention
+/// 'aarch64_aapcs_win' not supported by compiler backend 'stage2_llvm'`.
+///
+/// `lib/std/builtin.zig:132-138` gives `winapi` a value for four
+/// architectures: `x86_64`, `x86`, `aarch64` and `thumb`. Two of those four
+/// do not survive contact with the compiler. `stage2_llvm` has no
+/// `aarch64_aapcs_win`, and a 32-bit `x86` target fails the layout block
+/// below, which asserts 64-bit sizes. So this value is measured and is `true`
+/// for `x86_64` alone.
+///
+/// **What this costs, stated as an admission.** Every test below that reads
+/// a `VTable` is scoped to this value, so on `aarch64-linux` and
+/// `powerpc64-linux` it answers `error.SkipZigTest` and the runner counts it
+/// as skipped. Those two rows of `cross-test.profile.sh` therefore do not
+/// execute the vtable code at all. They still compile every other statement
+/// of this file, still run the other four tests, and still catch every
+/// defect that is not a calling convention.
+pub const winapi_resolves = builtin.cpu.arch == .x86_64;
 
 /// The pinned binding package. `build.zig.zon` must name it `win32`.
 pub const win32 = @import("win32");
@@ -589,32 +623,39 @@ test "no constant name repeats inside a class" {
 }
 
 test "the fourteen implemented interfaces are all distinct and all are COM" {
-    try std.testing.expectEqual(@as(usize, 13), implemented_interfaces.len);
-    inline for (implemented_interfaces, 0..) |outer, outer_index| {
-        std.debug.assert(@hasDecl(outer, "VTable"));
-        try std.testing.expectEqual(@as(usize, 0), @offsetOf(outer.VTable, "base"));
-        inline for (implemented_interfaces, 0..) |inner, inner_index| {
-            if (outer_index >= inner_index) continue;
-            try std.testing.expect(outer != inner);
+    // The skip is the `else` branch and the work is the body, so the body is
+    // not analysed on an architecture that cannot express `.winapi`.
+    if (comptime winapi_resolves) {
+        try std.testing.expectEqual(@as(usize, 13), implemented_interfaces.len);
+        inline for (implemented_interfaces, 0..) |outer, outer_index| {
+            std.debug.assert(@hasDecl(outer, "VTable"));
+            try std.testing.expectEqual(@as(usize, 0), @offsetOf(outer.VTable, "base"));
+            inline for (implemented_interfaces, 0..) |inner, inner_index| {
+                if (outer_index >= inner_index) continue;
+                try std.testing.expect(outer != inner);
+            }
         }
-    }
+    } else return error.SkipZigTest;
 }
 
 test "every vtable begins with the three IUnknown slots" {
-    const unknown = @typeInfo(IUnknown.VTable).@"struct";
-    try std.testing.expectEqual(@as(usize, 3), unknown.fields.len);
-    try std.testing.expectEqualStrings("QueryInterface", unknown.fields[0].name);
-    try std.testing.expectEqualStrings("AddRef", unknown.fields[1].name);
-    try std.testing.expectEqualStrings("Release", unknown.fields[2].name);
-    inline for (implemented_interfaces) |Interface| {
-        const info = @typeInfo(Interface.VTable).@"struct";
-        std.debug.assert(info.fields.len >= 1);
-        // One base plus at least one method. `IInvokeProvider` and
-        // `IScrollItemProvider` carry exactly one, so the lower bound is two.
-        try std.testing.expect(info.fields.len >= 2);
-        try std.testing.expectEqualStrings("base", info.fields[0].name);
-        try std.testing.expectEqual(@as(usize, 0), @offsetOf(Interface.VTable, "base"));
-    }
+    if (comptime winapi_resolves) {
+        const unknown = @typeInfo(IUnknown.VTable).@"struct";
+        try std.testing.expectEqual(@as(usize, 3), unknown.fields.len);
+        try std.testing.expectEqualStrings("QueryInterface", unknown.fields[0].name);
+        try std.testing.expectEqualStrings("AddRef", unknown.fields[1].name);
+        try std.testing.expectEqualStrings("Release", unknown.fields[2].name);
+        inline for (implemented_interfaces) |Interface| {
+            const info = @typeInfo(Interface.VTable).@"struct";
+            std.debug.assert(info.fields.len >= 1);
+            // One base plus at least one method. `IInvokeProvider` and
+            // `IScrollItemProvider` carry exactly one, so the lower bound is
+            // two.
+            try std.testing.expect(info.fields.len >= 2);
+            try std.testing.expectEqualStrings("base", info.fields[0].name);
+            try std.testing.expectEqual(@as(usize, 0), @offsetOf(Interface.VTable, "base"));
+        }
+    } else return error.SkipZigTest;
 }
 
 test "every implemented vtable names its slots in the order COM dispatches" {
@@ -623,124 +664,128 @@ test "every implemented vtable names its slots in the order COM dispatches" {
     // failure appears on a screen reader rather than in a build, so the names
     // and the order are pinned here against the values measured from the
     // binding on this host.
-    const Expected = struct { Interface: type, slots: []const []const u8 };
-    const expected = [_]Expected{
-        .{
-            .Interface = IRawElementProviderSimple,
-            .slots = &.{
-                "get_ProviderOptions",
-                "GetPatternProvider",
-                "GetPropertyValue",
-                "get_HostRawElementProvider",
+    if (comptime winapi_resolves) {
+        const Expected = struct { Interface: type, slots: []const []const u8 };
+        const expected = [_]Expected{
+            .{
+                .Interface = IRawElementProviderSimple,
+                .slots = &.{
+                    "get_ProviderOptions",
+                    "GetPatternProvider",
+                    "GetPropertyValue",
+                    "get_HostRawElementProvider",
+                },
             },
-        },
-        .{
-            .Interface = IRawElementProviderFragment,
-            .slots = &.{
-                "Navigate",
-                "GetRuntimeId",
-                "get_BoundingRectangle",
-                "GetEmbeddedFragmentRoots",
-                "SetFocus",
-                "get_FragmentRoot",
+            .{
+                .Interface = IRawElementProviderFragment,
+                .slots = &.{
+                    "Navigate",
+                    "GetRuntimeId",
+                    "get_BoundingRectangle",
+                    "GetEmbeddedFragmentRoots",
+                    "SetFocus",
+                    "get_FragmentRoot",
+                },
             },
-        },
-        .{
-            .Interface = IRawElementProviderFragmentRoot,
-            .slots = &.{ "ElementProviderFromPoint", "GetFocus" },
-        },
-        .{
-            .Interface = IToggleProvider,
-            .slots = &.{ "Toggle", "get_ToggleState" },
-        },
-        .{
-            .Interface = IInvokeProvider,
-            .slots = &.{"Invoke"},
-        },
-        .{
-            .Interface = IValueProvider,
-            .slots = &.{ "SetValue", "get_Value", "get_IsReadOnly" },
-        },
-        .{
-            .Interface = IRangeValueProvider,
-            .slots = &.{
-                "SetValue",
-                "get_Value",
-                "get_IsReadOnly",
-                "get_Maximum",
-                "get_Minimum",
-                "get_LargeChange",
-                "get_SmallChange",
+            .{
+                .Interface = IRawElementProviderFragmentRoot,
+                .slots = &.{ "ElementProviderFromPoint", "GetFocus" },
             },
-        },
-        .{
-            .Interface = IScrollItemProvider,
-            .slots = &.{"ScrollIntoView"},
-        },
-        .{
-            .Interface = ISelectionItemProvider,
-            .slots = &.{
-                "Select",
-                "AddToSelection",
-                "RemoveFromSelection",
-                "get_IsSelected",
-                "get_SelectionContainer",
+            .{
+                .Interface = IToggleProvider,
+                .slots = &.{ "Toggle", "get_ToggleState" },
             },
-        },
-        .{
-            .Interface = ISelectionProvider,
-            .slots = &.{
-                "GetSelection",
-                "get_CanSelectMultiple",
-                "get_IsSelectionRequired",
+            .{
+                .Interface = IInvokeProvider,
+                .slots = &.{"Invoke"},
             },
-        },
-        .{
-            .Interface = ITextProvider,
-            .slots = &.{
-                "GetSelection",
-                "GetVisibleRanges",
-                "RangeFromChild",
-                "RangeFromPoint",
-                "get_DocumentRange",
-                "get_SupportedTextSelection",
+            .{
+                .Interface = IValueProvider,
+                .slots = &.{ "SetValue", "get_Value", "get_IsReadOnly" },
             },
-        },
-        .{
-            .Interface = IExpandCollapseProvider,
-            .slots = &.{ "Expand", "Collapse", "get_ExpandCollapseState" },
-        },
-        .{
-            .Interface = IWindowProvider,
-            .slots = &.{
-                "SetVisualState",
-                "Close",
-                "WaitForInputIdle",
-                "get_CanMaximize",
-                "get_CanMinimize",
-                "get_IsModal",
-                "get_WindowVisualState",
-                "get_WindowInteractionState",
-                "get_IsTopmost",
+            .{
+                .Interface = IRangeValueProvider,
+                .slots = &.{
+                    "SetValue",
+                    "get_Value",
+                    "get_IsReadOnly",
+                    "get_Maximum",
+                    "get_Minimum",
+                    "get_LargeChange",
+                    "get_SmallChange",
+                },
             },
-        },
-    };
-    inline for (expected) |entry| {
-        const info = @typeInfo(entry.Interface.VTable).@"struct";
-        try std.testing.expectEqual(entry.slots.len, info.fields.len - 1);
-        inline for (entry.slots, 0..) |name, index| {
-            try std.testing.expectEqualStrings(name, info.fields[index + 1].name);
+            .{
+                .Interface = IScrollItemProvider,
+                .slots = &.{"ScrollIntoView"},
+            },
+            .{
+                .Interface = ISelectionItemProvider,
+                .slots = &.{
+                    "Select",
+                    "AddToSelection",
+                    "RemoveFromSelection",
+                    "get_IsSelected",
+                    "get_SelectionContainer",
+                },
+            },
+            .{
+                .Interface = ISelectionProvider,
+                .slots = &.{
+                    "GetSelection",
+                    "get_CanSelectMultiple",
+                    "get_IsSelectionRequired",
+                },
+            },
+            .{
+                .Interface = ITextProvider,
+                .slots = &.{
+                    "GetSelection",
+                    "GetVisibleRanges",
+                    "RangeFromChild",
+                    "RangeFromPoint",
+                    "get_DocumentRange",
+                    "get_SupportedTextSelection",
+                },
+            },
+            .{
+                .Interface = IExpandCollapseProvider,
+                .slots = &.{ "Expand", "Collapse", "get_ExpandCollapseState" },
+            },
+            .{
+                .Interface = IWindowProvider,
+                .slots = &.{
+                    "SetVisualState",
+                    "Close",
+                    "WaitForInputIdle",
+                    "get_CanMaximize",
+                    "get_CanMinimize",
+                    "get_IsModal",
+                    "get_WindowVisualState",
+                    "get_WindowInteractionState",
+                    "get_IsTopmost",
+                },
+            },
+        };
+        inline for (expected) |entry| {
+            const info = @typeInfo(entry.Interface.VTable).@"struct";
+            try std.testing.expectEqual(entry.slots.len, info.fields.len - 1);
+            inline for (entry.slots, 0..) |name, index| {
+                try std.testing.expectEqualStrings(name, info.fields[index + 1].name);
+            }
         }
-    }
+    } else return error.SkipZigTest;
 }
 
 test "the thirteen interfaces hold fifty-one method slots between them" {
-    var total: usize = 0;
-    inline for (implemented_interfaces) |Interface| {
-        total += @typeInfo(Interface.VTable).@"struct".fields.len - 1;
-    }
-    try std.testing.expectEqual(
-        @as(usize, 4 + 6 + 2 + 2 + 1 + 3 + 7 + 1 + 5 + 3 + 6 + 3 + 9),
-        total,
-    );
+    if (comptime winapi_resolves) {
+        var total: usize = 0;
+        inline for (implemented_interfaces) |Interface| {
+            total += @typeInfo(Interface.VTable).@"struct".fields.len - 1;
+        }
+        try std.testing.expectEqual(
+            @as(usize, 4 + 6 + 2 + 2 + 1 + 3 + 7 + 1 + 5 + 3 + 6 + 3 + 9),
+            total,
+        );
+    } else return error.SkipZigTest;
 }

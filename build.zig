@@ -46,6 +46,21 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
+    // zigwin32 is the Windows type boundary: UI Automation, Win32, COM and
+    // `oleaut32`. It is a module-level import like `zio`, and it is only
+    // reached by the four files under `src/adapters/windows/` that name a
+    // COM interface, a vtable or a status code. The declaration is
+    // unconditional, so a `src/` file may reach for the boundary on any
+    // host, and every shard below sees the same module.
+    //
+    // No options. `zigwin32/build.zig` is seven lines that call
+    // `b.addModule` with a root source file and nothing else, so it never
+    // calls `standardTargetOptions` and rejects `-Dtarget`, `-Dcpu` and
+    // `-Doptimize`. Passing them is a build failure, and the module it hands
+    // back is target-agnostic: the target and the mode come from the module
+    // that imports it, which is what every `win32` import below is.
+    const win32 = b.dependency("win32", .{});
+
     // The two published values reach source through an options module, so a
     // consumer reads them from `@import("zaccesskit")` rather than parsing the
     // manifest. `docs/31-c-abi-design.md` section 4 needs the version for the
@@ -62,6 +77,7 @@ pub fn build(b: *std.Build) void {
         .imports = &.{
             .{ .name = "zio", .module = zio.module("zio") },
             .{ .name = "build_options", .module = options.createModule() },
+            .{ .name = "win32", .module = win32.module("win32") },
         },
     });
 
@@ -88,6 +104,7 @@ pub fn build(b: *std.Build) void {
             .imports = &.{
                 .{ .name = "zio", .module = zio.module("zio") },
                 .{ .name = "build_options", .module = options.createModule() },
+                .{ .name = "win32", .module = win32.module("win32") },
             },
         }),
     });
@@ -117,6 +134,7 @@ pub fn build(b: *std.Build) void {
             .imports = &.{
                 .{ .name = "zio", .module = zio.module("zio") },
                 .{ .name = "build_options", .module = options.createModule() },
+                .{ .name = "win32", .module = win32.module("win32") },
             },
         }),
     });
@@ -145,9 +163,9 @@ pub fn build(b: *std.Build) void {
     // address-space ceiling comes with them, because a runaway sweep is the
     // failure the ceiling is for.
     //
-    // `zio` and `build_options` are declared although nothing under the
-    // harness reaches them today, so that a `src/` module that grows a runtime
-    // dependency does not turn this step red.
+    // `zio`, `build_options` and `win32` are declared although nothing under
+    // the harness reaches them today, so that a `src/` module that grows a
+    // runtime or a Windows dependency does not turn this step red.
     //
     // The count this shard prints is larger than the harness: `zig test`
     // collects the `test` blocks of every file it analyses, and this module
@@ -164,6 +182,7 @@ pub fn build(b: *std.Build) void {
             .imports = &.{
                 .{ .name = "zio", .module = zio.module("zio") },
                 .{ .name = "build_options", .module = options.createModule() },
+                .{ .name = "win32", .module = win32.module("win32") },
             },
         }),
     });
@@ -180,6 +199,7 @@ pub fn build(b: *std.Build) void {
             .imports = &.{
                 .{ .name = "zio", .module = zio.module("zio") },
                 .{ .name = "build_options", .module = options.createModule() },
+                .{ .name = "win32", .module = win32.module("win32") },
             },
         }),
     });
