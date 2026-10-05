@@ -159,8 +159,40 @@ pub const gwlp_wndproc: i32 = -4;
 ///
 /// It is a sentinel-terminated slice because the three Win32 calls take
 /// `[*:0]const u16`, and `subclass_property_name.ptr` is that type.
+///
+/// **The units are built as UTF-16 code units, not read out of little-endian
+/// bytes.** `std.unicode.utf8ToUtf16LeStringLiteral` answers a pointer to a
+/// little-endian-encoded array, and coercing that to `u16` reinterprets its
+/// bytes as native. On the `powerpc64-linux` row of `cross-test.profile.sh`
+/// that byte-swaps every unit: `0x4100` where the name starts with `0x0041`,
+/// which is the `expected 65, found 16640` this test reported. The name is
+/// ASCII, so building the units directly is endian-neutral by construction and
+/// there is no byte order left to get wrong on either row.
+///
+/// A global slice pointing into a `var` declared inside a `blk` block is a
+/// reference to a comptime var, which this compiler rejects. `asciiUnits`
+/// therefore returns an **array**, and the slice is taken from a global
+/// `const`, which is an ordinary constant.
+///
+/// **A byte above `0x7f` would need a real encoder.** The check is comptime so
+/// that mistake is a build error rather than a mojibake property name on a live
+/// window.
+fn asciiUnits(comptime text: []const u8) [text.len + 1]u16 {
+    var units: [text.len + 1]u16 = undefined;
+    for (text, 0..) |byte, index| {
+        if (byte > 0x7f) @compileError("this name is ASCII; a non-ASCII byte needs an encoder");
+        units[index] = byte;
+    }
+    units[text.len] = 0;
+    return units;
+}
+
+/// The name is spelled once and its length derived from it, so the slice below
+/// cannot disagree with the buffer it slices.
+const subclass_property_name_text = "AccessKitAdapter";
+
 pub const subclass_property_name: [:0]const u16 =
-    std.unicode.utf8ToUtf16LeStringLiteral("AccessKitAdapter");
+    asciiUnits(subclass_property_name_text)[0..subclass_property_name_text.len :0];
 
 /// The number of code units in `subclass_property_name`, not counting the
 /// terminator. The tests that read the last character need the bound by name.
