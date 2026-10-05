@@ -741,6 +741,18 @@ comptime {
 /// The only failure `CountingAllocator.expectOneReleaseEach` reports.
 const ReleaseCountError = error{NotOneRelease};
 
+/// The pointer `CountingAllocator.expectOneReleaseEach` rejected, named rather
+/// than printed.
+///
+/// A named type, because an anonymous struct literal is its own type: a test
+/// that built one to compare against this would not compile.
+const ReleaseOffender = struct {
+    /// The address that went back the wrong number of times.
+    address: usize,
+    /// How many times it went back.
+    times: usize,
+};
+
 /// An allocator that records how many times each pointer went back to it.
 ///
 /// `std.testing.allocator` already traps a double free, which is a failure, but a
@@ -756,6 +768,13 @@ const CountingAllocator = struct {
     inner: std.mem.Allocator,
     /// How many times each released pointer went back, keyed by address.
     released: std.AutoHashMapUnmanaged(usize, usize) = .empty,
+    /// The pointer a release count rejected, and how many times it went back.
+    ///
+    /// Only the failing path of `expectOneReleaseEach` writes it, and the test
+    /// that drives that path asserts on it. It is recorded rather than logged
+    /// because an error-level line is one the test runner counts, and a shard
+    /// whose tests all pass still exits non-zero when one test logs one.
+    offender: ?ReleaseOffender = null,
 
     /// The allocator a test hands to this file.
     fn allocator(self: *CountingAllocator) std.mem.Allocator {
@@ -778,15 +797,15 @@ const CountingAllocator = struct {
     /// Asserts that every pointer this allocator saw released went back exactly
     /// once, and returns how many distinct pointers that was. The counter is not
     /// released here, because a release after this call would write into a map
-    /// the test is still holding.
+    /// the test is still holding. A pointer that breaks the count is named in
+    /// `offender` rather than reported to stderr: a test below reaches this path
+    /// deliberately, so a diagnostic written here is written on every passing
+    /// run, and the caller is handed the address instead.
     fn expectOneReleaseEach(self: *CountingAllocator) ReleaseCountError!usize {
         var iterator = self.released.iterator();
         while (iterator.next()) |entry| {
             if (entry.value_ptr.* != 1) {
-                std.log.err("pointer 0x{x} was released {d} times", .{
-                    entry.key_ptr.*,
-                    entry.value_ptr.*,
-                });
+                self.offender = .{ .address = entry.key_ptr.*, .times = entry.value_ptr.* };
                 return error.NotOneRelease;
             }
         }
@@ -958,6 +977,13 @@ test "the counting allocator sees a second release of one pointer" {
 
     try testing.expectEqual(@as(usize, 2), counting.timesReleased(buffer.ptr));
     try testing.expectError(error.NotOneRelease, counting.expectOneReleaseEach());
+    // The helper names the pointer it rejected, so the error is checkable
+    // rather than only reportable.
+    try testing.expect(counting.offender != null);
+    try testing.expectEqual(
+        ReleaseOffender{ .address = @intFromPtr(buffer.ptr), .times = 2 },
+        counting.offender.?,
+    );
     counting.release();
 }
 

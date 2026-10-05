@@ -221,13 +221,18 @@ fn propertyIdFromByte(byte: u8) ?PropertyId {
 
 /// Writes one line of harness evidence.
 ///
-/// `zig build fuzz` prints it; `zig build test` runs the same shard and the
-/// runner treats stderr from a passing test as a logged error, so the two
-/// steps disagree about whether this output is welcome. The evidence is worth
-/// keeping -- it is what a fuzz run is for -- and the disagreement is a defect
-/// in the step wiring rather than in the harness. Recorded, not worked around:
-/// routing it to stdout needs an `Io` this build does not carry, and guessing at
-/// the 0.16 file API three times is how I got here.
+/// It goes to stderr through `std.debug.print`, and it stays there. The test
+/// runner does not read a passing test's stderr: what it counts is a call to
+/// `std.log` at `.err` or worse, held in `log_err_count` in the compiler's
+/// `test_runner.zig`. A line written here leaves that count at zero, so the
+/// shard exits 0 whichever of the two steps ran it. The belief that stderr
+/// itself reddened the gate was wrong, and the defect it did name was
+/// elsewhere: `src/capi/tree_update.zig` reported the double release it
+/// detects at `.err`, on a path its own test drives on purpose.
+///
+/// `[OBSERVED: zig build test, "All 1451 tests passed." then "1 errors were
+/// logged.", the count arriving from capi.tree_update.test.the counting
+/// allocator sees a second release of one pointer]`
 fn report(comptime fmt: []const u8, args: anytype) void {
     std.debug.print(fmt, args);
 }
