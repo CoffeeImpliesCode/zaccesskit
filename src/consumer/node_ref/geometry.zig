@@ -661,7 +661,7 @@ test "a hit test over a child cycle reaches the bound and reports TreeCycle" {
     const first_id = try fixture.add(0, null);
     const second_id = try fixture.add(1, null);
     try fixture.setChildren(first_id, &.{1});
-    try fixture.setChildren(second_id, &.{ 1 });
+    try fixture.setChildren(second_id, &.{1});
     const first = try fixture.ref(first_id);
 
     try testing.expectError(

@@ -526,7 +526,6 @@ pub const WindowsAdapter = struct {
         return takeOwnedUpdate(produced);
     }
 
-
     /// Releases the tree the state holds and answers an empty one.
     fn destroyCurrentTree(self: *WindowsAdapter) void {
         switch (self.state) {

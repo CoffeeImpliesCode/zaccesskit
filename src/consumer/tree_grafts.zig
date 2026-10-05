@@ -531,11 +531,11 @@ fn setTreeIdOn(state: *TreeState, id: FullNodeId, subtree: TreeId) !void {
 }
 
 fn subtreeOne() TreeId {
-    return schema.treeIdFromBytes(.{ 1 } ** 16);
+    return schema.treeIdFromBytes(.{1} ** 16);
 }
 
 fn subtreeTwo() TreeId {
-    return schema.treeIdFromBytes(.{ 2 } ** 16);
+    return schema.treeIdFromBytes(.{2} ** 16);
 }
 
 /// Asserts that two states hold the same tree: the same nodes with the same

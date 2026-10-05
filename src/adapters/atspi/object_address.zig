@@ -288,7 +288,6 @@ test "an owned address writes the same bytes as the borrowed one it copies" {
 /// The two tests below moved here with `initFromObjectId`. They used to live in
 /// `object_id.zig`, which reached this file for the address type and therefore
 /// carried the D-Bus dependency with it.
-
 const object_id = @import("object_id.zig");
 
 test "initFromObjectId names the object on the connection that was passed" {

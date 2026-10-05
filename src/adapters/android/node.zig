@@ -1368,7 +1368,7 @@ fn recorderOf(env: JniEnv) ?*Recorder {
     // SAFETY: the table parks the recorder as `.env`, and `JniTable.env` is
     // `?*const anyopaque`, so the const is the table's and not the recorder's.
     // The alignment is the one the recorder was declared with.
-    return @alignCast(@constCast(@ptrCast(handle)));
+    return @ptrCast(@alignCast(@constCast(handle)));
 }
 
 /// Records one `FindClass` answer and answers a fabricated class handle.
@@ -2072,8 +2072,7 @@ test "the twenty-one descriptors methods.zig holds no row for are spelled as the
         .{
             .class = "Landroid/view/accessibility/AccessibilityNodeInfo;",
             .name = "addAction",
-            .signature =
-                "(Landroid/view/accessibility/AccessibilityNodeInfo$AccessibilityAction;)V",
+            .signature = "(Landroid/view/accessibility/AccessibilityNodeInfo$AccessibilityAction;)V",
         },
         .{
             .class = "Landroid/view/accessibility/AccessibilityNodeInfo;",

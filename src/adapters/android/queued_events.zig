@@ -340,14 +340,14 @@ pub const AndroidQueuedEvents = struct {
     ///
     /// Two calls and two released references per raise rather than per event,
     /// because every event in one batch carries the same package name.
-fn packageNameOf(table: JniTable, host: JObject) CallError!JString {
+    fn packageNameOf(table: JniTable, host: JObject) CallError!JString {
         const context = try java_call.callObjectChecked(table, host, view_get_context, &.{});
         defer table.deleteLocalRef(context);
         return java_call.callObjectChecked(table, context, context_get_package_name, &.{});
     }
 
     /// Builds one event, fills it and sends it, releasing what it built.
-fn sendOne(
+    fn sendOne(
         table: JniTable,
         host: JObject,
         parent: JObject,
@@ -486,7 +486,7 @@ fn recorderOf(env: JniEnv) ?*Recorder {
     // SAFETY: the table parks the recorder as `.env`, which is
     // `?*const anyopaque`, so the const belongs to the table and not to the
     // recorder, and the alignment is the one the recorder was declared with.
-    return @alignCast(@constCast(@ptrCast(handle)));
+    return @ptrCast(@alignCast(@constCast(handle)));
 }
 
 /// Whether the recorder has passed its throw point.

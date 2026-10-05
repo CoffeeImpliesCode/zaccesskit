@@ -188,8 +188,7 @@ pub const blocked = [blocked_count]Blocked{
     },
     .{
         .symbol = "iosQueuedEventsRaise",
-        .today =
-            "It posts every notification, with a null argument where upstream would pass a node.",
+        .today = "It posts every notification, with a null argument where upstream would pass a node.",
         .unblocked_by = "AK/ios/src/event.rs:44-52, the PlatformNode argument",
     },
 };
@@ -1935,7 +1934,6 @@ fn callbackAccessibilityStatusChanged(claimed: ?*anyopaque) void {
 
 // --- the fixtures the tests run against ---------------------------------------
 
-
 /// One announcement the fake platform recorded.
 ///
 /// The text borrows the buffer the handle owns, so a test reads it before it
@@ -2801,7 +2799,7 @@ test "the element walk answers with the root or with the filtered children" {
     activation.answer = try fixtureUpdate(
         gpa,
         .window,
-        &.{.{ .value = 1 }, .{ .value = 2 }},
+        &.{ .{ .value = 1 }, .{ .value = 2 } },
         .{ .value = 0 },
         false,
     );
@@ -2823,7 +2821,7 @@ test "the element walk answers with the root or with the filtered children" {
     activation.answer = try fixtureUpdate(
         gpa,
         .generic_container,
-        &.{.{ .value = 1 }, .{ .value = 2 }},
+        &.{ .{ .value = 1 }, .{ .value = 2 } },
         .{ .value = 1 },
         false,
     );

@@ -524,7 +524,7 @@ test "a stored selection reads back as a range and as two positions" {
     var state: TreeState = .{};
     defer state.deinit(testing.allocator);
     const gpa = testing.allocator;
-    try documentOver(&state, gpa, &.{"hello", "world"});
+    try documentOver(&state, gpa, &.{ "hello", "world" });
 
     const document_entry = entry(&state, 0);
     try schema.option.setTextSelection(&document_entry.data.properties, .{

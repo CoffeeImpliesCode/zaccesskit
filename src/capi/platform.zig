@@ -517,11 +517,11 @@ comptime {
 // `accesskit_android_platform_action_free`. The `arguments` object
 // belongs to the Java call and is not retained.
 fn accesskit_android_platform_action_from_java(
-env: JniEnv,
-action: JInt,
-arguments: JObject,
+    env: JniEnv,
+    action: JInt,
+    arguments: JObject,
 ) callconv(.c) ?*android.AndroidPlatformAction {
-return android.androidPlatformActionFromJava(env, action, arguments);
+    return android.androidPlatformActionFromJava(env, action, arguments);
 }
 
 // Releases a platform action and everything it owns, exactly once.
@@ -534,9 +534,9 @@ return android.androidPlatformActionFromJava(env, action, arguments);
 // without a check, so this module forwards it unchanged rather than
 // adding a guard upstream does not have.
 fn accesskit_android_platform_action_free(
-platform_action: *android.AndroidPlatformAction,
+    platform_action: *android.AndroidPlatformAction,
 ) callconv(.c) void {
-android.androidPlatformActionFree(platform_action);
+    android.androidPlatformActionFree(platform_action);
 }
 
 // Raises the queued events on the platform and releases the handle.
@@ -548,11 +548,11 @@ android.androidPlatformActionFree(platform_action);
 // the same pointer is a use-after-free, and passing `null` terminates
 // the process.
 fn accesskit_android_queued_events_raise(
-events: *android.AndroidQueuedEvents,
-env: JniEnv,
-host: JObject,
+    events: *android.AndroidQueuedEvents,
+    env: JniEnv,
+    host: JObject,
 ) callconv(.c) void {
-android.androidQueuedEventsRaise(events, env, host);
+    android.androidQueuedEventsRaise(events, env, host);
 }
 
 // Returns an Android adapter, or `null` when the allocation failed.
@@ -566,7 +566,7 @@ android.androidQueuedEventsRaise(events, env, host);
 // `accesskit_android_adapter_free`, and calls `accesskit_last_error`
 // after a `null` return.
 fn accesskit_android_adapter_new() callconv(.c) ?*android.AndroidAdapter {
-return android.androidAdapterNew();
+    return android.androidAdapterNew();
 }
 
 // Releases the adapter and every tree it holds, exactly once.
@@ -577,9 +577,9 @@ return android.androidAdapterNew();
 // A tree update already handed to the adapter was released by the
 // library. Passing `null` terminates the process.
 fn accesskit_android_adapter_free(
-adapter: *android.AndroidAdapter,
+    adapter: *android.AndroidAdapter,
 ) callconv(.c) void {
-android.androidAdapterFree(adapter);
+    android.androidAdapterFree(adapter);
 }
 
 // Asks `update_factory` for a tree and hands it to the adapter.
@@ -591,15 +591,15 @@ android.androidAdapterFree(adapter);
 // is not active. The caller owns a non-null result and must pass it to
 // `accesskit_android_queued_events_raise`, which also releases it.
 fn accesskit_android_adapter_update_if_active(
-adapter: *android.AndroidAdapter,
-update_factory: TreeUpdateFactory,
-update_factory_userdata: ?*anyopaque,
+    adapter: *android.AndroidAdapter,
+    update_factory: TreeUpdateFactory,
+    update_factory_userdata: ?*anyopaque,
 ) callconv(.c) ?*android.AndroidQueuedEvents {
-return android.androidAdapterUpdateIfActive(
-    adapter,
-    update_factory,
-    update_factory_userdata,
-);
+    return android.androidAdapterUpdateIfActive(
+        adapter,
+        update_factory,
+        update_factory_userdata,
+    );
 }
 
 // Returns the `AccessibilityNodeInfo` for `virtual_view_id`, or `null`
@@ -612,21 +612,21 @@ return android.androidAdapterUpdateIfActive(
 // the call this was made from. `activation_handler` is supplied on
 // this call and the library drops it when the call returns.
 fn accesskit_android_adapter_create_accessibility_node_info(
-adapter: *android.AndroidAdapter,
-activation_handler: ActivationHandler,
-activation_handler_userdata: ?*anyopaque,
-env: JniEnv,
-host: JObject,
-virtual_view_id: JInt,
+    adapter: *android.AndroidAdapter,
+    activation_handler: ActivationHandler,
+    activation_handler_userdata: ?*anyopaque,
+    env: JniEnv,
+    host: JObject,
+    virtual_view_id: JInt,
 ) callconv(.c) JObject {
-return android.androidAdapterCreateAccessibilityNodeInfo(
-    adapter,
-    activation_handler,
-    activation_handler_userdata,
-    env,
-    host,
-    virtual_view_id,
-);
+    return android.androidAdapterCreateAccessibilityNodeInfo(
+        adapter,
+        activation_handler,
+        activation_handler_userdata,
+        env,
+        host,
+        virtual_view_id,
+    );
 }
 
 // Returns the `AccessibilityNodeInfo` the focus belongs to, or `null`
@@ -639,21 +639,21 @@ return android.androidAdapterCreateAccessibilityNodeInfo(
 // activation handler is supplied on this call and dropped when it
 // returns.
 fn accesskit_android_adapter_find_focus(
-adapter: *android.AndroidAdapter,
-activation_handler: ActivationHandler,
-activation_handler_userdata: ?*anyopaque,
-env: JniEnv,
-host: JObject,
-focus_type: JInt,
+    adapter: *android.AndroidAdapter,
+    activation_handler: ActivationHandler,
+    activation_handler_userdata: ?*anyopaque,
+    env: JniEnv,
+    host: JObject,
+    focus_type: JInt,
 ) callconv(.c) JObject {
-return android.androidAdapterFindFocus(
-    adapter,
-    activation_handler,
-    activation_handler_userdata,
-    env,
-    host,
-    focus_type,
-);
+    return android.androidAdapterFindFocus(
+        adapter,
+        activation_handler,
+        activation_handler_userdata,
+        env,
+        host,
+        focus_type,
+    );
 }
 
 // Hands `action` to the application and returns the events the answer
@@ -666,19 +666,19 @@ return android.androidAdapterFindFocus(
 // non-null result and must pass it to
 // `accesskit_android_queued_events_raise`.
 fn accesskit_android_adapter_perform_action(
-adapter: *android.AndroidAdapter,
-action_handler: ActionHandler,
-action_handler_userdata: ?*anyopaque,
-virtual_view_id: JInt,
-action: *const android.AndroidPlatformAction,
+    adapter: *android.AndroidAdapter,
+    action_handler: ActionHandler,
+    action_handler_userdata: ?*anyopaque,
+    virtual_view_id: JInt,
+    action: *const android.AndroidPlatformAction,
 ) callconv(.c) ?*android.AndroidQueuedEvents {
-return android.androidAdapterPerformAction(
-    adapter,
-    action_handler,
-    action_handler_userdata,
-    virtual_view_id,
-    action,
-);
+    return android.androidAdapterPerformAction(
+        adapter,
+        action_handler,
+        action_handler_userdata,
+        virtual_view_id,
+        action,
+    );
 }
 
 // Delivers a hover at the logical pixel `(x, y)` to the application.
@@ -689,21 +689,21 @@ return android.androidAdapterPerformAction(
 // Returns the events the answer produced, or `null` when the adapter
 // is not active. The caller owns a non-null result.
 fn accesskit_android_adapter_on_hover_event(
-adapter: *android.AndroidAdapter,
-activation_handler: ActivationHandler,
-activation_handler_userdata: ?*anyopaque,
-action: JInt,
-x: JFloat,
-y: JFloat,
+    adapter: *android.AndroidAdapter,
+    activation_handler: ActivationHandler,
+    activation_handler_userdata: ?*anyopaque,
+    action: JInt,
+    x: JFloat,
+    y: JFloat,
 ) callconv(.c) ?*android.AndroidQueuedEvents {
-return android.androidAdapterOnHoverEvent(
-    adapter,
-    activation_handler,
-    activation_handler_userdata,
-    action,
-    x,
-    y,
-);
+    return android.androidAdapterOnHoverEvent(
+        adapter,
+        activation_handler,
+        activation_handler_userdata,
+        action,
+        x,
+        y,
+    );
 }
 
 // Returns an injecting Android adapter bound to `host`, or `null` when
@@ -716,21 +716,21 @@ return android.androidAdapterOnHoverEvent(
 // adapter is released. The caller owns the adapter and releases it
 // with `accesskit_android_injecting_adapter_free`.
 fn accesskit_android_injecting_adapter_new(
-env: JniEnv,
-host: JObject,
-activation_handler: ActivationHandler,
-activation_handler_userdata: ?*anyopaque,
-action_handler: ActionHandler,
-action_handler_userdata: ?*anyopaque,
+    env: JniEnv,
+    host: JObject,
+    activation_handler: ActivationHandler,
+    activation_handler_userdata: ?*anyopaque,
+    action_handler: ActionHandler,
+    action_handler_userdata: ?*anyopaque,
 ) callconv(.c) ?*android.AndroidInjectingAdapter {
-return android.androidInjectingAdapterNew(
-    env,
-    host,
-    activation_handler,
-    activation_handler_userdata,
-    action_handler,
-    action_handler_userdata,
-);
+    return android.androidInjectingAdapterNew(
+        env,
+        host,
+        activation_handler,
+        activation_handler_userdata,
+        action_handler,
+        action_handler_userdata,
+    );
 }
 
 // Releases the adapter and every tree it holds, exactly once.
@@ -740,9 +740,9 @@ return android.androidInjectingAdapterNew(
 //
 // Passing `null` terminates the process.
 fn accesskit_android_injecting_adapter_free(
-adapter: *android.AndroidInjectingAdapter,
+    adapter: *android.AndroidInjectingAdapter,
 ) callconv(.c) void {
-android.androidInjectingAdapterFree(adapter);
+    android.androidInjectingAdapterFree(adapter);
 }
 
 // Asks `update_factory` for a tree and hands it to the adapter.
@@ -753,35 +753,35 @@ android.androidInjectingAdapterFree(adapter);
 // This adapter returns nothing, so there are no queued events to
 // raise: the injecting adapter delivers the tree to its own host.
 fn accesskit_android_injecting_adapter_update_if_active(
-adapter: *android.AndroidInjectingAdapter,
-update_factory: TreeUpdateFactory,
-update_factory_userdata: ?*anyopaque,
+    adapter: *android.AndroidInjectingAdapter,
+    update_factory: TreeUpdateFactory,
+    update_factory_userdata: ?*anyopaque,
 ) callconv(.c) void {
-android.androidInjectingAdapterUpdateIfActive(
-adapter,
-update_factory,
-update_factory_userdata,
-);
+    android.androidInjectingAdapterUpdateIfActive(
+        adapter,
+        update_factory,
+        update_factory_userdata,
+    );
 }
 
 // The android exports. A declaration above is emitted as a symbol only
 // where its guard is true; this block is the whole of that decision.
 comptime {
-if (Guard.android.declaresOn(this_platform)) {
-    @export(&accesskit_android_platform_action_from_java, .{ .name = "accesskit_android_platform_action_from_java", .linkage = .strong });
-    @export(&accesskit_android_platform_action_free, .{ .name = "accesskit_android_platform_action_free", .linkage = .strong });
-    @export(&accesskit_android_queued_events_raise, .{ .name = "accesskit_android_queued_events_raise", .linkage = .strong });
-    @export(&accesskit_android_adapter_new, .{ .name = "accesskit_android_adapter_new", .linkage = .strong });
-    @export(&accesskit_android_adapter_free, .{ .name = "accesskit_android_adapter_free", .linkage = .strong });
-    @export(&accesskit_android_adapter_update_if_active, .{ .name = "accesskit_android_adapter_update_if_active", .linkage = .strong });
-    @export(&accesskit_android_adapter_create_accessibility_node_info, .{ .name = "accesskit_android_adapter_create_accessibility_node_info", .linkage = .strong });
-    @export(&accesskit_android_adapter_find_focus, .{ .name = "accesskit_android_adapter_find_focus", .linkage = .strong });
-    @export(&accesskit_android_adapter_perform_action, .{ .name = "accesskit_android_adapter_perform_action", .linkage = .strong });
-    @export(&accesskit_android_adapter_on_hover_event, .{ .name = "accesskit_android_adapter_on_hover_event", .linkage = .strong });
-    @export(&accesskit_android_injecting_adapter_new, .{ .name = "accesskit_android_injecting_adapter_new", .linkage = .strong });
-    @export(&accesskit_android_injecting_adapter_free, .{ .name = "accesskit_android_injecting_adapter_free", .linkage = .strong });
-    @export(&accesskit_android_injecting_adapter_update_if_active, .{ .name = "accesskit_android_injecting_adapter_update_if_active", .linkage = .strong });
-}
+    if (Guard.android.declaresOn(this_platform)) {
+        @export(&accesskit_android_platform_action_from_java, .{ .name = "accesskit_android_platform_action_from_java", .linkage = .strong });
+        @export(&accesskit_android_platform_action_free, .{ .name = "accesskit_android_platform_action_free", .linkage = .strong });
+        @export(&accesskit_android_queued_events_raise, .{ .name = "accesskit_android_queued_events_raise", .linkage = .strong });
+        @export(&accesskit_android_adapter_new, .{ .name = "accesskit_android_adapter_new", .linkage = .strong });
+        @export(&accesskit_android_adapter_free, .{ .name = "accesskit_android_adapter_free", .linkage = .strong });
+        @export(&accesskit_android_adapter_update_if_active, .{ .name = "accesskit_android_adapter_update_if_active", .linkage = .strong });
+        @export(&accesskit_android_adapter_create_accessibility_node_info, .{ .name = "accesskit_android_adapter_create_accessibility_node_info", .linkage = .strong });
+        @export(&accesskit_android_adapter_find_focus, .{ .name = "accesskit_android_adapter_find_focus", .linkage = .strong });
+        @export(&accesskit_android_adapter_perform_action, .{ .name = "accesskit_android_adapter_perform_action", .linkage = .strong });
+        @export(&accesskit_android_adapter_on_hover_event, .{ .name = "accesskit_android_adapter_on_hover_event", .linkage = .strong });
+        @export(&accesskit_android_injecting_adapter_new, .{ .name = "accesskit_android_injecting_adapter_new", .linkage = .strong });
+        @export(&accesskit_android_injecting_adapter_free, .{ .name = "accesskit_android_injecting_adapter_free", .linkage = .strong });
+        @export(&accesskit_android_injecting_adapter_update_if_active, .{ .name = "accesskit_android_injecting_adapter_update_if_active", .linkage = .strong });
+    }
 }
 
 // =============================================================================
@@ -1009,15 +1009,15 @@ fn accesskit_ios_subclassing_adapter_free(
 // is not active. The caller owns a non-null result and must pass it to
 // `accesskit_ios_queued_events_raise`.
 fn accesskit_ios_subclassing_adapter_update_if_active(
-adapter: *ios.IosSubclassingAdapter,
-update_factory: TreeUpdateFactory,
-update_factory_userdata: ?*anyopaque,
+    adapter: *ios.IosSubclassingAdapter,
+    update_factory: TreeUpdateFactory,
+    update_factory_userdata: ?*anyopaque,
 ) callconv(.c) ?*ios.IosQueuedEvents {
-return ios.iosSubclassingAdapterUpdateIfActive(
-    adapter,
-    update_factory,
-    update_factory_userdata,
-);
+    return ios.iosSubclassingAdapterUpdateIfActive(
+        adapter,
+        update_factory,
+        update_factory_userdata,
+    );
 }
 
 // The apple_mobile exports. A declaration above is emitted as a symbol only
@@ -1052,9 +1052,9 @@ comptime {
 // This call is the only way to release the handle. A second call is a
 // use-after-free, and passing `null` terminates the process.
 fn accesskit_macos_queued_events_raise(
-events: *macos.MacosQueuedEvents,
+    events: *macos.MacosQueuedEvents,
 ) callconv(.c) void {
-macos.macosQueuedEventsRaise(events);
+    macos.macosQueuedEventsRaise(events);
 }
 
 // Returns a macOS adapter for `view`, or `null` when the allocation
@@ -1069,12 +1069,12 @@ macos.macosQueuedEventsRaise(events);
 // owns the adapter and releases it with
 // `accesskit_macos_adapter_free`.
 fn accesskit_macos_adapter_new(
-view: ?*anyopaque,
-is_view_focused: bool,
-action_handler: ActionHandler,
-action_handler_userdata: ?*anyopaque,
+    view: ?*anyopaque,
+    is_view_focused: bool,
+    action_handler: ActionHandler,
+    action_handler_userdata: ?*anyopaque,
 ) callconv(.c) ?*macos.MacosAdapter {
-return macos.macosAdapterNew(view, is_view_focused, action_handler, action_handler_userdata);
+    return macos.macosAdapterNew(view, is_view_focused, action_handler, action_handler_userdata);
 }
 
 // Releases the adapter and every tree it holds, exactly once.
@@ -1084,7 +1084,7 @@ return macos.macosAdapterNew(view, is_view_focused, action_handler, action_handl
 //
 // Passing `null` terminates the process.
 fn accesskit_macos_adapter_free(adapter: *macos.MacosAdapter) callconv(.c) void {
-macos.macosAdapterFree(adapter);
+    macos.macosAdapterFree(adapter);
 }
 
 // Asks `update_factory` for a tree and hands it to the adapter.
@@ -1096,15 +1096,15 @@ macos.macosAdapterFree(adapter);
 // is not active. The caller owns a non-null result and must pass it to
 // `accesskit_macos_queued_events_raise`.
 fn accesskit_macos_adapter_update_if_active(
-adapter: *macos.MacosAdapter,
-update_factory: TreeUpdateFactory,
-update_factory_userdata: ?*anyopaque,
+    adapter: *macos.MacosAdapter,
+    update_factory: TreeUpdateFactory,
+    update_factory_userdata: ?*anyopaque,
 ) callconv(.c) ?*macos.MacosQueuedEvents {
-return macos.macosAdapterUpdateIfActive(
-    adapter,
-    update_factory,
-    update_factory_userdata,
-);
+    return macos.macosAdapterUpdateIfActive(
+        adapter,
+        update_factory,
+        update_factory_userdata,
+    );
 }
 
 // Tells the adapter whether `view` holds focus, and returns the events
@@ -1116,10 +1116,10 @@ return macos.macosAdapterUpdateIfActive(
 // Returns `null` when the adapter is not active. The caller owns a
 // non-null result and must raise it.
 fn accesskit_macos_adapter_update_view_focus_state(
-adapter: *macos.MacosAdapter,
-is_focused: bool,
+    adapter: *macos.MacosAdapter,
+    is_focused: bool,
 ) callconv(.c) ?*macos.MacosQueuedEvents {
-return macos.macosAdapterUpdateViewFocusState(adapter, is_focused);
+    return macos.macosAdapterUpdateViewFocusState(adapter, is_focused);
 }
 
 // Returns the platform object that names the view's children, or
@@ -1131,15 +1131,15 @@ return macos.macosAdapterUpdateViewFocusState(adapter, is_focused);
 // Ownership of the pointer does not transfer. The activation handler
 // is supplied on this call and dropped when it returns.
 fn accesskit_macos_adapter_view_children(
-adapter: *macos.MacosAdapter,
-activation_handler: ActivationHandler,
-activation_handler_userdata: ?*anyopaque,
+    adapter: *macos.MacosAdapter,
+    activation_handler: ActivationHandler,
+    activation_handler_userdata: ?*anyopaque,
 ) callconv(.c) ?*anyopaque {
-return macos.macosAdapterViewChildren(
-    adapter,
-    activation_handler,
-    activation_handler_userdata,
-);
+    return macos.macosAdapterViewChildren(
+        adapter,
+        activation_handler,
+        activation_handler_userdata,
+    );
 }
 
 // Returns the platform object that holds focus, or `null` when
@@ -1151,11 +1151,11 @@ return macos.macosAdapterViewChildren(
 // Ownership of the pointer does not transfer. The activation handler
 // is supplied on this call and dropped when it returns.
 fn accesskit_macos_adapter_focus(
-adapter: *macos.MacosAdapter,
-activation_handler: ActivationHandler,
-activation_handler_userdata: ?*anyopaque,
+    adapter: *macos.MacosAdapter,
+    activation_handler: ActivationHandler,
+    activation_handler_userdata: ?*anyopaque,
 ) callconv(.c) ?*anyopaque {
-return macos.macosAdapterFocus(adapter, activation_handler, activation_handler_userdata);
+    return macos.macosAdapterFocus(adapter, activation_handler, activation_handler_userdata);
 }
 
 // Returns the platform object at the logical point `(x, y)`, or `null`
@@ -1167,19 +1167,19 @@ return macos.macosAdapterFocus(adapter, activation_handler, activation_handler_u
 // Ownership of the pointer does not transfer. The activation handler
 // is supplied on this call and dropped when it returns.
 fn accesskit_macos_adapter_hit_test(
-adapter: *macos.MacosAdapter,
-x: f64,
-y: f64,
-activation_handler: ActivationHandler,
-activation_handler_userdata: ?*anyopaque,
+    adapter: *macos.MacosAdapter,
+    x: f64,
+    y: f64,
+    activation_handler: ActivationHandler,
+    activation_handler_userdata: ?*anyopaque,
 ) callconv(.c) ?*anyopaque {
-return macos.macosAdapterHitTest(
-    adapter,
-    x,
-    y,
-    activation_handler,
-    activation_handler_userdata,
-);
+    return macos.macosAdapterHitTest(
+        adapter,
+        x,
+        y,
+        activation_handler,
+        activation_handler_userdata,
+    );
 }
 
 // Returns a text rendering of the adapter, or `null` when the text
@@ -1191,9 +1191,9 @@ return macos.macosAdapterHitTest(
 // Release the result with `accesskit_string_free`, once. The text
 // borrows nothing from the adapter once the call returns.
 fn accesskit_macos_adapter_debug(
-adapter: *const macos.MacosAdapter,
+    adapter: *const macos.MacosAdapter,
 ) callconv(.c) ?[*:0]u8 {
-return macos.macosAdapterDebug(adapter);
+    return macos.macosAdapterDebug(adapter);
 }
 
 // Returns a macOS subclassing adapter for `view`, or `null` when the
@@ -1206,19 +1206,19 @@ return macos.macosAdapterDebug(adapter);
 // is released. The caller owns the adapter and releases it with
 // `accesskit_macos_subclassing_adapter_free`.
 fn accesskit_macos_subclassing_adapter_new(
-view: ?*anyopaque,
-activation_handler: ActivationHandler,
-activation_handler_userdata: ?*anyopaque,
-action_handler: ActionHandler,
-action_handler_userdata: ?*anyopaque,
+    view: ?*anyopaque,
+    activation_handler: ActivationHandler,
+    activation_handler_userdata: ?*anyopaque,
+    action_handler: ActionHandler,
+    action_handler_userdata: ?*anyopaque,
 ) callconv(.c) ?*macos.MacosSubclassingAdapter {
-return macos.macosSubclassingAdapterNew(
-    view,
-    activation_handler,
-    activation_handler_userdata,
-    action_handler,
-    action_handler_userdata,
-);
+    return macos.macosSubclassingAdapterNew(
+        view,
+        activation_handler,
+        activation_handler_userdata,
+        action_handler,
+        action_handler_userdata,
+    );
 }
 
 // Returns a subclassing adapter for `window`, or `null` when the
@@ -1230,19 +1230,19 @@ return macos.macosSubclassingAdapterNew(
 // The conditions are the ones `accesskit_macos_subclassing_adapter_new`
 // states.
 fn accesskit_macos_subclassing_adapter_for_window(
-window: ?*anyopaque,
-activation_handler: ActivationHandler,
-activation_handler_userdata: ?*anyopaque,
-action_handler: ActionHandler,
-action_handler_userdata: ?*anyopaque,
+    window: ?*anyopaque,
+    activation_handler: ActivationHandler,
+    activation_handler_userdata: ?*anyopaque,
+    action_handler: ActionHandler,
+    action_handler_userdata: ?*anyopaque,
 ) callconv(.c) ?*macos.MacosSubclassingAdapter {
-return macos.macosSubclassingAdapterForWindow(
-    window,
-    activation_handler,
-    activation_handler_userdata,
-    action_handler,
-    action_handler_userdata,
-);
+    return macos.macosSubclassingAdapterForWindow(
+        window,
+        activation_handler,
+        activation_handler_userdata,
+        action_handler,
+        action_handler_userdata,
+    );
 }
 
 // Releases the adapter and every tree it holds, exactly once.
@@ -1252,9 +1252,9 @@ return macos.macosSubclassingAdapterForWindow(
 //
 // Passing `null` terminates the process.
 fn accesskit_macos_subclassing_adapter_free(
-adapter: *macos.MacosSubclassingAdapter,
+    adapter: *macos.MacosSubclassingAdapter,
 ) callconv(.c) void {
-macos.macosSubclassingAdapterFree(adapter);
+    macos.macosSubclassingAdapterFree(adapter);
 }
 
 // Asks `update_factory` for a tree and hands it to the adapter.
@@ -1265,15 +1265,15 @@ macos.macosSubclassingAdapterFree(adapter);
 // Returns the events the answer produced, or `null` when the adapter
 // is not active. The caller owns a non-null result.
 fn accesskit_macos_subclassing_adapter_update_if_active(
-adapter: *macos.MacosSubclassingAdapter,
-update_factory: TreeUpdateFactory,
-update_factory_userdata: ?*anyopaque,
+    adapter: *macos.MacosSubclassingAdapter,
+    update_factory: TreeUpdateFactory,
+    update_factory_userdata: ?*anyopaque,
 ) callconv(.c) ?*macos.MacosQueuedEvents {
-return macos.macosSubclassingAdapterUpdateIfActive(
-    adapter,
-    update_factory,
-    update_factory_userdata,
-);
+    return macos.macosSubclassingAdapterUpdateIfActive(
+        adapter,
+        update_factory,
+        update_factory_userdata,
+    );
 }
 
 // Tells the adapter whether `view` holds focus, and returns the events
@@ -1285,10 +1285,10 @@ return macos.macosSubclassingAdapterUpdateIfActive(
 // Returns `null` when the adapter is not active. The caller owns a
 // non-null result and must raise it.
 fn accesskit_macos_subclassing_adapter_update_view_focus_state(
-adapter: *macos.MacosSubclassingAdapter,
-is_focused: bool,
+    adapter: *macos.MacosSubclassingAdapter,
+    is_focused: bool,
 ) callconv(.c) ?*macos.MacosQueuedEvents {
-return macos.macosSubclassingAdapterUpdateViewFocusState(adapter, is_focused);
+    return macos.macosSubclassingAdapterUpdateViewFocusState(adapter, is_focused);
 }
 
 // Adds a focus forwarder to the `NSWindow` subclass named by the
@@ -1304,9 +1304,9 @@ return macos.macosSubclassingAdapterUpdateViewFocusState(adapter, is_focused);
 // for the life of the process: link it statically into the main
 // executable.
 fn accesskit_macos_add_focus_forwarder_to_window_class(
-class_name: [*:0]const u8,
+    class_name: [*:0]const u8,
 ) callconv(.c) void {
-macos.macosAddFocusForwarderToWindowClass(class_name);
+    macos.macosAddFocusForwarderToWindowClass(class_name);
 }
 
 // Adds a focus forwarder to the `NSWindow` subclass named by
@@ -1320,33 +1320,33 @@ macos.macosAddFocusForwarderToWindowClass(class_name);
 // is the one
 // `accesskit_macos_add_focus_forwarder_to_window_class` states.
 fn accesskit_macos_add_focus_forwarder_to_window_class_with_length(
-class_name: [*]const u8,
-length: usize,
+    class_name: [*]const u8,
+    length: usize,
 ) callconv(.c) void {
-macos.macosAddFocusForwarderToWindowClassWithLength(class_name, length);
+    macos.macosAddFocusForwarderToWindowClassWithLength(class_name, length);
 }
 
 // The macos exports. A declaration above is emitted as a symbol only
 // where its guard is true; this block is the whole of that decision.
 comptime {
-if (Guard.macos.declaresOn(this_platform)) {
-    @export(&accesskit_macos_queued_events_raise, .{ .name = "accesskit_macos_queued_events_raise", .linkage = .strong });
-    @export(&accesskit_macos_adapter_new, .{ .name = "accesskit_macos_adapter_new", .linkage = .strong });
-    @export(&accesskit_macos_adapter_free, .{ .name = "accesskit_macos_adapter_free", .linkage = .strong });
-    @export(&accesskit_macos_adapter_update_if_active, .{ .name = "accesskit_macos_adapter_update_if_active", .linkage = .strong });
-    @export(&accesskit_macos_adapter_update_view_focus_state, .{ .name = "accesskit_macos_adapter_update_view_focus_state", .linkage = .strong });
-    @export(&accesskit_macos_adapter_view_children, .{ .name = "accesskit_macos_adapter_view_children", .linkage = .strong });
-    @export(&accesskit_macos_adapter_focus, .{ .name = "accesskit_macos_adapter_focus", .linkage = .strong });
-    @export(&accesskit_macos_adapter_hit_test, .{ .name = "accesskit_macos_adapter_hit_test", .linkage = .strong });
-    @export(&accesskit_macos_adapter_debug, .{ .name = "accesskit_macos_adapter_debug", .linkage = .strong });
-    @export(&accesskit_macos_subclassing_adapter_new, .{ .name = "accesskit_macos_subclassing_adapter_new", .linkage = .strong });
-    @export(&accesskit_macos_subclassing_adapter_for_window, .{ .name = "accesskit_macos_subclassing_adapter_for_window", .linkage = .strong });
-    @export(&accesskit_macos_subclassing_adapter_free, .{ .name = "accesskit_macos_subclassing_adapter_free", .linkage = .strong });
-    @export(&accesskit_macos_subclassing_adapter_update_if_active, .{ .name = "accesskit_macos_subclassing_adapter_update_if_active", .linkage = .strong });
-    @export(&accesskit_macos_subclassing_adapter_update_view_focus_state, .{ .name = "accesskit_macos_subclassing_adapter_update_view_focus_state", .linkage = .strong });
-    @export(&accesskit_macos_add_focus_forwarder_to_window_class, .{ .name = "accesskit_macos_add_focus_forwarder_to_window_class", .linkage = .strong });
-    @export(&accesskit_macos_add_focus_forwarder_to_window_class_with_length, .{ .name = "accesskit_macos_add_focus_forwarder_to_window_class_with_length", .linkage = .strong });
-}
+    if (Guard.macos.declaresOn(this_platform)) {
+        @export(&accesskit_macos_queued_events_raise, .{ .name = "accesskit_macos_queued_events_raise", .linkage = .strong });
+        @export(&accesskit_macos_adapter_new, .{ .name = "accesskit_macos_adapter_new", .linkage = .strong });
+        @export(&accesskit_macos_adapter_free, .{ .name = "accesskit_macos_adapter_free", .linkage = .strong });
+        @export(&accesskit_macos_adapter_update_if_active, .{ .name = "accesskit_macos_adapter_update_if_active", .linkage = .strong });
+        @export(&accesskit_macos_adapter_update_view_focus_state, .{ .name = "accesskit_macos_adapter_update_view_focus_state", .linkage = .strong });
+        @export(&accesskit_macos_adapter_view_children, .{ .name = "accesskit_macos_adapter_view_children", .linkage = .strong });
+        @export(&accesskit_macos_adapter_focus, .{ .name = "accesskit_macos_adapter_focus", .linkage = .strong });
+        @export(&accesskit_macos_adapter_hit_test, .{ .name = "accesskit_macos_adapter_hit_test", .linkage = .strong });
+        @export(&accesskit_macos_adapter_debug, .{ .name = "accesskit_macos_adapter_debug", .linkage = .strong });
+        @export(&accesskit_macos_subclassing_adapter_new, .{ .name = "accesskit_macos_subclassing_adapter_new", .linkage = .strong });
+        @export(&accesskit_macos_subclassing_adapter_for_window, .{ .name = "accesskit_macos_subclassing_adapter_for_window", .linkage = .strong });
+        @export(&accesskit_macos_subclassing_adapter_free, .{ .name = "accesskit_macos_subclassing_adapter_free", .linkage = .strong });
+        @export(&accesskit_macos_subclassing_adapter_update_if_active, .{ .name = "accesskit_macos_subclassing_adapter_update_if_active", .linkage = .strong });
+        @export(&accesskit_macos_subclassing_adapter_update_view_focus_state, .{ .name = "accesskit_macos_subclassing_adapter_update_view_focus_state", .linkage = .strong });
+        @export(&accesskit_macos_add_focus_forwarder_to_window_class, .{ .name = "accesskit_macos_add_focus_forwarder_to_window_class", .linkage = .strong });
+        @export(&accesskit_macos_add_focus_forwarder_to_window_class_with_length, .{ .name = "accesskit_macos_add_focus_forwarder_to_window_class_with_length", .linkage = .strong });
+    }
 }
 
 // =============================================================================
@@ -1450,9 +1450,9 @@ fn accesskit_unix_adapter_update_window_focus_state(
 // borrows nothing from the adapter once the call returns, so the
 // adapter may be released first.
 fn accesskit_unix_adapter_debug(
-adapter: *const atspi.UnixAdapter,
+    adapter: *const atspi.UnixAdapter,
 ) callconv(.c) ?[*:0]u8 {
-return atspi.unixAdapterDebug(adapter);
+    return atspi.unixAdapterDebug(adapter);
 }
 
 // The unix exports. A declaration above is emitted as a symbol only
@@ -1643,15 +1643,15 @@ fn accesskit_windows_subclassing_adapter_free(
 /// is not active. The caller owns a non-null result and must pass it to
 /// `accesskit_windows_queued_events_raise`.
 fn accesskit_windows_subclassing_adapter_update_if_active(
-adapter: *windows.WindowsSubclassingAdapter,
-update_factory: TreeUpdateFactory,
-update_factory_userdata: ?*anyopaque,
+    adapter: *windows.WindowsSubclassingAdapter,
+    update_factory: TreeUpdateFactory,
+    update_factory_userdata: ?*anyopaque,
 ) callconv(.c) ?*windows.WindowsQueuedEvents {
-return windows.windowsSubclassingAdapterUpdateIfActive(
-    adapter,
-    update_factory,
-    update_factory_userdata,
-);
+    return windows.windowsSubclassingAdapterUpdateIfActive(
+        adapter,
+        update_factory,
+        update_factory_userdata,
+    );
 }
 
 // The windows exports. A declaration above is emitted as a symbol only

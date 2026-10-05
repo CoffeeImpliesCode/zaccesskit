@@ -522,7 +522,7 @@ fn recorderOf(env: JniEnv) ?*Recorder {
     // SAFETY: the table parks the recorder as `.env`, which is
     // `?*const anyopaque`, so the const belongs to the table and not to the
     // recorder, and the alignment is the one the recorder was declared with.
-    return @alignCast(@constCast(@ptrCast(handle)));
+    return @ptrCast(@alignCast(@constCast(handle)));
 }
 
 fn answeredFindClass(env: JniEnv, _: [:0]const u8) JClass {

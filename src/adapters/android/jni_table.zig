@@ -525,7 +525,6 @@ pub const JniTable = struct {
     /// declarations rather than one colliding name. Every method passes
     /// `self.env` as the first argument, which is what lets a substituted
     /// function recover its own context from the environment it is handed.
-
     /// Resolves a class by JNI name, `a/b/C` rather than `a.b.C`.
     findClassFn: *const fn (env: JniEnv, name: [:0]const u8) JClass,
     /// Resolves an instance method by name and JNI descriptor.
@@ -1510,7 +1509,7 @@ const TestRecorder = struct {
     last_name_len: usize = 0,
 
     fn findClass(env: JniEnv, name: [:0]const u8) JClass {
-        const self: *TestRecorder = @constCast(@ptrCast(@alignCast(env.?)));
+        const self: *TestRecorder = @ptrCast(@alignCast(@constCast(env.?)));
         self.calls += 1;
         @memcpy(self.last_name[0..name.len], name);
         self.last_name_len = name.len;
@@ -1677,7 +1676,7 @@ test "overriding one field of the inert table leaves the rest inert" {
             _ = obj;
             _ = method;
             _ = args;
-            const counter: *usize = @constCast(@ptrCast(@alignCast(env.?)));
+            const counter: *usize = @ptrCast(@alignCast(@constCast(env.?)));
             counter.* += 1;
         }
     };

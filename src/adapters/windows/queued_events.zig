@@ -257,7 +257,6 @@ pub const QueuedEvents = struct {
 
 const testing = std.testing;
 
-
 /// A stand-in for a provider slot.
 ///
 /// The address is rounded down to the slot's alignment, because a Debug build
@@ -375,7 +374,6 @@ test "raise reports a raised event as raised and a refused one as refused" {
 /// `status` is a comptime parameter because a struct declared inside a
 /// function body is a namespace and cannot close over a run-time value. Naming
 /// the answer at the type level is what makes the three cases three values.
-
 fn answeringRaise(comptime status: RaiseStatus) RaiseSlot {
     return struct {
         fn call(slot: *const ProviderSlot, event_id: EventId) RaiseStatus {

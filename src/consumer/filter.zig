@@ -463,7 +463,7 @@ test "commonFilter drops a graft node" {
     const pair = try addParentAndChild(&state, .window, .generic_container);
     try schema.option.setTreeId(
         &(try slotOf(&state, pair.child.id())).data.properties,
-        schema.treeIdFromBytes(.{ 1 } ** 16),
+        schema.treeIdFromBytes(.{1} ** 16),
     );
 
     try testing.expectEqual(FilterResult.exclude_node, try commonFilter(pair.child));

@@ -221,7 +221,6 @@ pub const RaisePropertyChangedSlot = *const fn (
     new: PropertyValue,
 ) RaiseStatus;
 
-
 /// The UI Automation entry points the adapter calls.
 ///
 /// Every slot is a plain Zig function pointer. On a Windows target each one

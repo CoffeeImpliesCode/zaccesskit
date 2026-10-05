@@ -361,8 +361,7 @@ pub fn answerExpression(answer: Answer) [:0]const u8 {
         .selectable_item => "is_clickable() && is_item_like() && is_selectable()",
         .is_tab_list => "node.role() == Role::TabList",
         .is_dialog => "node.is_dialog()",
-        .has_any_attribute =>
-            "has_braille_label() || has_braille_role_description() || has_html_id()",
+        .has_any_attribute => "has_braille_label() || has_braille_role_description() || has_html_id()",
         .supports_url => "node.supports_url()",
         .always => "true",
         .unlisted => "false",
@@ -589,8 +588,7 @@ pub fn selectorAllowed(name: []const u8, node: NodeRef) QueryError!bool {
             return predicates.supportsAction(node, .set_value, parent_filter);
         },
         .is_item_like => containers.isItemLike(node),
-        .is_container_with_selectable_children =>
-            containers.isContainerWithSelectableChildren(node),
+        .is_container_with_selectable_children => containers.isContainerWithSelectableChildren(node),
         .selectable_item => {
             if (!try predicates.isClickable(node, parent_filter)) return false;
             if (!containers.isItemLike(node)) return false;

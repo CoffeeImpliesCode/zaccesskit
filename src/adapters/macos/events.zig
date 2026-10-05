@@ -504,8 +504,7 @@ fn nodeRemoved(context: *anyopaque, node: NodeRef) void {
 /// because upstream compares `raw_value` and a change from one spelling to
 /// another is a change the client hears.
 fn rawValueEquals(a: NodeRef, b: NodeRef) bool {
-    const left = consumer.node_ref.set_state.rawValue(a) orelse return
-        consumer.node_ref.set_state.rawValue(b) == null;
+    const left = consumer.node_ref.set_state.rawValue(a) orelse return consumer.node_ref.set_state.rawValue(b) == null;
     const right = consumer.node_ref.set_state.rawValue(b) orelse return false;
     return std.mem.eql(u8, left, right);
 }

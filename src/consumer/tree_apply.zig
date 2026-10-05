@@ -518,7 +518,7 @@ test "a graft node that also names children of its own is refused" {
     const gpa = testing.allocator;
     var state = try rootOnly(gpa, 1);
     defer state.deinit(gpa);
-    const subtree = schema.treeIdFromBytes(.{ 5 } ** 16);
+    const subtree = schema.treeIdFromBytes(.{5} ** 16);
 
     var update: TreeUpdate = .{};
     try pushParent(gpa, &update, 1, .generic_container, &.{.{ .value = 6 }});
@@ -534,7 +534,7 @@ test "a subtree update with no graft node in the parent tree is refused before a
     defer state.deinit(gpa);
 
     var update: TreeUpdate = .{};
-    update.tree_id = schema.treeIdFromBytes(.{ 5 } ** 16);
+    update.tree_id = schema.treeIdFromBytes(.{5} ** 16);
     update.tree = schema.TreeInfo.init(.{ .value = 50 });
     try pushNode(gpa, &update, 50, .generic_container);
     // The rejection is the first thing the pass decides, so the state is exactly
@@ -575,7 +575,7 @@ test "an orphan stops the pass before the graft it also declared is installed" {
 
     var update: TreeUpdate = .{};
     try pushParent(gpa, &update, 1, .generic_container, &.{.{ .value = 6 }});
-    try pushGraft(gpa, &update, 6, schema.treeIdFromBytes(.{ 5 } ** 16), &.{});
+    try pushGraft(gpa, &update, 6, schema.treeIdFromBytes(.{5} ** 16), &.{});
     try pushNode(gpa, &update, 9, .button);
     try testing.expectError(error.OrphanNode, applyUpdate(gpa, &state, update, null));
 
@@ -610,7 +610,7 @@ test "a graft node arrives first and the subtree that follows hangs under it" {
     const gpa = testing.allocator;
     var state = try rootOnly(gpa, 1);
     defer state.deinit(gpa);
-    const subtree = schema.treeIdFromBytes(.{ 5 } ** 16);
+    const subtree = schema.treeIdFromBytes(.{5} ** 16);
     const graft_id = FullNodeId.init(.{ .value = 6 }, TreeIndex.init(0));
 
     // The subtree arrives first and the parent tree carries nothing for it, which

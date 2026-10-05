@@ -496,7 +496,7 @@ test "every allocation failure in a mint leaves the two directions in step" {
     try testing.checkAllAllocationFailures(
         gpa,
         mintUnderAnyAllocator,
-        .{&state, fixtureId(2)},
+        .{ &state, fixtureId(2) },
     );
 }
 

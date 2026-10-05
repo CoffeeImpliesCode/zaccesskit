@@ -246,7 +246,7 @@ pub const accesskit_tree_info = struct {
         // `include/zaccesskit.h:5185-5187` and it replaces upstream's
         // `CString::new(...).unwrap()` at `accesskit-c/src/common.rs:890`, which
         // panics on the same value.
-        const kept = text[0..std.mem.indexOfScalar(u8, text, 0) orelse text.len];
+        const kept = text[0 .. std.mem.indexOfScalar(u8, text, 0) orelse text.len];
         const copy = try self.gpa.dupe(u8, kept);
         if (store(self, which, copy)) |displaced| self.gpa.free(displaced);
     }
@@ -671,7 +671,7 @@ fn writeOptionalBytes(writer: *std.Io.Writer, value: ?[]const u8) std.Io.Writer.
 /// by-value question is about.
 fn isAggregate(comptime T: type) bool {
     return switch (@typeInfo(T)) {
-        .@"struct", .@"union", .@"enum", .@"array" => true,
+        .@"struct", .@"union", .@"enum", .array => true,
         else => false,
     };
 }
@@ -777,7 +777,7 @@ fn span(value: [*c]const u8) []const u8 {
 /// Releases a string a getter returned, which is what
 /// `accesskit_string_free` does on the C side.
 fn releaseCString(gpa: std.mem.Allocator, value: [*c]const u8) void {
-    marshal.string_free(gpa, @constCast(@ptrCast(value)));
+    marshal.string_free(gpa, @ptrCast(@constCast(value)));
 }
 
 /// The only failure `CountingAllocator.expectOneReleaseEach` reports.

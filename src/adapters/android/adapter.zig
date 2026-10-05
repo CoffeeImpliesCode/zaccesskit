@@ -106,23 +106,23 @@ const Position = text_position.Position;
 /// tags this module adds are the ones only this layer can produce.
 pub const Error = consumer.tree.UpdateError || node_mod.FillError ||
     update_schema.ActionDataToCError || error{
-        /// The tree-update factory answered `null`. Upstream unwraps the same
-        /// value at `AK/android/src/adapter.rs:554`, so a `null` here is a
-        /// contract violation and **not** "no tree". `ActivationHandler`
-        /// answering `null` is the other shape and is handled as data.
-        NullTreeUpdate,
+    /// The tree-update factory answered `null`. Upstream unwraps the same
+    /// value at `AK/android/src/adapter.rs:554`, so a `null` here is a
+    /// contract violation and **not** "no tree". `ActivationHandler`
+    /// answering `null` is the other shape and is handled as data.
+    NullTreeUpdate,
 
-        /// The activation handler handed over a tree the consumer half rejected.
-        /// It reaches here through `Tree.init` and carries one of the
-        /// `UpdateError` tags, so it is listed rather than named separately.
-        TreeRejected,
+    /// The activation handler handed over a tree the consumer half rejected.
+    /// It reaches here through `Tree.init` and carries one of the
+    /// `UpdateError` tags, so it is listed rather than named separately.
+    TreeRejected,
 
-        /// A change slot could not append its event, so the queue the caller
-        /// receives is missing one. The update still committed: the consumer
-        /// half commits after the last slot returns and this module cannot
-        /// un-commit it.
-        TreeEventQueueFailed,
-    };
+    /// A change slot could not append its event, so the queue the caller
+    /// receives is missing one. The update still committed: the consumer
+    /// half commits after the last slot returns and this module cannot
+    /// un-commit it.
+    TreeEventQueueFailed,
+};
 
 /// One simple action: the Android id and the AccessKit action it means.
 ///
@@ -859,7 +859,6 @@ const ActionProbe = struct {
         .anchor = .{ .node_id = .{ .value = 0 }, .character_index = 0 },
         .focus = .{ .node_id = .{ .value = 0 }, .character_index = 0 },
     },
-
 
     /// Reads one request, then releases it the way `boundary.ActionHandler`
     /// requires: `schema.cActionRequestDeinit` for the payload and

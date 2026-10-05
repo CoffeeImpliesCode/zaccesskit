@@ -603,7 +603,7 @@ test "a text run queues its parent's text change at the front" {
     const gpa = testing.allocator;
     const platform = syscalls.unavailablePlatform();
     const specs = [_]NodeSpec{
-        .{ .local = 1, .role = .window, .children = &.{2, 3} },
+        .{ .local = 1, .role = .window, .children = &.{ 2, 3 } },
         .{ .local = 2, .role = .document, .children = &.{4} },
         .{ .local = 3, .role = .dialog },
         .{ .local = 4, .role = .text_run },
@@ -642,7 +642,7 @@ test "a text change is queued once however many runs changed" {
     const gpa = testing.allocator;
     const platform = syscalls.unavailablePlatform();
     const specs = [_]NodeSpec{
-        .{ .local = 1, .role = .window, .children = &.{2, 4} },
+        .{ .local = 1, .role = .window, .children = &.{ 2, 4 } },
         .{ .local = 2, .role = .document, .children = &.{3} },
         .{ .local = 3, .role = .text_run },
         .{ .local = 4, .role = .text_run },
@@ -709,7 +709,7 @@ test "a live region queues the live region changed event once" {
     const gpa = testing.allocator;
     const platform = syscalls.unavailablePlatform();
     const specs = [_]NodeSpec{
-        .{ .local = 1, .role = .window, .children = &.{2, 3} },
+        .{ .local = 1, .role = .window, .children = &.{ 2, 3 } },
         .{ .local = 2, .role = .button, .label = "Save", .live = .polite },
         .{ .local = 3, .role = .button, .label = "Cancel" },
     };
@@ -746,7 +746,7 @@ test "one selected child takes the optimized selection path" {
     const platform = syscalls.unavailablePlatform();
     const specs = [_]NodeSpec{
         .{ .local = 1, .role = .window, .children = &.{2} },
-        .{ .local = 2, .role = .list_box, .children = &.{3, 4} },
+        .{ .local = 2, .role = .list_box, .children = &.{ 3, 4 } },
         .{ .local = 3, .role = .list_box_option, .is_selected = true },
         .{ .local = 4, .role = .list_box_option, .is_selected = false },
     };
@@ -781,7 +781,7 @@ test "two selected children take the enumerated selection path" {
     const platform = syscalls.unavailablePlatform();
     const specs = [_]NodeSpec{
         .{ .local = 1, .role = .window, .children = &.{2} },
-        .{ .local = 2, .role = .list_box, .children = &.{3, 4} },
+        .{ .local = 2, .role = .list_box, .children = &.{ 3, 4 } },
         .{ .local = 3, .role = .list_box_option, .is_selected = true },
         .{ .local = 4, .role = .list_box_option, .is_selected = true },
     };

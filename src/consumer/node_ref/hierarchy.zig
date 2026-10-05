@@ -463,7 +463,6 @@ fn expectSameId(want: FullNodeId, got: FullNodeId) !void {
     try testing.expect(std.meta.eql(want, got));
 }
 
-
 test "isRoot answers for the recorded root and for no other node" {
     const gpa = testing.allocator;
     var fixture: Fixture = .{ .gpa = gpa };
@@ -540,10 +539,12 @@ test "filteredParent starts above the node and stops at the first included one" 
     const leaf = try fixture.add(2, middle);
 
     const leaf_node = try fixture.ref(leaf);
-    try expectSameId(middle,
+    try expectSameId(
+        middle,
         (try filteredParent(leaf_node, includeAllFilter())).?.id(),
     );
-    try expectSameId(root,
+    try expectSameId(
+        root,
         (try filteredParent(try fixture.ref(middle), includeAllFilter())).?.id(),
     );
 
@@ -556,7 +557,8 @@ test "filteredParent starts above the node and stops at the first included one" 
     // One level up the chain, the same filter now has an included node to find,
     // so the answer is not null for the wrong reason.
     fixture.setRole(middle, .list_item);
-    try expectSameId(middle,
+    try expectSameId(
+        middle,
         (try filteredParent(leaf_node, roleFilter())).?.id(),
     );
 }
@@ -631,7 +633,7 @@ test "a graft node yields its subtree root instead of its children list" {
     const root = try fixture.add(0, null);
     const graft = try fixture.add(1, root);
     const subtree_root = try fixture.add(2, null);
-    const tree_id = schema.treeIdFromBytes(.{ 1 } ** 16);
+    const tree_id = schema.treeIdFromBytes(.{1} ** 16);
     try schema.option.setTreeId(
         &fixture.state.nodes.getPtr(graft).?.data.properties,
         tree_id,
@@ -642,13 +644,13 @@ test "a graft node yields its subtree root instead of its children list" {
     });
     // A graft node also lists a child upstream, and the graft arm must win, so a
     // cursor that reads `children` first reports the wrong child.
-    try fixture.setChildren(graft, &.{ 2 });
+    try fixture.setChildren(graft, &.{2});
 
     var ids: std.ArrayList(u64) = .empty;
     defer ids.deinit(gpa);
     var cursor = childIds(try fixture.ref(graft));
     while (cursor.next()) |id| try ids.append(gpa, id.local.value);
-    try testing.expectEqualSlices(u64, &.{ 2 }, ids.items);
+    try testing.expectEqualSlices(u64, &.{2}, ids.items);
     try testing.expectEqual(@as(usize, 1), childIds(try fixture.ref(graft)).len());
 }
 
@@ -719,7 +721,7 @@ test "the node-returning sibling cursors agree with the id ones" {
     defer behind.deinit(gpa);
     var back = precedingSiblings(try fixture.ref(middle));
     while (back.next()) |node| try behind.append(gpa, node.id().local.value);
-    try testing.expectEqualSlices(u64, &.{ 1 }, behind.items);
+    try testing.expectEqualSlices(u64, &.{1}, behind.items);
 }
 
 test "the filtered sibling cursors skip a node the filter excludes" {
@@ -769,9 +771,9 @@ test "filteredChildren descends into an excluded node and skips an excluded subt
     const closed = try fixture.add(4, root);
     const sealed = try fixture.add(5, closed);
     try fixture.setChildren(root, &.{ 1, 3, 4 });
-    try fixture.setChildren(container, &.{ 2 });
+    try fixture.setChildren(container, &.{2});
     try fixture.setChildren(kept, &.{});
-    try fixture.setChildren(closed, &.{ 5 });
+    try fixture.setChildren(closed, &.{5});
     try fixture.setChildren(sealed, &.{});
     fixture.setRole(container, .group);
     fixture.setRole(buried, .paragraph);
@@ -802,8 +804,8 @@ test "deepestFirstChild and deepestLastChild walk to the two ends of a chain" {
     const left_leaf = try fixture.add(3, left);
     const right_leaf = try fixture.add(4, right);
     try fixture.setChildren(root, &.{ 1, 2 });
-    try fixture.setChildren(left, &.{ 3 });
-    try fixture.setChildren(right, &.{ 4 });
+    try fixture.setChildren(left, &.{3});
+    try fixture.setChildren(right, &.{4});
     try fixture.setChildren(left_leaf, &.{});
     try fixture.setChildren(right_leaf, &.{});
 
@@ -828,10 +830,10 @@ test "the filtered deepest-child walks open an excluded node and close a subtree
     const closed = try fixture.add(4, root);
     const sealed = try fixture.add(5, closed);
     try fixture.setChildren(root, &.{ 1, 3, 4 });
-    try fixture.setChildren(container, &.{ 2 });
+    try fixture.setChildren(container, &.{2});
     try fixture.setChildren(buried, &.{});
     try fixture.setChildren(kept, &.{});
-    try fixture.setChildren(closed, &.{ 5 });
+    try fixture.setChildren(closed, &.{5});
     try fixture.setChildren(sealed, &.{});
     fixture.setRole(container, .group);
     fixture.setRole(buried, .paragraph);
@@ -847,13 +849,15 @@ test "the filtered deepest-child walks open an excluded node and close a subtree
 
     // Inside the closed subtree the walk still runs, because the filter is
     // consulted on the children and not on the subtree that was skipped.
-    try expectSameId(sealed,
+    try expectSameId(
+        sealed,
         (try deepestFirstFilteredChild(try fixture.ref(closed), roleFilter())).?.id(),
     );
 
     // With a filter that includes everything, the first child of the first
     // child is the answer, and no `exclude_node` opened anything.
-    try expectSameId(buried,
+    try expectSameId(
+        buried,
         (try deepestFirstFilteredChild(root_node, includeAllFilter())).?.id(),
     );
 }
@@ -868,7 +872,7 @@ test "a child cycle reaches the bound and reports TreeCycle" {
     const first = try fixture.add(0, null);
     const second = try fixture.add(1, null);
     try fixture.setChildren(first, &.{1});
-    try fixture.setChildren(second, &.{ 1 });
+    try fixture.setChildren(second, &.{1});
 
     const first_node = try fixture.ref(first);
     // Without a bound neither of these returns.
@@ -889,7 +893,7 @@ test "a filtered descendant walk over a cycle reaches its own bound" {
     const first = try fixture.add(0, null);
     const second = try fixture.add(1, null);
     try fixture.setChildren(first, &.{1});
-    try fixture.setChildren(second, &.{ 1 });
+    try fixture.setChildren(second, &.{1});
     fixture.setRole(first, .group);
     fixture.setRole(second, .group);
 
@@ -907,10 +911,12 @@ test "a filtered descendant walk over a cycle reaches its own bound" {
     // child would walk 0 to 1 to 0 for ever and reach the level bound; the
     // answer only comes from breaking the cycle and then including every node.
     try fixture.setChildren(second, &.{});
-    try expectSameId(second,
+    try expectSameId(
+        second,
         (try deepestFirstFilteredChild(try fixture.ref(first), includeAllFilter())).?.id(),
     );
-    try expectSameId(second,
+    try expectSameId(
+        second,
         (try deepestLastFilteredChild(try fixture.ref(first), includeAllFilter())).?.id(),
     );
 }

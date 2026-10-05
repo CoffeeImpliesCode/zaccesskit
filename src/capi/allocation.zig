@@ -318,7 +318,7 @@ pub fn createBytes(len: usize) Error![]u8 {
 /// coming through here, so no getter has to repeat the rule and no caller has to
 /// decide what to do about an interior NUL.
 pub fn createCString(bytes: []const u8) Error![*:0]u8 {
-    const cut = bytes[0..std.mem.indexOfScalar(u8, bytes, 0) orelse bytes.len];
+    const cut = bytes[0 .. std.mem.indexOfScalar(u8, bytes, 0) orelse bytes.len];
     const head = try carve(cut.len + 1, 1);
     const payload = payloadOf(head, 1);
     @memcpy(payload[0..cut.len], cut);

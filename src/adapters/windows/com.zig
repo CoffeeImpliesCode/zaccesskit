@@ -227,7 +227,7 @@ pub fn Object(comptime StateType: type, comptime Interfaces: type) type {
                 @compileError("the object does not implement " ++ @typeName(Interface));
             comptime std.debug.assert(index >= 0);
             comptime std.debug.assert(index < interface_count);
-            const word: *IUnknown = @constCast(@alignCast(pointer));
+            const word: *IUnknown = @alignCast(@constCast(pointer));
             return @fieldParentPtr("words", word);
         }
 
@@ -280,7 +280,7 @@ pub fn Object(comptime StateType: type, comptime Interfaces: type) type {
                     riid: *const Guid,
                     ppv: **anyopaque,
                 ) callconv(.winapi) Hresult {
-                    const mutable: *IUnknown = @constCast(@alignCast(word));
+                    const mutable: *IUnknown = @alignCast(@constCast(word));
                     const object: *Outer = @fieldParentPtr("words", mutable);
                     return object.queryInterface(index, riid, ppv);
                 }
@@ -294,7 +294,7 @@ pub fn Object(comptime StateType: type, comptime Interfaces: type) type {
             const Outer = Self;
             return struct {
                 fn thunk(word: *const IUnknown) callconv(.winapi) u32 {
-                    const mutable: *IUnknown = @constCast(@alignCast(word));
+                    const mutable: *IUnknown = @alignCast(@constCast(word));
                     const object: *Outer = @fieldParentPtr("words", mutable);
                     return object.addRef();
                 }
@@ -308,7 +308,7 @@ pub fn Object(comptime StateType: type, comptime Interfaces: type) type {
             const Outer = Self;
             return struct {
                 fn thunk(word: *const IUnknown) callconv(.winapi) u32 {
-                    const mutable: *IUnknown = @constCast(@alignCast(word));
+                    const mutable: *IUnknown = @alignCast(@constCast(word));
                     const object: *Outer = @fieldParentPtr("words", mutable);
                     return object.release();
                 }
@@ -348,7 +348,6 @@ const test_interfaces = .{
 };
 
 const TestNode = Object(TestState, test_interfaces);
-
 
 const TestState = struct {
     tree_id: u64,

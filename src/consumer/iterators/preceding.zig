@@ -507,7 +507,7 @@ test "the node-returning cursor agrees with the id one" {
     // it rather than stopping at the gap.
     var nodes = try collectPreceding(gpa, try fixture.ref(last));
     defer nodes.deinit(gpa);
-    try testing.expectEqualSlices(u64, &.{ 1 }, nodes.items);
+    try testing.expectEqualSlices(u64, &.{1}, nodes.items);
 }
 
 test "the filtered preceding cursor opens an excluded node and closes a subtree" {

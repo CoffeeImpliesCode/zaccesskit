@@ -461,18 +461,17 @@ test "the 43 AX selector literals are spelled exactly as upstream spells them" {
     // Spelled out here rather than read from the table, so a port that changes
     // the table changes this list and the test fails.
     const upstream = [_][]const u8{
-        "AXListMarker",     "AXDateField",    "AXTimeField",         "AXWebArea",
-        "AXHeading",        "AXApplicationAlert", "AXWebApplication", "AXDocumentArticle",
-        "AXLandmarkBanner", "AXCodeStyleGroup", "AXLandmarkComplementary",
-        "AXDeleteStyleGroup", "AXInsertStyleGroup", "AXLandmarkContentInfo",
-        "AXDefinition",     "AXDocument",      "AXEmphasisStyleGroup", "AXApplicationGroup",
-        "AXLandmarkForm",   "AXApplicationLog", "AXLandmarkMain",    "AXApplicationMarquee",
-        "AXDocumentMath",   "AXMeter",         "AXLandmarkNavigation", "AXDocumentNote",
-        "AXLandmarkRegion", "AXLandmarkSearch", "AXSectionFooter",    "AXSectionHeader",
-        "AXApplicationStatus", "AXStrongStyleGroup", "AXTabPanel",     "AXTerm",
-        "AXTimeGroup",      "AXApplicationTimer", "AXUserInterfaceTooltip",
-        "AXBrailleLabel",   "AXBrailleRoleDescription", "AXDOMIdentifier",
-        "AXFontBold",       "AXFontItalic",    "AXScrollToVisible",
+        "AXListMarker",           "AXDateField",           "AXTimeField",              "AXWebArea",
+        "AXHeading",              "AXApplicationAlert",    "AXWebApplication",         "AXDocumentArticle",
+        "AXLandmarkBanner",       "AXCodeStyleGroup",      "AXLandmarkComplementary",  "AXDeleteStyleGroup",
+        "AXInsertStyleGroup",     "AXLandmarkContentInfo", "AXDefinition",             "AXDocument",
+        "AXEmphasisStyleGroup",   "AXApplicationGroup",    "AXLandmarkForm",           "AXApplicationLog",
+        "AXLandmarkMain",         "AXApplicationMarquee",  "AXDocumentMath",           "AXMeter",
+        "AXLandmarkNavigation",   "AXDocumentNote",        "AXLandmarkRegion",         "AXLandmarkSearch",
+        "AXSectionFooter",        "AXSectionHeader",       "AXApplicationStatus",      "AXStrongStyleGroup",
+        "AXTabPanel",             "AXTerm",                "AXTimeGroup",              "AXApplicationTimer",
+        "AXUserInterfaceTooltip", "AXBrailleLabel",        "AXBrailleRoleDescription", "AXDOMIdentifier",
+        "AXFontBold",             "AXFontItalic",          "AXScrollToVisible",
     };
     try testing.expectEqual(@as(usize, 43), upstream.len);
     for (upstream) |spelling| {
@@ -580,12 +579,12 @@ test "the 31 role constant suffixes are the ones the map lists" {
     // `docs/42` section 1.2.4 gives the 31 as a bare list of suffixes. Written
     // out here so that adding or renaming one without the map fails.
     const map = [_][]const u8{
-        "Button",    "Cell",        "CheckBox",       "ColorWell",      "ComboBox",
-        "Group",     "Image",       "Incrementor",    "LevelIndicator", "Link",
-        "List",      "MenuBar",     "MenuItem",       "Menu",           "Outline",
-        "PopUpButton", "ProgressIndicator", "RadioButton", "RadioGroup",    "Row",
-        "ScrollBar", "Slider",      "Splitter",       "StaticText",     "TabGroup",
-        "Table",     "TextArea",    "TextField",      "Toolbar",        "Unknown",
+        "Button",      "Cell",              "CheckBox",    "ColorWell",      "ComboBox",
+        "Group",       "Image",             "Incrementor", "LevelIndicator", "Link",
+        "List",        "MenuBar",           "MenuItem",    "Menu",           "Outline",
+        "PopUpButton", "ProgressIndicator", "RadioButton", "RadioGroup",     "Row",
+        "ScrollBar",   "Slider",            "Splitter",    "StaticText",     "TabGroup",
+        "Table",       "TextArea",          "TextField",   "Toolbar",        "Unknown",
         "Window",
     };
     try testing.expectEqual(@as(usize, 31), map.len);

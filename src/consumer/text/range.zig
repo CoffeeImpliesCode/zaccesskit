@@ -724,8 +724,7 @@ fn insert(
             }
         }
         break :blk .{ .parent_id = parent_id, .index = found };
-    } else
-        null;
+    } else null;
     try state.nodes.put(gpa, id, .{
         .parent_and_index = parent_and_index,
         .data = node_ref,

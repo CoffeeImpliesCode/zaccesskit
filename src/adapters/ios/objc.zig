@@ -246,21 +246,13 @@ const Owner = struct {
 /// `docs/29` records no signature for it, and `objc2` spells its sends through a
 /// macro rather than through this symbol. **Unverified**: no Apple SDK is
 /// installed on this host, so `objc/message.h` was not read.
-const MsgSendFn = fn (
-    ?*runtime.AnyObject,
-    ?*runtime.Sel,
-    ...
-) callconv(.c) ?*runtime.AnyObject;
+const MsgSendFn = fn (?*runtime.AnyObject, ?*runtime.Sel, ...) callconv(.c) ?*runtime.AnyObject;
 
 /// `objc_msgSendSuper2`, with the fixed part `objc/message.h` gives.
 ///
 /// **Unverified**: no Apple SDK is installed on this host, so `objc/message.h`
 /// was not read.
-const MsgSendSuper2Fn = fn (
-    *const anyopaque,
-    ?*runtime.Sel,
-    ...
-) callconv(.c) ?*runtime.AnyObject;
+const MsgSendSuper2Fn = fn (*const anyopaque, ?*runtime.Sel, ...) callconv(.c) ?*runtime.AnyObject;
 
 /// `objc_getClass`.
 const ObjCGetClassFn = fn ([*:0]const u8) callconv(.c) ?*runtime.ObjClass;

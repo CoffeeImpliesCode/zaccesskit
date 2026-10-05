@@ -326,9 +326,9 @@ test "each tree gets the next number in call order" {
     var map: TreeIndexMap = .empty;
     defer map.deinit(gpa);
 
-    const first = try map.getOrCreateIndex(gpa, treeIdFromBytes(.{ 1 } ** 16));
-    const second = try map.getOrCreateIndex(gpa, treeIdFromBytes(.{ 2 } ** 16));
-    const third = try map.getOrCreateIndex(gpa, treeIdFromBytes(.{ 3 } ** 16));
+    const first = try map.getOrCreateIndex(gpa, treeIdFromBytes(.{1} ** 16));
+    const second = try map.getOrCreateIndex(gpa, treeIdFromBytes(.{2} ** 16));
+    const third = try map.getOrCreateIndex(gpa, treeIdFromBytes(.{3} ** 16));
 
     try testing.expectEqual(@as(u32, 0), first.value());
     try testing.expectEqual(@as(u32, 1), second.value());
@@ -340,23 +340,23 @@ test "a repeat registration keeps its index and costs none" {
     // when the key is new. A port that reads `next` before the lookup burns an
     // index on every repeat, so the third tree here gets 3.
     const gpa = testing.allocator;
-    const one = treeIdFromBytes(.{ 1 } ** 16);
+    const one = treeIdFromBytes(.{1} ** 16);
     var map: TreeIndexMap = .empty;
     defer map.deinit(gpa);
 
     const first = try map.getOrCreateIndex(gpa, one);
-    _ = try map.getOrCreateIndex(gpa, treeIdFromBytes(.{ 2 } ** 16));
+    _ = try map.getOrCreateIndex(gpa, treeIdFromBytes(.{2} ** 16));
     const repeated = try map.getOrCreateIndex(gpa, one);
 
     try testing.expectEqual(first, repeated);
 
-    const third = try map.getOrCreateIndex(gpa, treeIdFromBytes(.{ 3 } ** 16));
+    const third = try map.getOrCreateIndex(gpa, treeIdFromBytes(.{3} ** 16));
     try testing.expectEqual(@as(u32, 2), third.value());
 }
 
 test "both directions answer for a registered tree and for nothing else" {
     const gpa = testing.allocator;
-    const id = treeIdFromBytes(.{ 0xab } ** 16);
+    const id = treeIdFromBytes(.{0xab} ** 16);
     var map: TreeIndexMap = .empty;
     defer map.deinit(gpa);
 
@@ -364,7 +364,7 @@ test "both directions answer for a registered tree and for nothing else" {
 
     try testing.expectEqual(index, map.getIndex(id).?);
     try testing.expectEqual(id, map.getId(index).?);
-    try testing.expect(map.getIndex(treeIdFromBytes(.{ 0xcd } ** 16)) == null);
+    try testing.expect(map.getIndex(treeIdFromBytes(.{0xcd} ** 16)) == null);
     try testing.expect(map.getId(TreeIndex.init(999)) == null);
 }
 
@@ -373,7 +373,7 @@ test "a probe for an unknown tree registers nothing" {
     // routes the probe through `getOrCreateIndex` hands back index 0 for a tree
     // it never saw, and the next real registration loses its number.
     const gpa = testing.allocator;
-    const unknown = treeIdFromBytes(.{ 7 } ** 16);
+    const unknown = treeIdFromBytes(.{7} ** 16);
     var map: TreeIndexMap = .empty;
     defer map.deinit(gpa);
 
@@ -391,9 +391,9 @@ test "both maps keep the order the trees arrived in" {
     // order three registrations made them.
     const gpa = testing.allocator;
     const ids = [_]TreeId{
-        treeIdFromBytes(.{ 3 } ** 16),
-        treeIdFromBytes(.{ 1 } ** 16),
-        treeIdFromBytes(.{ 2 } ** 16),
+        treeIdFromBytes(.{3} ** 16),
+        treeIdFromBytes(.{1} ** 16),
+        treeIdFromBytes(.{2} ** 16),
     };
     var map: TreeIndexMap = .empty;
     defer map.deinit(gpa);
@@ -410,7 +410,7 @@ test "a copy answers as the source did and neither follows the other" {
     // Upstream's `clone` at tree.rs:25-31 gives the copy its own maps. A port
     // that moved the headers instead would leave the source empty.
     const gpa = testing.allocator;
-    const copied_id = treeIdFromBytes(.{ 1 } ** 16);
+    const copied_id = treeIdFromBytes(.{1} ** 16);
 
     var source: TreeIndexMap = .empty;
     defer source.deinit(gpa);
@@ -424,7 +424,7 @@ test "a copy answers as the source did and neither follows the other" {
     try testing.expectEqual(copied_id, out.getId(copied).?);
 
     // A registration in the source after the copy must not reach the copy.
-    const added = try source.getOrCreateIndex(gpa, treeIdFromBytes(.{ 2 } ** 16));
+    const added = try source.getOrCreateIndex(gpa, treeIdFromBytes(.{2} ** 16));
 
     try testing.expect(source.getId(added) != null);
     try testing.expect(out.getId(added) == null);
@@ -435,26 +435,26 @@ test "a copy replaces what the destination held" {
     // state moves into the committed state, and the committed entries the next
     // state does not name must be gone.
     const gpa = testing.allocator;
-    const stale_id = treeIdFromBytes(.{ 9 } ** 16);
+    const stale_id = treeIdFromBytes(.{9} ** 16);
 
     var source: TreeIndexMap = .empty;
     defer source.deinit(gpa);
-    _ = try source.getOrCreateIndex(gpa, treeIdFromBytes(.{ 1 } ** 16));
+    _ = try source.getOrCreateIndex(gpa, treeIdFromBytes(.{1} ** 16));
 
     var out: TreeIndexMap = .empty;
     defer out.deinit(gpa);
     _ = try out.getOrCreateIndex(gpa, stale_id);
-    const stale = try out.getOrCreateIndex(gpa, treeIdFromBytes(.{ 8 } ** 16));
+    const stale = try out.getOrCreateIndex(gpa, treeIdFromBytes(.{8} ** 16));
 
     try out.cloneInto(&source, gpa);
 
     // The source handed out index 0 alone, so the copy drops index 1 and every
     // entry the destination held. A port that merged instead leaves `.{ 8 }`
     // behind, and a port that copied without copying `next` reuses index 1.
-    try testing.expectEqual(@as(u32, 0), out.getIndex(treeIdFromBytes(.{ 1 } ** 16)).?.value());
+    try testing.expectEqual(@as(u32, 0), out.getIndex(treeIdFromBytes(.{1} ** 16)).?.value());
     try testing.expect(out.getId(stale) == null);
     try testing.expect(out.getIndex(stale_id) == null);
-    try testing.expect(out.getIndex(treeIdFromBytes(.{ 8 } ** 16)) == null);
+    try testing.expect(out.getIndex(treeIdFromBytes(.{8} ** 16)) == null);
 }
 
 test "a failed copy leaves the destination as the caller passed it" {
@@ -462,11 +462,11 @@ test "a failed copy leaves the destination as the caller passed it" {
     // `cloneInto`. A port that deinitialises the destination first loses the
     // entries the caller still holds.
     const gpa = testing.allocator;
-    const held_id = treeIdFromBytes(.{ 9 } ** 16);
+    const held_id = treeIdFromBytes(.{9} ** 16);
 
     var source: TreeIndexMap = .empty;
     defer source.deinit(gpa);
-    _ = try source.getOrCreateIndex(gpa, treeIdFromBytes(.{ 1 } ** 16));
+    _ = try source.getOrCreateIndex(gpa, treeIdFromBytes(.{1} ** 16));
 
     var out: TreeIndexMap = .empty;
     defer out.deinit(gpa);
@@ -477,14 +477,14 @@ test "a failed copy leaves the destination as the caller passed it" {
     try testing.expectError(error.OutOfMemory, out.cloneInto(&source, failing_gpa));
 
     try testing.expectEqual(held, out.getIndex(held_id).?);
-    try testing.expect(out.getIndex(treeIdFromBytes(.{ 1 } ** 16)) == null);
+    try testing.expect(out.getIndex(treeIdFromBytes(.{1} ** 16)) == null);
 }
 
 test "a failed registration leaves the map as it was" {
     // `getOrPut` at tree.rs:42 stores the key with an undefined value before
     // the second map is written, so a failure between the two writes has to
     // take that key back out.
-    const id = treeIdFromBytes(.{ 4 } ** 16);
+    const id = treeIdFromBytes(.{4} ** 16);
     var failing = std.testing.FailingAllocator.init(testing.allocator, .{ .fail_index = 1 });
     const gpa = failing.allocator();
 

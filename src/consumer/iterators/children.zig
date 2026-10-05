@@ -435,8 +435,6 @@ fn sameNode(a: FullNodeId, b: FullNodeId) bool {
 
 /// The id examined after `finished` and everything below it, or `null` when
 /// that exhausts the subtree of `root`.
-
-
 /// The parent of `node`, or `null` at the top of the tree. Reads
 /// `NodeState.parent_and_index` directly, the pattern `docs/33` section 1.3
 /// blesses for a module below `node_ref/hierarchy.zig`.

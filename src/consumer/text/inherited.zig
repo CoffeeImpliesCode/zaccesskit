@@ -481,8 +481,7 @@ fn insert(
             }
         }
         break :blk .{ .parent_id = parent_id, .index = found };
-    } else
-        null;
+    } else null;
     try state.nodes.put(gpa, id, .{
         .parent_and_index = parent_and_index,
         .data = node,
@@ -547,9 +546,6 @@ test "a value set on the node itself is what the node reports" {
     defer state.deinit(testing.allocator);
     const gpa = testing.allocator;
     try twoRunDocument(&state, gpa, "Noto", "Noto");
-
-
-
 }
 
 test "a value set on the parent reaches the child that declares none" {
@@ -712,7 +708,6 @@ test "a flag set on the run reaches the run and folds across a range" {
     const second_run = state.nodes.getPtr(FullNodeId.init(.{ .value = 2 }, .init(0))).?;
     schema.flags.setItalic(&second_run.data.flags, true);
 
-
     try testing.expect((try nodeIsItalic(handle(&state, 2))));
 
     const position_value = Position{
@@ -748,7 +743,6 @@ test "no ancestor declares the value and the family answers null" {
     // comment on `nodeFontFamily` promises.
 
     try testing.expectEqual(@as(?[]const u8, null), try nodeFontFamily(handle(&state, 0)));
-
 
     // A range whose runs declare nothing folds to a single absent value, which
     // is a different answer from mixed.
@@ -809,7 +803,6 @@ test "the same walk one step short of the bound still finds the value" {
     // the top node's buffer, not in the literal's.
     try testing.expectEqualStrings("Noto", (try nodeFontFamily(handle(&state, 3))).?);
     try testing.expectEqualStrings("Noto", (try nodeFontFamily(handle(&state, 2))).?);
-
 }
 
 comptime {
@@ -817,9 +810,9 @@ comptime {
     // functions. The list is what makes a rename a compile error here rather
     // than a quiet change to that count.
     const property_names = .{
-        "TextDirection",  "FontFamily",   "Language",         "FontSize",
-        "FontWeight",     "BackgroundColor", "ForegroundColor", "Overline",
-        "Strikethrough",  "Underline",    "TextAlign",        "VerticalOffset",
+        "TextDirection", "FontFamily",      "Language",        "FontSize",
+        "FontWeight",    "BackgroundColor", "ForegroundColor", "Overline",
+        "Strikethrough", "Underline",       "TextAlign",       "VerticalOffset",
         "IsItalic",
     };
     std.debug.assert(property_names.len == 13);
