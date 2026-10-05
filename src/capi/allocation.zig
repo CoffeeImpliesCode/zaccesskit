@@ -260,9 +260,22 @@ pub fn failWith(value: Tag) void {
 /// is what `include/zaccesskit.h:6459` promises. `context` is passed back to
 /// both functions unchanged, and a `null` reaches them as `null`.
 ///
-/// Call it once, before any other function in the header. Installing a second
-/// pair leaves every block already made on its own pair, so nothing is released
-/// through a pair that did not allocate it.
+/// **Call it once, before any other function in the header.** That is the
+/// contract `include/zaccesskit.h:6459` and `:6469-6470` set, and this
+/// implementation cannot enforce it or detect a breach.
+///
+/// It cannot enforce it because a `std.mem.Allocator` is a pointer to its holder,
+/// and `allocator()` hands back a pointer to **this module's** `installed` field
+/// rather than to a snapshot. A store built before a second install therefore
+/// reads the new pair when it releases, and the pair that made the block never
+/// hears about it. Pinning it would mean a fresh holder per call, which means an
+/// allocation to avoid an allocation.
+///
+/// So the guarantee is a precondition and not a property: a host that installs
+/// a second pair after the first allocation releases the first block through a
+/// pair that did not make it. `accesskit_node_free` releases through the node's
+/// own store rather than through `allocator()`, which is what keeps a node sound
+/// under the breach; a block from `allocator()` directly is not so protected.
 pub fn installAllocator(alloc: ?AllocFn, free: ?FreeFn, context: ?*anyopaque) void {
     const a = alloc orelse return restoreDefault();
     const f = free orelse return restoreDefault();

@@ -310,8 +310,28 @@ pub fn setCustomActions(
     values: []const CustomAction,
 ) std.mem.Allocator.Error!void {
     var list: std.ArrayList(CustomAction) = .empty;
-    errdefer list.deinit(properties.gpa);
-    try list.appendSlice(properties.gpa, values);
+    errdefer {
+        // Releasing the list is not enough: each element owns a description
+        // buffer, and an element added by this call owns one **this call**
+        // allocated. Without the loop a failed append leaks one description
+        // per action already copied.
+        for (list.items) |*action| action.deinit(properties.gpa);
+        list.deinit(properties.gpa);
+    }
+
+    // `appendSlice` is a **shallow** copy: it copies the `CustomAction` structs
+    // and leaves their `description` buffers shared with the caller. The store
+    // would then own a buffer the caller also owns, and the second release is a
+    // double free. `CustomAction.init` copies the description, so each action is
+    // built rather than copied.
+    try list.ensureTotalCapacity(properties.gpa, values.len);
+    for (values) |value| {
+        list.appendAssumeCapacity(try CustomAction.init(
+            properties.gpa,
+            value.id,
+            value.description.items,
+        ));
+    }
     try properties.set(.custom_actions, table.propertyValueFrom(.custom_action_vec, list));
 }
 
