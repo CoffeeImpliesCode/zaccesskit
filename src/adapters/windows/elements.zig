@@ -78,6 +78,11 @@ pub const Registry = struct {
     /// The registry is left in its empty form, so a second call releases
     /// nothing and a read after the call answers the empty registry rather than
     /// a freed map.
+    ///
+    /// The last line is that reset: `self.*` is one whole `Registry` with every
+    /// field at the value `init` gives it. That is the Z030 shape, and the rule
+    /// does not read an assignment to `self.*` as a reset, so this comment says
+    /// why the assignment is there.
     pub fn deinit(self: *Registry, platform: Platform) void {
         const gpa = self.gpa;
         var it = self.slots.iterator();

@@ -203,12 +203,14 @@ fn releaseActionCopies(gpa: std.mem.Allocator, list: *std.ArrayList(CustomAction
 ///
 /// `include/zaccesskit.h:5140` is the sentence, and
 /// `src/capi/tree_info.zig` and `src/capi/tree_update.zig` each carry the same
-/// helper for the same reason. `std.process.exit` rather than `panic` or
-/// `unreachable` because the house rules forbid both on this boundary, and `exit`
-/// rather than `abort` because `exit` flushes the diagnostic below before the
-/// process leaves.
+/// helper for the same reason.
+/// `std.process.exit` rather than `panic` or `unreachable` because the house
+/// rules forbid both on this boundary, and `exit` rather than `abort` because
+/// `exit` hands the caller a status it can act on after the diagnostic below.
+/// The write is `std.log`, not `std.debug.print`: the second is the debugging
+/// channel, and this line is a deliberate end-of-process diagnostic.
 fn terminate(comptime function_name: []const u8, reason: []const u8) noreturn {
-    std.debug.print("zaccesskit: {s}: {s}\n", .{ function_name, reason });
+    std.log.err("zaccesskit: {s}: {s}", .{ function_name, reason });
     std.process.exit(1);
 }
 
@@ -7358,15 +7360,16 @@ const CountingPair = struct {
         var iterator = self.releases.iterator();
         while (iterator.next()) |entry| {
             if (entry.value_ptr.* != 1) {
-                std.debug.print(
-                    "pointer 0x{x} was released {d} times\n",
-                    .{ entry.key_ptr.*, entry.value_ptr.* },
-                );
+                // No diagnostic here. This arm runs on a path a test
+                // deliberately drives and passes, and the test runner treats
+                // anything a passing test writes to stderr as a logged error,
+                // so a print here turns the whole step red. The error name is
+                // the record, which is what src/capi/tree_info.zig already
+                // does.
                 return error.ReleasedTwice;
             }
         }
         if (self.live.count() != 0) {
-            std.debug.print("{d} blocks were never released\n", .{self.live.count()});
             return error.ReleasedTwice;
         }
         return self.releases.count();

@@ -1842,10 +1842,10 @@ test "every property round trips through set, get and clear" {
         // The rows went in ascending, so the sorted slice must be too.
         try testing.expectEqual(index, properties.find(row.id).?);
 
-        const read_back = properties.get(row.id) orelse {
-            std.debug.print("no entry for {s}\n", .{@tagName(row.id)});
-            return error.TestExpectedEqual;
-        };
+        // No print on the failure path: the test runner treats anything a
+        // passing test writes to stderr as a logged error, and this arm runs in
+        // tests that pass. `expectEqual` below already names the value.
+        const read_back = properties.get(row.id) orelse return error.NoSuchKey;
         try testing.expectEqual(row.tag, read_back.getTag());
         var expected = try sampleValue(row.tag, testing.allocator);
         defer expected.deinit(testing.allocator);

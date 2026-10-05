@@ -93,9 +93,13 @@ const SelectionChanges = struct {
     /// The nodes that stopped being selected.
     removed: NodeSet = .empty,
 
+    /// Releases both sets and leaves the value in its empty form, so a second
+    /// call releases nothing and a read after the call answers the empty sets
+    /// rather than freed storage.
     fn deinit(self: *SelectionChanges, gpa: std.mem.Allocator) void {
         self.added.deinit(gpa);
         self.removed.deinit(gpa);
+        self.* = .{};
     }
 };
 
@@ -145,6 +149,11 @@ pub const Handler = struct {
     ///
     /// The registry and the queue are borrowed, so this call does not touch
     /// them. A slot the queue took ownership of is the queue's to release.
+    ///
+    /// The two collections the handler owns are left in their empty form and
+    /// the failure is cleared, so a second call releases nothing. The two
+    /// borrowed pointers are left as they are: they were never this value's to
+    /// release, and resetting them would name storage the caller still holds.
     pub fn deinit(self: *Handler) void {
         const gpa = self.gpa;
         var containers = self.selection_changed.iterator();
@@ -153,6 +162,8 @@ pub const Handler = struct {
         }
         self.selection_changed.deinit(gpa);
         self.text_changed.deinit(gpa);
+        self.selection_changed = .empty;
+        self.text_changed = .empty;
         self.failure = .{};
     }
 

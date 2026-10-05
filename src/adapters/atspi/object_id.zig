@@ -86,20 +86,23 @@ pub const ObjectId = union(enum) {
     ///
     /// **Errors.** `error.OutOfMemory` from `gpa`.
     pub fn path(self: ObjectId, gpa: std.mem.Allocator) std.mem.Allocator.Error![:0]u8 {
-        return switch (self) {
-            .root => gpa.dupeZ(u8, root_path),
-            .cache => gpa.dupeZ(u8, cache_path),
-            .node => |pair| blk: {
+        // Each arm returns rather than yielding a value to the switch. The
+        // `dupeZ` result is still `[:0]u8` either way and `free` still reads
+        // the sentinel, so this is the same allocation with the arm written
+        // as a statement rather than an expression.
+        switch (self) {
+            .root => return gpa.dupeZ(u8, root_path),
+            .cache => return gpa.dupeZ(u8, cache_path),
+            .node => |pair| {
                 const segment = nodeSegment(pair.node);
-                const text = try std.fmt.allocPrintSentinel(
+                return std.fmt.allocPrintSentinel(
                     gpa,
                     "{s}{d}/{d}",
                     .{ accessible_path_prefix, pair.adapter, segment },
                     0,
                 );
-                break :blk text;
             },
-        };
+        }
     }
 };
 

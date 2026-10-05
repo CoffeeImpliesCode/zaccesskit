@@ -297,9 +297,11 @@ test "lineStart reports LineChainCycle on a previous_on_line cycle one step past
     // reaches a run that declares no link. The tree holds three nodes, so
     // `lineWalkStepBound` is three and the walk needs four to stop, which is one
     // more than the bound allows.
-    const first_entry = state.nodes.getPtr(fullId(localId(2))).?;
+    const first_entry = state.nodes.getPtr(fullId(localId(2))) orelse
+        return error.NodeMissingFromFixture;
     try schema.ids_props.setPreviousOnLine(&first_entry.data.properties, localId(3));
-    const second_entry = state.nodes.getPtr(fullId(localId(3))).?;
+    const second_entry = state.nodes.getPtr(fullId(localId(3))) orelse
+        return error.NodeMissingFromFixture;
     try schema.ids_props.setPreviousOnLine(&second_entry.data.properties, localId(2));
 
     const step_bound = lineWalkStepBound(state.nodes.count());
@@ -316,9 +318,11 @@ test "lineEnd reports LineChainCycle on a next_on_line cycle one step past the b
     defer state.deinit(test_allocator);
     // The mirror of the previous test: two runs that name each other as the run
     // after them, so the forward walk also never terminates.
-    const first_entry = state.nodes.getPtr(fullId(localId(2))).?;
+    const first_entry = state.nodes.getPtr(fullId(localId(2))) orelse
+        return error.NodeMissingFromFixture;
     try schema.ids_props.setNextOnLine(&first_entry.data.properties, localId(3));
-    const second_entry = state.nodes.getPtr(fullId(localId(3))).?;
+    const second_entry = state.nodes.getPtr(fullId(localId(3))) orelse
+        return error.NodeMissingFromFixture;
     try schema.ids_props.setNextOnLine(&second_entry.data.properties, localId(2));
 
     try testing.expectError(
@@ -340,7 +344,8 @@ test "a two-node cycle takes one step under the bound and answers at one over" {
     // run's would take away the only link the walk has to follow, so the walk
     // would stop on the run it started from and never take the single step this
     // test is about.
-    const first_entry = state.nodes.getPtr(fullId(localId(2))).?;
+    const first_entry = state.nodes.getPtr(fullId(localId(2))) orelse
+        return error.NodeMissingFromFixture;
     schema.ids_props.clearPreviousOnLine(&first_entry.data.properties);
 
     // The chain left is second -> first, so one step reaches an answer and that
@@ -353,7 +358,8 @@ test "a two-node cycle takes one step under the bound and answers at one over" {
 test "a link naming a node the state does not hold reports NoSuchNode" {
     var state = try documentWithOneLine(1);
     defer state.deinit(test_allocator);
-    const entry = state.nodes.getPtr(fullId(localId(2))).?;
+    const entry = state.nodes.getPtr(fullId(localId(2))) orelse
+        return error.NodeMissingFromFixture;
     // Links to node 9, which no `put` above created, in **both** directions.
     // `lineStart` reads `previous_on_line` and `lineEnd` reads `next_on_line`,
     // and each walk looks up only the one it walks, so naming a missing node
@@ -372,7 +378,8 @@ test "a link naming a node the state does not hold reports NoSuchNode" {
 test "the line walks report a run of a different tree as a missing node" {
     var state = try documentWithOneLine(1);
     defer state.deinit(test_allocator);
-    const entry = state.nodes.getPtr(fullId(localId(2))).?;
+    const entry = state.nodes.getPtr(fullId(localId(2))) orelse
+        return error.NodeMissingFromFixture;
     // The link names a local id, and the walk looks it up in the tree of the run
     // it is walking. Node 3 does not exist in this tree, so the lookup fails
     // rather than silently crossing into another tree.

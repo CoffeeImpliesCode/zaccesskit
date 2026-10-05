@@ -219,10 +219,23 @@ fn propertyIdFromByte(byte: u8) ?PropertyId {
     return table.propertyIdFromInt(byte);
 }
 
+/// Writes one line of harness evidence to **stdout**.
+///
+/// The test runner treats anything a passing test writes to stderr as a logged
+/// error and fails the step, so a progress line written on the success path
+/// makes `zig build test` red. The evidence is worth keeping -- it is what a
+/// fuzz run is for -- and stdout is where output belongs on a passing test.
+fn report(comptime fmt: []const u8, args: anytype) void {
+    var buffered: [512]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&buffered);
+    writer.print(fmt, args) catch return;
+    _ = std.posix.write(1, writer.buffered()) catch {};
+}
+
 test "a byte at or past the last property names no property and never a default" {
     const gpa = testing.allocator;
     const rows = try abi.parseRows(abi.header_text);
-    std.debug.print(
+    report(
         "\n[tree-index/property-table] header rows {d}, payload offsets {d}, " ++
             "optional rows {d}\n",
         .{ rows.len, rows.payloadRowCount(), rows.optionalRowCount() },
@@ -245,7 +258,7 @@ test "a byte at or past the last property names no property and never a default"
     }
     try testing.expectEqual(@as(usize, 256), cases);
     try testing.expectEqual(@as(u8, 87), @as(u8, @intCast(table.propertyIdCount)));
-    std.debug.print(
+    report(
         "[tree-index/property-table] propertyIdFromInt: {d} bytes, " ++
             "{d} refused at or past {d}\n",
         .{ cases, 256 - table.propertyIdCount, table.propertyIdCount },
@@ -260,7 +273,7 @@ test "a byte at or past the last property names no property and never a default"
         cases += 1;
         try testing.expect(propertyIdFromByte(value) == null);
     }
-    std.debug.print(
+    report(
         "[tree-index/property-table] property id cases {d}\n",
         .{cases},
     );
@@ -280,7 +293,7 @@ test "a byte at or past the last action names no action" {
             try testing.expect(decoded == null);
         }
     }
-    std.debug.print(
+    report(
         "[tree-index/property-table] actionFromInt: {d} bytes, " ++
             "{d} refused at or past {d}\n",
         .{ cases, 256 - action_mod.actionCount, action_mod.actionCount },
@@ -301,7 +314,7 @@ test "a byte at or past the last decoration style names no style" {
             try testing.expect(decoded == null);
         }
     }
-    std.debug.print(
+    report(
         "[tree-index/property-table] textDecorationStyleFromInt: {d} bytes\n",
         .{cases},
     );
@@ -332,7 +345,7 @@ test "a mask bit above the last member yields no member and never overflows" {
         try checkActionMask(mask);
         try checkFlagMask(mask);
     }
-    std.debug.print(
+    report(
         "[tree-index/property-table] mask sweeps {d} masks, {d} actions, {d} flags\n",
         .{ cases, action_mod.actionCount, table.flagCount },
     );
@@ -419,7 +432,7 @@ test "every tag stores, reads back and releases, in every slice shape" {
             try testing.expectEqual(store.items.items[0].value.getTag(), again.?.getTag());
         }
     }
-    std.debug.print(
+    report(
         "[tree-index/property-table] payload shapes {d} cases over {d} tags and " ++
             "{d} slice forms\n",
         .{ cases, tags.len, SliceForm.count },
@@ -438,7 +451,7 @@ test "a store answers through a model after a random sequence of writes" {
     defer model.deinit();
 
     const rows = try abi.parseRows(abi.header_text);
-    std.debug.print(
+    report(
         "[tree-index/property-table] header rows {d}, payload offsets {d}, " ++
             "optional rows {d}\n",
         .{ rows.len, rows.payloadRowCount(), rows.optionalRowCount() },
@@ -497,7 +510,7 @@ test "a store answers through a model after a random sequence of writes" {
         try checkStoreInvariants(&store);
     }
 
-    std.debug.print(
+    report(
         "[tree-index/property-table] store sweep {d} steps, seed 0x{x}, " ++
             "{d} allocations live\n",
         .{ step, sweep_seed, counter.live },
@@ -582,7 +595,7 @@ test "a repeated set releases the value it displaces and keeps the new one" {
 
     try testing.expectEqual(counter.live, counter.allocs - counter.frees);
     try testing.expectEqual(@as(usize, 0), counter.live);
-    std.debug.print(
+    report(
         "[tree-index/property-table] overwrite sweep {d} sets over {d} tags, " ++
             "allocs {d}, frees {d}\n",
         .{ cases, tags.len, counter.allocs, counter.frees },
@@ -616,7 +629,7 @@ test "every stored property releases once when the store is released" {
     try testing.expectEqual(@as(usize, 0), counter.live);
     try testing.expectEqual(counter.allocs, counter.frees);
 
-    std.debug.print(
+    report(
         "[tree-index/property-table] full store {d} properties, {d} allocations, " ++
             "{d} freed on deinit\n",
         .{ store_count_expected, live_before, live_before },
@@ -694,7 +707,7 @@ test "the tree index map stays consistent across a random sequence of reads and 
     try testing.expectEqual(map.id_to_index.count(), map.index_to_id.count());
     try testing.expectEqual(@as(u32, @intCast(map.id_to_index.count())), map.next);
 
-    std.debug.print(
+    report(
         "[tree-index/property-table] index sweep {d} steps, {d} registrations, " ++
             "{d} registered trees, mask 0x{x}\n",
         .{ step, cases, map.next, seen },
@@ -735,7 +748,7 @@ test "a copy of the map answers as the source did and neither follows the other"
     try checkIndexInvariants(&map);
     try checkIndexInvariants(&copy);
 
-    std.debug.print(
+    report(
         "[tree-index/property-table] clone sweep {d} registered trees, copy {d}\n",
         .{ map.next, copy.next },
     );
@@ -776,7 +789,7 @@ test "every header row a payload tag projects onto is declared with its offset" 
         checked += 1;
     }
 
-    std.debug.print(
+    report(
         "[tree-index/property-table] C ABI: {d} tags, {d} projected rows, " ++
             "{d} rows checked against a Zig type, {d} header rows\n",
         .{ abi.tag_count, projected, checked, rows.len },
@@ -904,7 +917,7 @@ test "the committed corpus drives the entry the fuzzer drives" {
         // a failure reproducible from the corpus alone.
         try replayOne(.{ .gpa = gpa, .seed = sweep_seed }, input, sweep_seed +% seed_offset);
     }
-    std.debug.print(
+    report(
         "[tree-index/property-table] corpus {d} cases, {d} bytes replayed twice\n",
         .{ cases, corpus_lengths[0] + corpus_lengths[1] + corpus_lengths[2] },
     );
@@ -914,7 +927,7 @@ test "fuzz: the property table and the tree index map" {
     var counter = Counting.init(testing.allocator);
     const context: FuzzContext = .{ .gpa = counter.allocator(), .seed = sweep_seed };
     try testing.fuzz(context, fuzzOne, .{ .corpus = &corpus });
-    std.debug.print(
+    report(
         "[tree-index/property-table] fuzz corpus done, {d} allocations live\n",
         .{counter.live},
     );

@@ -516,28 +516,30 @@ const Fixture = struct {
         const list = try self.gpa.alloc(NodeId, locals.len);
         defer self.gpa.free(list);
         for (locals, list) |local, *slot| slot.* = .{ .value = local };
-        try schema.ids_props.setChildren(&self.state.nodes.getPtr(id).?.data.properties, list);
+        const entry = try self.slotOf(id);
+        try schema.ids_props.setChildren(&entry.data.properties, list);
     }
 
     /// Appends one local id to the node's `children` property, growing the
     /// list the store already holds.
     fn pushChild(self: *Fixture, id: FullNodeId, local: u64) !void {
-        try schema.ids_props.pushChild(
-            &self.state.nodes.getPtr(id).?.data.properties,
-            .{ .value = local },
-        );
+        const entry = try self.slotOf(id);
+        try schema.ids_props.pushChild(&entry.data.properties, .{ .value = local });
     }
 
     /// Gives the node the `tree_id` property, which makes it a graft node.
     fn setTreeId(self: *Fixture, id: FullNodeId, byte: u8) !void {
-        try schema.option.setTreeId(
-            &self.state.nodes.getPtr(id).?.data.properties,
-            schema.treeIdFromBytes(.{byte} ** 16),
-        );
+        const entry = try self.slotOf(id);
+        try schema.option.setTreeId(&entry.data.properties, schema.treeIdFromBytes(.{byte} ** 16));
     }
 
     fn ref(self: *Fixture, id: FullNodeId) !NodeRef {
         return NodeRef.init(&self.state, id) orelse error.NodeMissingFromState;
+    }
+
+    /// The state entry for `id`, so a test can write the node the state owns.
+    fn slotOf(self: *Fixture, id: FullNodeId) !*tree_state.NodeState {
+        return self.state.nodes.getPtr(id) orelse error.NodeMissingFromState;
     }
 };
 
@@ -825,7 +827,8 @@ test "an abandoned iteration writes nothing and a later read sees the write" {
 
     // The abandoned iteration also left the tree itself intact: a fresh read
     // of the property agrees with what the cursor reported.
-    const listed = schema.ids_props.children(&fixture.state.nodes.getPtr(root).?.data.properties);
+    const entry = try fixture.slotOf(root);
+    const listed = schema.ids_props.children(&entry.data.properties);
     try testing.expectEqual(@as(usize, 3), listed.len);
     try testing.expectEqual(@as(u64, 3), listed[2].value);
 }
@@ -845,7 +848,8 @@ test "the filtered walks reach their bound on a parent cycle and report TreeCycl
     // The root points back into its own subtree, so the parent chain visits
     // second, first, root, second for ever. That is what invariant I1 rules
     // out, and each walk must report it rather than hang.
-    fixture.state.nodes.getPtr(root).?.parent_and_index = .{
+    const cyclic = try fixture.slotOf(root);
+    cyclic.parent_and_index = .{
         .parent_id = second,
         .index = 0,
     };
@@ -866,7 +870,8 @@ test "the filtered walks reach their bound on a parent cycle and report TreeCycl
     // parent chain at the root and the descent at the far end, and the same
     // calls answer. `exclude_node` on every node is what made the descent
     // unbounded, so an empty list ends it.
-    fixture.state.nodes.getPtr(root).?.parent_and_index = null;
+    const broken = try fixture.slotOf(root);
+    broken.parent_and_index = null;
     try fixture.setChildren(second, &.{});
     try testing.expect((try filteredParent(try fixture.ref(second), roleFilter())) == null);
     try testing.expect((try firstFilteredChild(try fixture.ref(root), roleFilter())) == null);

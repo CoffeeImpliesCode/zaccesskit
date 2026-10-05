@@ -356,6 +356,44 @@ Each item names the failure it prevents. Do not rediscover them.
     existing `treeWalkStepBound` (`src/consumer/tree_state.zig:603`), so the
     repo holds both spellings of that idea today; settle which one wins before
     renaming, or the rename makes the split permanent.
+- **`optional-unwrap` on `TreeState.root` and `TreeState.focusInTree` is a
+  recorded exemption, and it stays one.** Two findings, at
+  `src/consumer/tree_state.zig:457` and `:485`. Both are upstream ports whose
+  `.?` is upstream's `.unwrap()` on a precondition the port documents:
+  `tree.rs:513-515` and `tree.rs:530-532`. Both doc comments name the
+  invariant (I1 and I4) and the error `validateGlobal` raises when it does not
+  hold, and the module doc at `tree_state.zig:131-134` records the decision.
+  - **The rule is right about this code. The signature is what forecloses the
+    fix.** Both return a bare `NodeRef`, not an error union, so an error tag has
+    nowhere to go. Removing the `.?` needs `orelse unreachable`, which is the
+    same panic spelled differently and is forbidden, or a signature change that
+    a lint slice does not own.
+  - **The existing assertion does not suppress it, and moving it does not
+    help.** `resolveDebugAssertionName`
+    (`tools/zwanzig/src/assertions.zig:220`) does resolve the `assert` alias to
+    `std.debug.assert`, so the guard is visible to the tool. But the guard is
+    `assert(self.nodes.contains(self.root_id))`, which proves the right
+    invariant one level away from where `isGuardedByAssertion` looks: the rule
+    wants an assertion on the unwrapped expression's own nullness. Moving the
+    assertion there does not typecheck, because the bound `?NodeRef` still has
+    to become a `NodeRef`. That buys a green gate with worse code.
+  - **The cost of the fix that is deliberately not taken.** Widening `root` to
+    `!NodeRef` touches **20 call sites**: ten in
+    `src/adapters/android/adapter.zig`, one in `src/adapters/android/root.zig`,
+    seven in `src/adapters/ios/root.zig`, two in `src/adapters/macos/root.zig`,
+    and two in this file's own tests. Every adapter site sits in a function
+    that already returns an error union, so the migration is mechanical — and it
+    changes an interface `docs/30-port-design.md` section 4.5 and `docs/33`
+    declare, done from a lint slice, across files other slices own.
+    **`focusInTree` is the cheap half and still stays**: its only two callers
+    are its own tests at `tree_state.zig:933` and `:938`, so widening it is a
+    two-site edit. It stays because widening it alone splits the documented
+    family of three — `root`, `focusInTree` and `focus` — which
+    `docs/30-port-design.md` section 4.5 keeps on one signature. **Priced, not
+    overlooked. Ruled 2026-10-06.**
+  - **Do not "fix" this by** writing `orelse unreachable`, by adding
+    `zwanzig-disable` to the two lines, or by widening either signature inside a
+    lint change.
 - **Bound the address space on native runs only.** `build.zig:22` sets four
   gibibytes and `addCeilingedRun` applies it through a `bash -c` launcher whose
   script is `ulimit -v 4194304; exec "$0"`. Keep it off `cross-test`. Under

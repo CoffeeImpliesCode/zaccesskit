@@ -406,14 +406,17 @@ const Fixture = struct {
 
 /// The handle for the node whose local id content is `content`. Take it after
 /// the last `add`.
-fn nodeAt(fixture: *const Fixture, content: u64) NodeRef {
-    return fixture.state.nodeById(fullNodeId(content)).?;
+fn nodeAt(fixture: *const Fixture, content: u64) !NodeRef {
+    return fixture.state.nodeById(fullNodeId(content)) orelse error.NodeMissingFromFixture;
 }
 
 /// The size `sizeOfSetFromContainer` finds for the node at `content`, so a test
 /// line stays short enough to read.
-fn inheritedSize(fixture: *const Fixture, content: u64) QueryError!?usize {
-    return sizeOfSetFromContainer(nodeAt(fixture, content), include_all);
+fn inheritedSize(
+    fixture: *const Fixture,
+    content: u64,
+) (QueryError || error{NodeMissingFromFixture})!?usize {
+    return sizeOfSetFromContainer(try nodeAt(fixture, content), include_all);
 }
 
 fn fullNodeId(content: u64) tree_index.FullNodeId {
@@ -447,14 +450,14 @@ test "the text input and dialog predicates answer their roles and not a neighbou
     try fixture.add(4, null, &alert);
     try fixture.add(5, null, &button);
 
-    try testing.expect(isTextInput(nodeAt(&fixture, 1)));
-    try testing.expect(isTextInput(nodeAt(&fixture, 2)));
-    try testing.expect(!isTextInput(nodeAt(&fixture, 5)));
-    try testing.expect(isMultiline(nodeAt(&fixture, 2)));
-    try testing.expect(!isMultiline(nodeAt(&fixture, 1)));
-    try testing.expect(isDialog(nodeAt(&fixture, 3)));
-    try testing.expect(isDialog(nodeAt(&fixture, 4)));
-    try testing.expect(!isDialog(nodeAt(&fixture, 5)));
+    try testing.expect(isTextInput(try nodeAt(&fixture, 1)));
+    try testing.expect(isTextInput(try nodeAt(&fixture, 2)));
+    try testing.expect(!isTextInput(try nodeAt(&fixture, 5)));
+    try testing.expect(isMultiline(try nodeAt(&fixture, 2)));
+    try testing.expect(!isMultiline(try nodeAt(&fixture, 1)));
+    try testing.expect(isDialog(try nodeAt(&fixture, 3)));
+    try testing.expect(isDialog(try nodeAt(&fixture, 4)));
+    try testing.expect(!isDialog(try nodeAt(&fixture, 5)));
 }
 
 test "orientation falls back to the role and the stored value wins" {
@@ -477,13 +480,15 @@ test "orientation falls back to the role and the stored value wins" {
     try fixture.add(3, null, &button);
     try fixture.add(4, null, &stated);
 
-    try testing.expectEqual(@as(?schema.Orientation, .vertical), orientation(nodeAt(&fixture, 1)));
-    const tab = nodeAt(&fixture, 2);
+    const vertical = try nodeAt(&fixture, 1);
+    try testing.expectEqual(@as(?schema.Orientation, .vertical), orientation(vertical));
+    const tab = try nodeAt(&fixture, 2);
     try testing.expectEqual(@as(?schema.Orientation, .horizontal), orientation(tab));
-    try testing.expectEqual(@as(?schema.Orientation, null), orientation(nodeAt(&fixture, 3)));
+    const defaulted = try nodeAt(&fixture, 3);
+    try testing.expectEqual(@as(?schema.Orientation, null), orientation(defaulted));
     // A stored orientation overrides the role, which is the order upstream's
     // `or_else` fixes.
-    const with_stored = nodeAt(&fixture, 4);
+    const with_stored = try nodeAt(&fixture, 4);
     try testing.expectEqual(@as(?schema.Orientation, .horizontal), orientation(with_stored));
 }
 
@@ -505,11 +510,11 @@ test "the modal and multiselectable flags answer their bits" {
     try fixture.add(2, null, &modal_node);
     try fixture.add(3, null, &multi_node);
 
-    try testing.expect(!isModal(nodeAt(&fixture, 1)));
-    try testing.expect(!isMultiselectable(nodeAt(&fixture, 1)));
-    try testing.expect(isModal(nodeAt(&fixture, 2)));
-    try testing.expect(!isMultiselectable(nodeAt(&fixture, 2)));
-    try testing.expect(isMultiselectable(nodeAt(&fixture, 3)));
+    try testing.expect(!isModal(try nodeAt(&fixture, 1)));
+    try testing.expect(!isMultiselectable(try nodeAt(&fixture, 1)));
+    try testing.expect(isModal(try nodeAt(&fixture, 2)));
+    try testing.expect(!isMultiselectable(try nodeAt(&fixture, 2)));
+    try testing.expect(isMultiselectable(try nodeAt(&fixture, 3)));
 }
 
 test "isSelectable needs the selection state and an enabled node" {
@@ -536,16 +541,16 @@ test "isSelectable needs the selection state and an enabled node" {
     try fixture.add(4, null, &editable);
 
     // A stored `false` is selectable: the attribute is present.
-    try testing.expect(isSelectable(nodeAt(&fixture, 1)));
-    try testing.expect(!isSelectable(nodeAt(&fixture, 2)));
-    try testing.expect(!isSelectable(nodeAt(&fixture, 3)));
-    try testing.expect(isSelectable(nodeAt(&fixture, 4)));
+    try testing.expect(isSelectable(try nodeAt(&fixture, 1)));
+    try testing.expect(!isSelectable(try nodeAt(&fixture, 2)));
+    try testing.expect(!isSelectable(try nodeAt(&fixture, 3)));
+    try testing.expect(isSelectable(try nodeAt(&fixture, 4)));
     // A disabled node is read only, whatever its selection state.
-    try testing.expect(isReadOnlyOrDisabled(nodeAt(&fixture, 3)));
+    try testing.expect(isReadOnlyOrDisabled(try nodeAt(&fixture, 3)));
     // `list_box_option` has no read-only state, so it reads as read only.
-    try testing.expect(isReadOnlyOrDisabled(nodeAt(&fixture, 1)));
+    try testing.expect(isReadOnlyOrDisabled(try nodeAt(&fixture, 1)));
     // A text input has one, and this node does not set it.
-    try testing.expect(!isReadOnlyOrDisabled(nodeAt(&fixture, 4)));
+    try testing.expect(!isReadOnlyOrDisabled(try nodeAt(&fixture, 4)));
 }
 
 test "the set and sort reads answer the stored value and null when unset" {
@@ -564,12 +569,15 @@ test "the set and sort reads answer the stored value and null when unset" {
     try fixture.add(1, null, &bare_node);
     try fixture.add(2, null, &stated);
 
-    try testing.expectEqual(@as(?usize, null), sizeOfSet(nodeAt(&fixture, 1)));
-    try testing.expectEqual(@as(?usize, null), positionInSet(nodeAt(&fixture, 1)));
-    try testing.expectEqual(@as(?schema.SortDirection, null), sortDirection(nodeAt(&fixture, 1)));
-    try testing.expectEqual(@as(?usize, 4), sizeOfSet(nodeAt(&fixture, 2)));
-    try testing.expectEqual(@as(?usize, 2), positionInSet(nodeAt(&fixture, 2)));
-    const sorted = nodeAt(&fixture, 2);
+    try testing.expectEqual(@as(?usize, null), sizeOfSet(try nodeAt(&fixture, 1)));
+    try testing.expectEqual(@as(?usize, null), positionInSet(try nodeAt(&fixture, 1)));
+    try testing.expectEqual(
+        @as(?schema.SortDirection, null),
+        sortDirection(try nodeAt(&fixture, 1)),
+    );
+    try testing.expectEqual(@as(?usize, 4), sizeOfSet(try nodeAt(&fixture, 2)));
+    try testing.expectEqual(@as(?usize, 2), positionInSet(try nodeAt(&fixture, 2)));
+    const sorted = try nodeAt(&fixture, 2);
     try testing.expectEqual(@as(?schema.SortDirection, .descending), sortDirection(sorted));
 }
 
@@ -598,16 +606,16 @@ test "supportsToggle and supportsExpandCollapse read the state and then the role
     try fixture.add(4, null, &expanded_node);
     try fixture.add(5, null, &role_node);
 
-    try testing.expect(!supportsToggle(nodeAt(&fixture, 1)));
+    try testing.expect(!supportsToggle(try nodeAt(&fixture, 1)));
     // Either toggle tag makes a toggle.
-    try testing.expect(supportsToggle(nodeAt(&fixture, 2)));
-    try testing.expect(!supportsToggle(nodeAt(&fixture, 3)));
+    try testing.expect(supportsToggle(try nodeAt(&fixture, 2)));
+    try testing.expect(!supportsToggle(try nodeAt(&fixture, 3)));
 
-    try testing.expect(!supportsExpandCollapse(nodeAt(&fixture, 1)));
-    try testing.expect(supportsExpandCollapse(nodeAt(&fixture, 3)));
+    try testing.expect(!supportsExpandCollapse(try nodeAt(&fixture, 1)));
+    try testing.expect(supportsExpandCollapse(try nodeAt(&fixture, 3)));
     // An expansion state of `false` still counts: the node states one.
-    try testing.expect(supportsExpandCollapse(nodeAt(&fixture, 4)));
-    try testing.expect(supportsExpandCollapse(nodeAt(&fixture, 5)));
+    try testing.expect(supportsExpandCollapse(try nodeAt(&fixture, 4)));
+    try testing.expect(supportsExpandCollapse(try nodeAt(&fixture, 5)));
 }
 
 test "the action predicates answer the node's own masks and then the parent's" {
@@ -632,14 +640,14 @@ test "the action predicates answer the node's own masks and then the parent's" {
     try fixture.add(3, null, &clickable);
     try fixture.add(4, 1, &silent);
 
-    try testing.expect(try isClickable(nodeAt(&fixture, 3), include_all));
-    try testing.expect(!try isClickable(nodeAt(&fixture, 4), include_all));
+    try testing.expect(try isClickable(try nodeAt(&fixture, 3), include_all));
+    try testing.expect(!try isClickable(try nodeAt(&fixture, 4), include_all));
     // The node states nothing, and its parent reports the action for its
     // children, which is the second half of the walk.
-    try testing.expect(try supportsAction(nodeAt(&fixture, 2), .focus, include_all));
-    try testing.expect(!try supportsAction(nodeAt(&fixture, 2), .click, include_all));
-    try testing.expect(try supportsIncrement(nodeAt(&fixture, 2), include_all));
-    try testing.expect(!try supportsDecrement(nodeAt(&fixture, 2), include_all));
+    try testing.expect(try supportsAction(try nodeAt(&fixture, 2), .focus, include_all));
+    try testing.expect(!try supportsAction(try nodeAt(&fixture, 2), .click, include_all));
+    try testing.expect(try supportsIncrement(try nodeAt(&fixture, 2), include_all));
+    try testing.expect(!try supportsDecrement(try nodeAt(&fixture, 2), include_all));
 }
 
 test "isInvocable excludes every control that keeps state or only takes focus" {
@@ -674,12 +682,12 @@ test "isInvocable excludes every control that keeps state or only takes focus" {
     try fixture.add(5, null, &selectable);
     try fixture.add(6, null, &silent);
 
-    try testing.expect(try isInvocable(nodeAt(&fixture, 1), include_all));
-    try testing.expect(!try isInvocable(nodeAt(&fixture, 2), include_all));
-    try testing.expect(!try isInvocable(nodeAt(&fixture, 3), include_all));
-    try testing.expect(!try isInvocable(nodeAt(&fixture, 4), include_all));
-    try testing.expect(!try isInvocable(nodeAt(&fixture, 5), include_all));
-    try testing.expect(!try isInvocable(nodeAt(&fixture, 6), include_all));
+    try testing.expect(try isInvocable(try nodeAt(&fixture, 1), include_all));
+    try testing.expect(!try isInvocable(try nodeAt(&fixture, 2), include_all));
+    try testing.expect(!try isInvocable(try nodeAt(&fixture, 3), include_all));
+    try testing.expect(!try isInvocable(try nodeAt(&fixture, 4), include_all));
+    try testing.expect(!try isInvocable(try nodeAt(&fixture, 5), include_all));
+    try testing.expect(!try isInvocable(try nodeAt(&fixture, 6), include_all));
 }
 
 test "isFocused follows the recorded focus and the active descendant chain" {
@@ -699,20 +707,20 @@ test "isFocused follows the recorded focus and the active descendant chain" {
     try fixture.add(3, 2, &leaf);
 
     // No host focus yet, so no node is focused even though none is recorded.
-    try testing.expect(!isFocused(nodeAt(&fixture, 1)));
-    try testing.expect(!isFocusedInTree(nodeAt(&fixture, 1)));
+    try testing.expect(!isFocused(try nodeAt(&fixture, 1)));
+    try testing.expect(!isFocusedInTree(try nodeAt(&fixture, 1)));
 
     fixture.focusHost(2);
-    try testing.expect(isFocused(nodeAt(&fixture, 2)));
-    try testing.expect(isFocusedInTree(nodeAt(&fixture, 2)));
-    try testing.expect(!isFocused(nodeAt(&fixture, 1)));
-    try testing.expect(!isFocusedInTree(nodeAt(&fixture, 3)));
+    try testing.expect(isFocused(try nodeAt(&fixture, 2)));
+    try testing.expect(isFocusedInTree(try nodeAt(&fixture, 2)));
+    try testing.expect(!isFocused(try nodeAt(&fixture, 1)));
+    try testing.expect(!isFocusedInTree(try nodeAt(&fixture, 3)));
 
     // The focus is taken, so a host that reports no focus still leaves
     // `isFocusedInTree` answering from the raw field.
     fixture.state.is_host_focused = false;
-    try testing.expect(!isFocused(nodeAt(&fixture, 2)));
-    try testing.expect(isFocusedInTree(nodeAt(&fixture, 2)));
+    try testing.expect(!isFocused(try nodeAt(&fixture, 2)));
+    try testing.expect(isFocusedInTree(try nodeAt(&fixture, 2)));
     fixture.state.is_host_focused = true;
 
     // A focused node that names an active descendant hands the focus to it, and
@@ -727,9 +735,9 @@ test "isFocused follows the recorded focus and the active descendant chain" {
     try fixture.add(9, 4, &active_leaf);
     fixture.focusHost(4);
 
-    try testing.expect(isFocused(nodeAt(&fixture, 9)));
-    try testing.expect(!isFocused(nodeAt(&fixture, 4)));
-    try testing.expect(isFocusedInTree(nodeAt(&fixture, 4)));
+    try testing.expect(isFocused(try nodeAt(&fixture, 9)));
+    try testing.expect(!isFocused(try nodeAt(&fixture, 4)));
+    try testing.expect(isFocusedInTree(try nodeAt(&fixture, 4)));
 }
 
 test "isFocusable answers the focus action or the recorded focus" {
@@ -751,9 +759,9 @@ test "isFocusable answers the focus action or the recorded focus" {
     fixture.state.focus_id = fullNodeId(2);
     fixture.state.is_host_focused = true;
 
-    try testing.expect(try isFocusable(nodeAt(&fixture, 1), include_all));
-    try testing.expect(try isFocusable(nodeAt(&fixture, 2), include_all));
-    try testing.expect(!try isFocusable(nodeAt(&fixture, 3), include_all));
+    try testing.expect(try isFocusable(try nodeAt(&fixture, 1), include_all));
+    try testing.expect(try isFocusable(try nodeAt(&fixture, 2), include_all));
+    try testing.expect(!try isFocusable(try nodeAt(&fixture, 3), include_all));
 }
 
 test "sizeOfSetFromContainer takes the nearest ancestor that states a size" {
@@ -835,10 +843,13 @@ test "descendantLabelFilter includes a label and an image and skips a generic co
     try fixture.add(3, null, &container);
     try fixture.add(4, 3, &button);
 
-    try testing.expectEqual(FilterResult.include, descendantLabelFilter(nodeAt(&fixture, 1)));
-    try testing.expectEqual(FilterResult.include, descendantLabelFilter(nodeAt(&fixture, 2)));
-    try testing.expectEqual(FilterResult.exclude_node, descendantLabelFilter(nodeAt(&fixture, 3)));
-    const below_container = nodeAt(&fixture, 4);
+    try testing.expectEqual(FilterResult.include, descendantLabelFilter(try nodeAt(&fixture, 1)));
+    try testing.expectEqual(FilterResult.include, descendantLabelFilter(try nodeAt(&fixture, 2)));
+    try testing.expectEqual(
+        FilterResult.exclude_node,
+        descendantLabelFilter(try nodeAt(&fixture, 3)),
+    );
+    const below_container = try nodeAt(&fixture, 4);
     try testing.expectEqual(FilterResult.exclude_subtree, descendantLabelFilter(below_container));
 }
 
@@ -865,17 +876,17 @@ test "isReadOnly follows the bit, the default roles and the unsupported roles" {
     try fixture.add(4, null, &supported);
     try fixture.add(5, null, &supported_widget);
 
-    try testing.expect(isReadOnly(nodeAt(&fixture, 1)));
-    try testing.expect(!isReadOnlySupported(nodeAt(&fixture, 1)));
-    try testing.expect(shouldHaveReadOnlyStateByDefault(nodeAt(&fixture, 2)));
-    try testing.expect(isReadOnly(nodeAt(&fixture, 2)));
+    try testing.expect(isReadOnly(try nodeAt(&fixture, 1)));
+    try testing.expect(!isReadOnlySupported(try nodeAt(&fixture, 1)));
+    try testing.expect(shouldHaveReadOnlyStateByDefault(try nodeAt(&fixture, 2)));
+    try testing.expect(isReadOnly(try nodeAt(&fixture, 2)));
     // A role with no read-only state is read only whatever the node says.
-    try testing.expect(isReadOnly(nodeAt(&fixture, 3)));
-    try testing.expect(!isReadOnly(nodeAt(&fixture, 4)));
-    try testing.expect(isReadOnlySupported(nodeAt(&fixture, 4)));
-    try testing.expect(!isReadOnly(nodeAt(&fixture, 5)));
-    try testing.expect(isReadOnlySupported(nodeAt(&fixture, 5)));
-    try testing.expect(!shouldHaveReadOnlyStateByDefault(nodeAt(&fixture, 5)));
+    try testing.expect(isReadOnly(try nodeAt(&fixture, 3)));
+    try testing.expect(!isReadOnly(try nodeAt(&fixture, 4)));
+    try testing.expect(isReadOnlySupported(try nodeAt(&fixture, 4)));
+    try testing.expect(!isReadOnly(try nodeAt(&fixture, 5)));
+    try testing.expect(isReadOnlySupported(try nodeAt(&fixture, 5)));
+    try testing.expect(!shouldHaveReadOnlyStateByDefault(try nodeAt(&fixture, 5)));
 }
 
 // -- The range, and the six moves --

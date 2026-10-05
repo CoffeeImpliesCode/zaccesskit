@@ -483,7 +483,8 @@ const SliceVisitor = struct {
     visit: *const fn (context: ?*anyopaque, node_ref: NodeRef, text_bytes: []const u8) bool,
 
     fn onNode(context: ?*anyopaque, node_ref: NodeRef) bool {
-        const self: *SliceVisitor = @ptrCast(@alignCast(context.?));
+        const context_ptr = context orelse return false;
+        const self: *SliceVisitor = @ptrCast(@alignCast(context_ptr));
         return self.visit(self.context, node_ref, sliceFor(self.range, node_ref));
     }
 };
@@ -528,7 +529,8 @@ const WriteVisitor = struct {
 
     fn onNode(context: ?*anyopaque, node_ref: NodeRef, text_bytes: []const u8) bool {
         _ = node_ref;
-        const self: *WriteVisitor = @ptrCast(@alignCast(context.?));
+        const context_ptr = context orelse return false;
+        const self: *WriteVisitor = @ptrCast(@alignCast(context_ptr));
         self.writer.writeAll(text_bytes) catch {
             self.failed = true;
             return false;
@@ -544,7 +546,8 @@ const AppendVisitor = struct {
 
     fn onNode(context: ?*anyopaque, node_ref: NodeRef, text_bytes: []const u8) bool {
         _ = node_ref;
-        const self: *AppendVisitor = @ptrCast(@alignCast(context.?));
+        const context_ptr = context orelse return false;
+        const self: *AppendVisitor = @ptrCast(@alignCast(context_ptr));
         self.out.appendSlice(self.gpa, text_bytes) catch {
             self.failed = true;
             return false;
@@ -560,7 +563,8 @@ const BoxFolder = struct {
     failure: ?QueryError,
 
     fn onNode(context: ?*anyopaque, node_ref: NodeRef) bool {
-        const self: *BoxFolder = @ptrCast(@alignCast(context.?));
+        const context_ptr = context orelse return false;
+        const self: *BoxFolder = @ptrCast(@alignCast(context_ptr));
         const wanted_start = runStartIndex(self.range, node_ref);
         const wanted_end = runEndIndex(self.range, node_ref);
         const box = foldBox(node_ref, wanted_start, wanted_end) catch |err| {
@@ -656,7 +660,8 @@ fn FoldFolder(comptime T: type) type {
         visited: bool,
 
         fn onNode(context: ?*anyopaque, node_ref: NodeRef) bool {
-            const self: *Self = @ptrCast(@alignCast(context.?));
+            const context_ptr = context orelse return false;
+            const self: *Self = @ptrCast(@alignCast(context_ptr));
 
             // Whether a *previous* run contributed a value. Read the flag before
             // setting it, because the flag also answers "did the walk visit
@@ -720,7 +725,8 @@ fn insert(
     const id = FullNodeId.init(.{ .value = value }, .init(0));
     const parent_and_index: ?ParentAndIndex = if (parent) |parent_value| blk: {
         const parent_id = FullNodeId.init(.{ .value = parent_value }, .init(0));
-        const parent_ref = NodeRef.init(state, parent_id).?;
+        const parent_ref = NodeRef.init(state, parent_id) orelse
+            return error.NodeMissingFromFixture;
         const listed = schema.ids_props.children(&parent_ref.data().properties);
         var found: usize = 0;
         for (listed, 0..) |child, child_slot| {
@@ -737,8 +743,9 @@ fn insert(
     });
 }
 
-fn handle(state: *const tree_state.TreeState, value: u64) NodeRef {
-    return NodeRef.init(state, FullNodeId.init(.{ .value = value }, .init(0))).?;
+fn handle(state: *const tree_state.TreeState, value: u64) !NodeRef {
+    return NodeRef.init(state, FullNodeId.init(.{ .value = value }, .init(0))) orelse
+        error.NodeMissingFromFixture;
 }
 
 fn textRun(gpa: std.mem.Allocator, text_value: []const u8) !schema.Node {
@@ -808,9 +815,9 @@ fn rangeOver(
 ) !Range {
     return init(
         gpa,
-        handle(state, 0),
-        .{ .node = handle(state, 1), .character_index = first },
-        .{ .node = handle(state, 2), .character_index = last },
+        try handle(state, 0),
+        .{ .node = try handle(state, 1), .character_index = first },
+        .{ .node = try handle(state, 2), .character_index = last },
     );
 }
 
@@ -832,15 +839,15 @@ test "a range whose ends are the wrong way round is stored in order" {
 
     const reversed = try init(
         gpa,
-        handle(&state, 0),
-        .{ .node = handle(&state, 2), .character_index = 3 },
-        .{ .node = handle(&state, 1), .character_index = 1 },
+        try handle(&state, 0),
+        .{ .node = try handle(&state, 2), .character_index = 3 },
+        .{ .node = try handle(&state, 1), .character_index = 1 },
     );
     // The end moves in front of the start, so the range covers run 1 from index
     // 1 through run 2 at index 3.
-    try testing.expect(sameNode(reversed.start.node, handle(&state, 1)));
+    try testing.expect(sameNode(reversed.start.node, try handle(&state, 1)));
     try testing.expectEqual(@as(usize, 1), reversed.start.character_index);
-    try testing.expect(sameNode(reversed.end.node, handle(&state, 2)));
+    try testing.expect(sameNode(reversed.end.node, try handle(&state, 2)));
     try testing.expectEqual(@as(usize, 3), reversed.end.character_index);
 }
 
@@ -854,9 +861,9 @@ test "a degenerate range is one whose two ends name the same offset" {
     // upstream's `==` on the two comparable keys calls degenerate.
     const caret = try init(
         gpa,
-        handle(&state, 0),
-        .{ .node = handle(&state, 1), .character_index = 2 },
-        .{ .node = handle(&state, 1), .character_index = 2 },
+        try handle(&state, 0),
+        .{ .node = try handle(&state, 1), .character_index = 2 },
+        .{ .node = try handle(&state, 1), .character_index = 2 },
     );
     try testing.expect(try isDegenerate(gpa, caret));
     try testing.expect(!try isDegenerate(gpa, try rangeOver(gpa, &state, 0, 5)));
@@ -869,15 +876,15 @@ test "toDegenerateRange puts the position at both ends" {
     try twoRunDocument(gpa, &state);
 
     const caret = try toDegenerateRange(gpa, .{
-        .root_node = handle(&state, 0),
-        .inner = .{ .node = handle(&state, 2), .character_index = 4 },
+        .root_node = try handle(&state, 0),
+        .inner = .{ .node = try handle(&state, 2), .character_index = 4 },
     });
     // A range measured against the same node with the same offset at both ends
     // is degenerate, and it names the document the position came from.
     try testing.expect(try isDegenerate(gpa, caret));
-    try testing.expect(sameNode(caret.node, handle(&state, 0)));
-    try testing.expect(sameNode(caret.start.node, handle(&state, 2)));
-    try testing.expect(sameNode(caret.end.node, handle(&state, 2)));
+    try testing.expect(sameNode(caret.node, try handle(&state, 0)));
+    try testing.expect(sameNode(caret.start.node, try handle(&state, 2)));
+    try testing.expect(sameNode(caret.end.node, try handle(&state, 2)));
     try testing.expectEqual(@as(usize, 4), caret.start.character_index);
     try testing.expectEqual(@as(usize, 4), caret.end.character_index);
 }
@@ -889,7 +896,8 @@ const TracingVisitor = struct {
     visited: std.ArrayList(u64) = .empty,
 
     fn onNode(context: ?*anyopaque, node_ref: NodeRef) bool {
-        const self: *TracingVisitor = @ptrCast(@alignCast(context.?));
+        const context_ptr = context orelse return false;
+        const self: *TracingVisitor = @ptrCast(@alignCast(context_ptr));
         self.visited.append(self.gpa, node_ref.id().local.value) catch return false;
         return true;
     }
@@ -910,9 +918,9 @@ test "the walk visits every run the range covers, in document order" {
         gpa,
         try init(
             gpa,
-            handle(&state, 0),
-            .{ .node = handle(&state, 1), .character_index = 1 },
-            .{ .node = handle(&state, 3), .character_index = 2 },
+            try handle(&state, 0),
+            .{ .node = try handle(&state, 1), .character_index = 1 },
+            .{ .node = try handle(&state, 3), .character_index = 2 },
         ),
         @ptrCast(&tracer),
         TracingVisitor.onNode,
@@ -934,9 +942,9 @@ test "a range inside one run does not reach the runs after it" {
         gpa,
         try init(
             gpa,
-            handle(&state, 0),
-            .{ .node = handle(&state, 2), .character_index = 1 },
-            .{ .node = handle(&state, 2), .character_index = 3 },
+            try handle(&state, 0),
+            .{ .node = try handle(&state, 2), .character_index = 1 },
+            .{ .node = try handle(&state, 2), .character_index = 3 },
         ),
         @ptrCast(&tracer),
         TracingVisitor.onNode,
@@ -959,9 +967,9 @@ test "the walk does not leave the document for the node above it" {
         gpa,
         try init(
             gpa,
-            handle(&state, 0),
-            .{ .node = handle(&state, 1), .character_index = 0 },
-            .{ .node = handle(&state, 2), .character_index = 5 },
+            try handle(&state, 0),
+            .{ .node = try handle(&state, 1), .character_index = 0 },
+            .{ .node = try handle(&state, 2), .character_index = 5 },
         ),
         @ptrCast(&tracer),
         TracingVisitor.onNode,
@@ -1013,9 +1021,9 @@ test "a degenerate range reports the empty string" {
     // across the run boundary names five characters and is not degenerate.
     const caret = try init(
         gpa,
-        handle(&state, 0),
-        .{ .node = handle(&state, 1), .character_index = 2 },
-        .{ .node = handle(&state, 1), .character_index = 2 },
+        try handle(&state, 0),
+        .{ .node = try handle(&state, 1), .character_index = 2 },
+        .{ .node = try handle(&state, 1), .character_index = 2 },
     );
     try testing.expect(try isDegenerate(gpa, caret));
     var empty = try text(gpa, caret);
@@ -1120,9 +1128,9 @@ test "a run with no per-character positions yields no box" {
 
     var boxes = try boundingBoxes(gpa, try init(
         gpa,
-        handle(&state, 0),
-        .{ .node = handle(&state, 1), .character_index = 0 },
-        .{ .node = handle(&state, 1), .character_index = 2 },
+        try handle(&state, 0),
+        .{ .node = try handle(&state, 1), .character_index = 0 },
+        .{ .node = try handle(&state, 1), .character_index = 2 },
     ));
     defer boxes.deinit(gpa);
     try testing.expectEqual(@as(usize, 0), boxes.items.len);
@@ -1151,9 +1159,9 @@ test "a box over part of a run starts on the edge the range starts at" {
     // 40 here and fail.
     var boxes = try boundingBoxes(gpa, try init(
         gpa,
-        handle(&state, 0),
-        .{ .node = handle(&state, 1), .character_index = 1 },
-        .{ .node = handle(&state, 1), .character_index = 3 },
+        try handle(&state, 0),
+        .{ .node = try handle(&state, 1), .character_index = 1 },
+        .{ .node = try handle(&state, 1), .character_index = 3 },
     ));
     defer boxes.deinit(gpa);
     try testing.expectEqual(@as(usize, 1), boxes.items.len);
@@ -1183,9 +1191,9 @@ test "a start at the leading edge of a run takes the whole box" {
     // alone at `text.rs:778` and the box is the stored one.
     var boxes = try boundingBoxes(gpa, try init(
         gpa,
-        handle(&state, 0),
-        .{ .node = handle(&state, 1), .character_index = 0 },
-        .{ .node = handle(&state, 1), .character_index = 4 },
+        try handle(&state, 0),
+        .{ .node = try handle(&state, 1), .character_index = 0 },
+        .{ .node = try handle(&state, 1), .character_index = 4 },
     ));
     defer boxes.deinit(gpa);
     try testing.expectEqual(@as(usize, 1), boxes.items.len);
@@ -1201,13 +1209,13 @@ test "a position from another node is refused by setStart and setEnd" {
 
     var range = try rangeOver(gpa, &state, 0, 5);
     const other: Position = .{
-        .root_node = handle(&state, 1),
-        .inner = .{ .node = handle(&state, 1), .character_index = 2 },
+        .root_node = try handle(&state, 1),
+        .inner = .{ .node = try handle(&state, 1), .character_index = 2 },
     };
     try testing.expectError(error.InvalidPosition, setStart(gpa, &range, other));
     // The refused call left the range exactly as it was.
     try testing.expectEqual(@as(usize, 0), range.start.character_index);
-    try testing.expect(sameNode(range.start.node, handle(&state, 1)));
+    try testing.expect(sameNode(range.start.node, try handle(&state, 1)));
     try testing.expectError(error.InvalidPosition, setEnd(gpa, &range, other));
     try testing.expectEqual(@as(usize, 5), range.end.character_index);
 }
@@ -1220,13 +1228,13 @@ test "a start that passes the end drags the end with it" {
 
     var range = try rangeOver(gpa, &state, 0, 2);
     const past: Position = .{
-        .root_node = handle(&state, 0),
-        .inner = .{ .node = handle(&state, 2), .character_index = 4 },
+        .root_node = try handle(&state, 0),
+        .inner = .{ .node = try handle(&state, 2), .character_index = 4 },
     };
     try setStart(gpa, &range, past);
     // Upstream uses `>=` at `text.rs:853`, so the end follows the start rather
     // than the two ends inverting.
-    try testing.expect(sameNode(range.end.node, handle(&state, 2)));
+    try testing.expect(sameNode(range.end.node, try handle(&state, 2)));
     try testing.expectEqual(@as(usize, 4), range.end.character_index);
 }
 

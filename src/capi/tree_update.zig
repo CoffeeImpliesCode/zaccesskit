@@ -655,8 +655,10 @@ fn assertPointerShaped(signature: anytype) void {
 ///
 /// `std.process.exit` rather than `panic` or `unreachable` because the house
 /// rules forbid both on this boundary, and `exit` rather than `abort` because
-/// `exit` flushes the diagnostic below before the process leaves. The status is
-/// 1, and upstream's signal is `SIGABRT`; a caller cannot observe the
+/// `exit` hands the caller a status it can act on after the diagnostic below.
+/// The write is `std.log`, not `std.debug.print`: the second is the debugging
+/// channel, and this line is a deliberate end-of-process diagnostic. The status
+/// is 1, and upstream's signal is `SIGABRT`; a caller cannot observe the
 /// difference, because it is already dead.
 ///
 /// The same three lines stand in `src/capi/tree_info.zig:713`. Two domain
@@ -664,7 +666,7 @@ fn assertPointerShaped(signature: anytype) void {
 /// belongs in a module both can reach; `src/capi/boundary.zig` is the leaf that
 /// would hold it.
 fn terminate(comptime function_name: []const u8, reason: []const u8) noreturn {
-    std.debug.print("zaccesskit: {s}: {s}\n", .{ function_name, reason });
+    std.log.err("zaccesskit: {s}: {s}", .{ function_name, reason });
     std.process.exit(1);
 }
 
@@ -781,10 +783,10 @@ const CountingAllocator = struct {
         var iterator = self.released.iterator();
         while (iterator.next()) |entry| {
             if (entry.value_ptr.* != 1) {
-                std.debug.print(
-                    "pointer 0x{x} was released {d} times\n",
-                    .{ entry.key_ptr.*, entry.value_ptr.* },
-                );
+                std.log.err("pointer 0x{x} was released {d} times", .{
+                    entry.key_ptr.*,
+                    entry.value_ptr.*,
+                });
                 return error.NotOneRelease;
             }
         }

@@ -447,6 +447,20 @@ pub const MacosAdapter = struct {
     /// Which of the three states the adapter is in.
     state: State,
 
+    /// The recorder this adapter allocated for itself, or `null` when the host
+    /// was supplied by the caller.
+    ///
+    /// **This field is the whole ownership decision.** `Host` carries five
+    /// function pointers and a `?*anyopaque`, with no destructor, so a `Host`
+    /// cannot say whether its `ptr` is borrowed or owned. Without this field the
+    /// three entry points that call `recordingHost` allocate a `RecordingHost`
+    /// and hand out a pointer to it that nothing ever releases: neither the box
+    /// nor the `posts` buffer, which grows with the adapter's whole notification
+    /// traffic. `newAdapter` leaves this `null` and never fills it in, which is
+    /// what keeps a caller-supplied host from being freed by an adapter that
+    /// does not own it. `releaseState` is the only reader.
+    owned_host: ?*RecordingHost = null,
+
     /// Asks `factory` for a tree and hands it to the adapter.
     ///
     /// Upstream `Adapter::update_if_active`, at `adapter.rs:110-146`. **Returns**
@@ -625,14 +639,18 @@ pub const MacosAdapter = struct {
             return context.newNodeList(self.allocator, &.{node}) catch null;
         }
         var list: ArrayList(*PlatformNode) = .empty;
-        errdefer list.deinit(self.allocator);
+        // `defer`, not `errdefer`. This function returns `?*anyopaque`, never
+        // an error, so an `errdefer` here has no error return to fire on and
+        // releases nothing on the three `catch return null` arms below. Those
+        // arms run after at least one `append`, so a `defer` is what makes the
+        // list release on every path out of the loop.
+        defer list.deinit(self.allocator);
         var children = consumer.node_ref.hierarchy.filteredChildren(root, root_filter) catch
             return null;
         while (children.next() catch return null) |child| {
             const node = context.getOrCreatePlatformNode(child.id()) catch return null;
             list.append(self.allocator, node) catch return null;
         }
-        defer list.deinit(self.allocator);
         return context.newNodeList(self.allocator, list.items) catch null;
     }
 
@@ -963,13 +981,20 @@ pub fn macosAdapterNew(
     action_handler: ActionHandler,
     action_handler_userdata: ?*anyopaque,
 ) ?*MacosAdapter {
-    return newAdapter(
+    // The recorder is allocated here and owned by the adapter, so the adapter
+    // has to learn it holds one. `newAdapter` cannot do that from a `Host`,
+    // because a `Host` carries no way to say its pointer is owned.
+    var owned: ?*RecordingHost = null;
+    const host = recordingHost(&owned);
+    const adapter = newAdapter(
         view,
         is_view_focused,
         action_handler,
         action_handler_userdata,
-        recordingHost(),
-    );
+        host,
+    ) orelse return null;
+    adapter.owned_host = owned;
+    return adapter;
 }
 
 /// Returns a macOS adapter for `view` over `host`, or `null` when the allocation
@@ -1023,9 +1048,24 @@ fn releaseState(self: *MacosAdapter) void {
         .placeholder => |placeholder| placeholder.context.release(),
         .active => |context| context.release(),
     }
-    // SAFETY: the switch above released what the state owned, and no statement
-    // after this line reads `self`. The caller destroys or owns the memory, so
-    // a stale read traps in Debug rather than reaching a released context.
+    // The recorder this adapter allocated for itself, and only that one. A
+    // caller-supplied host leaves `owned_host` null, so this cannot free a box
+    // the application still owns.
+    //
+    // **The order is load-bearing.** `RecordingHost.deinit` releases `posts` and
+    // then poisons the value with `self.* = undefined`; it frees no box, because
+    // in a test the recorder is a stack value with no box to free. So `deinit`
+    // must run first and `destroy` second: the other way round leaks the `posts`
+    // buffer, which is the larger half of the leak, and calling `deinit` after
+    // `destroy` reads a freed box.
+    if (self.owned_host) |recorder| {
+        recorder.deinit();
+        heap().destroy(recorder);
+    }
+    // SAFETY: the switch above released what the state owned, and the block
+    // above released the recorder this adapter owned. No statement after this
+    // line reads `self`. The caller destroys or owns the memory, so a stale read
+    // traps in Debug rather than reaching a released context.
     self.* = undefined;
 }
 
@@ -1141,13 +1181,20 @@ pub fn macosSubclassingAdapterNew(
     // second lifetime the header does not describe.
     _ = activation_handler;
     _ = activation_handler_userdata;
-    return newSubclassingAdapter(
+    // The recorder is allocated here and owned by the adapter, so the adapter
+    // has to learn it holds one. It is set on the embedded `MacosAdapter`,
+    // because `macosSubclassingAdapterFree` releases that one and nothing else.
+    var owned: ?*RecordingHost = null;
+    const host = recordingHost(&owned);
+    const adapter = newSubclassingAdapter(
         view,
         view,
         action_handler,
         action_handler_userdata,
-        recordingHost(),
-    );
+        host,
+    ) orelse return null;
+    adapter.adapter.owned_host = owned;
+    return adapter;
 }
 
 /// Returns a subclassing adapter for `window`, or `null` when the allocation
@@ -1168,10 +1215,23 @@ pub fn macosSubclassingAdapterForWindow(
     _ = activation_handler_userdata;
     // A window adapter drives the window's content view, upstream
     // `subclass.rs:120-140`.
-    const host = recordingHost();
-    var recorder: *RecordingHost = @ptrCast(@alignCast(host.ptr orelse return null));
+    //
+    // The recorder is reached through `owned` rather than by casting `host.ptr`
+    // back, because `owned` is the pointer the adapter is told it owns. A `null`
+    // there is the allocation failure, and the recorder was never created.
+    var owned: ?*RecordingHost = null;
+    const host = recordingHost(&owned);
+    const recorder = owned orelse return null;
     recorder.view = window;
-    return newSubclassingAdapter(window, window, action_handler, action_handler_userdata, host);
+    const adapter = newSubclassingAdapter(
+        window,
+        window,
+        action_handler,
+        action_handler_userdata,
+        host,
+    ) orelse return null;
+    adapter.adapter.owned_host = owned;
+    return adapter;
 }
 
 /// Returns a subclassing adapter for `view` over `host`, or `null` when the
@@ -1423,11 +1483,22 @@ fn renderDebug(adapter: *const MacosAdapter, allocator: Allocator) ![*:0]u8 {
 ///
 /// It records into a `RecordingHost` the adapter owns, so a caller that never
 /// reaches AppKit still gets every notification delivered and observable.
-fn recordingHost() Host {
+///
+/// **Ownership.** The recorder is heap-allocated, so this hands out a pointer
+/// something must release. `owned` carries it back to the caller, which stores
+/// it in `MacosAdapter.owned_host`; `releaseState` is what frees it. `Host` has
+/// no destructor, so this out-parameter is the only way the pointer and its
+/// ownership reach the same place. It is set to `null` on the allocation-failure
+/// path below, and a caller that sees `null` owns nothing.
+fn recordingHost(owned: *?*RecordingHost) Host {
+    owned.* = null;
     const recorder = heap().create(RecordingHost) catch {
-        // Without a recorder there is nowhere to send a notification, so the
-        // adapter cannot be built. The entry points return `null` in that case,
-        // which is the one answer that is not a lie.
+        // Without a recorder there is nowhere to record a notification, so the
+        // host discards all five calls. The adapter is still built and still
+        // answers, which is a degraded adapter rather than a missing one. The
+        // alternative, answering `null` here, would also be defensible; what is
+        // not defensible is the comment this replaced, which claimed the entry
+        // points return `null` while the code went on to build the adapter.
         return .{
             .ptr = null,
             .post = noopPost,
@@ -1438,6 +1509,7 @@ fn recordingHost() Host {
         };
     };
     recorder.* = RecordingHost.init(heap());
+    owned.* = recorder;
     return recorder.host();
 }
 
@@ -1587,6 +1659,51 @@ fn boxTwoNodeTree(allocator: Allocator, focus: schema.NodeId) !*schema.TreeUpdat
     try update.pushNode(allocator, root_id, root_data);
     update.tree = schema.TreeInfo.init(root_id);
     update.focus = focus;
+    return update;
+}
+
+/// A tree update holding an excluded root and `child_count` children under it.
+///
+/// Two properties make this the tree the `viewChildren` leak test needs.
+///
+/// **The root is a `generic_container`.** `consumer.filter.commonFilter`
+/// excludes that role, so `viewChildren` takes the child-walk branch and grows
+/// its list. A `window` root is included, and the included-root branch answers
+/// before the list exists at all, so a tree with an included root never
+/// exercises the line under test.
+///
+/// **`child_count` children.** `ArrayList` grows super-linearly, so the first
+/// append takes a capacity well above one and a handful of children never
+/// reallocate. A later append that fails is what leaves a buffer held by a
+/// list the function is about to answer `null` from, and reaching one needs
+/// more children than that first capacity.
+///
+/// The update is transferred to the caller, which owns it. **Returns.**
+/// `error.OutOfMemory` from `pushNode` and from `box`.
+fn boxExcludedRootTree(allocator: Allocator, child_count: usize) !*schema.TreeUpdate {
+    const update = try allocator.create(schema.TreeUpdate);
+    errdefer allocator.destroy(update);
+    update.* = .{};
+    errdefer update.deinit(allocator);
+
+    // The ids are built in place and then handed to `setChildren`, which copies
+    // them into the tree's own storage, so this buffer is released by the
+    // `defer` and nothing keeps a pointer into it.
+    const children = try allocator.alloc(schema.NodeId, child_count);
+    defer allocator.free(children);
+    // The children go in first, and the root declares them, because
+    // `consumer.tree_apply` rejects an update that leaves a node unattached.
+    for (children, 0..) |*id, index| {
+        id.* = .{ .value = @intCast(2 + index) };
+        try update.pushNode(allocator, id.*, schema.Node.init(allocator, .button));
+    }
+
+    var root_data = schema.Node.init(allocator, .generic_container);
+    errdefer root_data.deinit();
+    try schema.ids_props.setChildren(&root_data.properties, children);
+    try update.pushNode(allocator, root_id, root_data);
+    update.tree = schema.TreeInfo.init(root_id);
+    update.focus = children[0];
     return update;
 }
 
@@ -1755,6 +1872,69 @@ test "dropping a context posts one destroyed notification per live node" {
     );
 }
 
+test "a view-children call that cannot grow its list releases what it took" {
+    // The list in `viewChildren` grows under a `defer`, not an `errdefer`. The
+    // function returns `?*anyopaque` and never an error, so an `errdefer` has
+    // no error return to fire on: each `catch return null` below the `defer`
+    // answered while holding a list it had already grown, and released nothing.
+    //
+    // The tree is the one `boxExcludedRootTree` builds, and both of its
+    // properties are load-bearing. An included root takes the other branch and
+    // never creates the list. Too few children and the first `append` takes a
+    // capacity that covers every child, so no later append reallocates and no
+    // failure lands on a list that already holds a buffer.
+    //
+    // `fail_index` is swept rather than pinned. `viewChildren` allocates the
+    // list buffer, then the arena copy inside `newNodeList`, and `ArrayList`
+    // over-allocates, so which allocation is "the second one" is not a thing to
+    // guess. Every index in the sweep is exercised, so whichever lands on a
+    // regrowth of a non-empty list is covered.
+    //
+    // `std.testing.allocator` is the assertion. A restored `errdefer` fails this
+    // test with `leaked memory`, because the buffer the list took is still held
+    // when the function answers `null`.
+    var recorder = RecordingHost.init(testing.allocator);
+    defer recorder.deinit();
+    var action: RecordingAction = .{};
+    // Sixty children is well past the first `append`'s capacity, so the list
+    // regrows several times and a failing regrowth is reachable.
+    const tree = try boxExcludedRootTree(allocation.allocator(), 60);
+    var activation: AnsweringActivation = .{ .tree = tree, .calls = 0 };
+    const adapter = newAdapter(null, true, recordingAction, &action, recorder.host()) orelse
+        return error.NoAdapter;
+    defer macosAdapterFree(adapter);
+
+    // Activate the adapter on the real allocator first. Swapping in the failing
+    // one before this point spends every index on the tree the activation
+    // handler builds and leaves the list below unexercised.
+    const built = macosAdapterViewChildren(adapter, answeringActivation, &activation);
+    try testing.expect(built != null);
+    const context = switch (adapter.state) {
+        .active => |held| held,
+        else => return error.NotActive,
+    };
+    const live = context.tree.stateOf().nodes.count();
+
+    var index: usize = 0;
+    while (index < 16) : (index += 1) {
+        var failing: testing.FailingAllocator = .init(testing.allocator, .{
+            .fail_index = index,
+        });
+        adapter.allocator = failing.allocator();
+        // The answer is `null` for the indices that land on an allocation and a
+        // real list for the ones past the end. Neither is asserted here: the
+        // claim under test is that nothing is held after either, and only the
+        // leak detector can see that.
+        _ = macosAdapterViewChildren(adapter, answeringActivation, &activation);
+        adapter.allocator = testing.allocator;
+    }
+
+    // The adapter survived every failed call and still holds the same tree.
+    try testing.expect(adapter.state == .active);
+    try testing.expectEqual(live, context.tree.stateOf().nodes.count());
+    try testing.expect(live > 1);
+}
+
 test "the debug text names the state and the platform node count" {
     // The text borrows nothing from the adapter, so the adapter may be freed
     // before the string is released with `accesskit_string_free`.
@@ -1859,6 +2039,164 @@ test "the subclassing adapter forwards its four calls" {
     );
     try testing.expect(macosSubclassingAdapterUpdateViewFocusState(adapter, true) == null);
     macosSubclassingAdapterFree(adapter);
+}
+
+/// Counts the bytes `heap()` has handed out and not taken back.
+///
+/// **Why not `std.testing.allocator`.** `heap()` is `allocation.allocator()`,
+/// which reads a replaceable pair, and the pair's `FreeFn` receives a bare
+/// `?*anyopaque` with no length. `Allocator.free` needs a length, so a test
+/// cannot forward to `std.testing.allocator` and get its leak detector; the
+/// length has to be remembered here. That makes this the detector: `outstanding`
+/// is zero exactly when every block the pair handed out has come back.
+///
+/// `live` maps a pointer to its length. `pairFree` at `capi/allocation.zig`
+/// passes the pointer the matching `alloc` returned and nothing else, so the
+/// lookup is the only way to learn the size. `pairResize` and `pairRemap` are
+/// stubs that always fail, so no free ever arrives through them and the map
+/// balances exactly.
+///
+/// The map's own bookkeeping is allocated from `testing.allocator` and not from
+/// `gpa`, so it never counts against `outstanding`.
+const HeapCounter = struct {
+    /// Where the counted blocks come from.
+    gpa: std.mem.Allocator,
+    /// Every block handed out and not yet released, keyed by address.
+    live: std.AutoHashMapUnmanaged(usize, usize) = .empty,
+    /// The summed length of `live`. Zero means nothing is outstanding.
+    outstanding: usize = 0,
+
+    fn init(gpa: std.mem.Allocator) HeapCounter {
+        return .{ .gpa = gpa };
+    }
+
+    /// Releases the bookkeeping map. **The counted blocks are not released
+    /// here**: a non-zero `outstanding` at this point is the leak the test
+    /// reports, and taking them back here would hide exactly what it is for.
+    fn deinit(self: *HeapCounter) void {
+        self.live.deinit(std.testing.allocator);
+        // SAFETY: the line above released the one allocation this value owned.
+        // The poison is what a stale read sees, and no statement below reads
+        // `self`.
+        self.* = undefined;
+    }
+
+    /// Hands out one block and records its length.
+    fn alloc(self: *HeapCounter, size: usize) ?*anyopaque {
+        const bytes = self.gpa.alloc(u8, size) catch return null;
+        self.live.put(std.testing.allocator, @intFromPtr(bytes.ptr), size) catch {
+            self.gpa.free(bytes);
+            return null;
+        };
+        self.outstanding += size;
+        return @ptrCast(bytes.ptr);
+    }
+
+    /// Takes back one block. An address the map does not hold is left alone,
+    /// which is what a `null` from the pair means.
+    fn release(self: *HeapCounter, ptr: *anyopaque) void {
+        const entry = self.live.fetchRemove(@intFromPtr(ptr)) orelse return;
+        self.outstanding -= entry.value;
+        self.gpa.free(@as([*]u8, @ptrCast(ptr))[0..entry.value]);
+    }
+};
+
+/// The `AllocFn` half of the pair the leak tests install.
+fn countedAlloc(size: usize, context: ?*anyopaque) callconv(.c) ?*anyopaque {
+    const counter: *HeapCounter = @ptrCast(@alignCast(context orelse return null));
+    return counter.alloc(size);
+}
+
+/// The `FreeFn` half of the pair the leak tests install.
+fn countedFree(ptr: ?*anyopaque, context: ?*anyopaque) callconv(.c) void {
+    const counter: *HeapCounter = @ptrCast(@alignCast(context orelse return));
+    counter.release(ptr orelse return);
+}
+
+test "the recorder the adapter allocates for itself comes back, box and posts" {
+    // `recordingHost` heap-allocates a `RecordingHost` and hands the pointer out
+    // through a `Host`, which carries five function pointers and no destructor.
+    // Before `owned_host` existed nothing released it, so every
+    // `accesskit_macos_adapter_new` on macOS leaked the box **and** the `posts`
+    // buffer, which grows with the adapter's whole notification traffic. The
+    // second half is the larger one, so a test that only checked the box would
+    // pass while `posts` still grew; the leak detector below sees both, because
+    // both come from the same allocator.
+    //
+    // The test tree could not have caught this before: all thirteen recorders
+    // here are stack values with no box, and `heap()` is normally the C
+    // allocator. Installing the pair is what puts a detector underneath both.
+    var counter = HeapCounter.init(std.heap.c_allocator);
+    defer counter.deinit();
+    allocation.installAllocator(countedAlloc, countedFree, &counter);
+    // Restored before any assertion below can fail, because a failing `expect`
+    // returns early and would otherwise leave the pair installed for every later
+    // test in the binary.
+    defer allocation.installAllocator(null, null, null);
+
+    var recorder_view: u8 = 0;
+    const adapter = macosAdapterNew(&recorder_view, true, recordingAction, null) orelse
+        return error.NoAdapter;
+
+    // The adapter is holding a recorder, which is the fact the release turns on.
+    const recorder = adapter.owned_host orelse return error.NoOwnedRecorder;
+    try testing.expect(adapter.host.ptr == @as(?*anyopaque, recorder));
+
+    // Grow `posts`, so the leak under test is the buffer and not only the box.
+    //
+    // The appends go through `recorder.allocator`, which is the installed pair,
+    // and that is the whole point. An earlier version of this test appended
+    // through `std.heap.c_allocator` directly, which put `posts` outside the
+    // counter: dropping the `deinit` and freeing only the box still passed,
+    // because the posts buffer was invisible to the detector. Main's warning
+    // was that a test checking only the box would pass while `posts` still grew,
+    // and it was right — this is what it took to actually catch it.
+    //
+    // Eight notifications is more than one buffer, so the growth is a realloc
+    // and the remaining count differs from the box alone.
+    for (0..8) |index| {
+        recorder.posts.append(recorder.allocator, .{
+            .node = null,
+            .window = null,
+            .notification = "AXFocusedUIElement",
+            .text = "",
+            .priority = @intCast(index),
+        }) catch return error.NoRoom;
+    }
+    try testing.expectEqual(@as(usize, 8), recorder.count());
+    try testing.expect(counter.outstanding > 0);
+
+    // Releasing the adapter must release the recorder with it, and a `deinit`
+    // before the `destroy` is what takes `posts` back. The other order would
+    // leave a positive count here, which is the assertion that distinguishes the
+    // two from a test that only proved the box came back.
+    macosAdapterFree(adapter);
+    try testing.expectEqual(@as(usize, 0), counter.outstanding);
+}
+
+test "an adapter built over a caller's host never frees that host" {
+    // The other half of `owned_host`: a borrowed host must stay the caller's.
+    // `newAdapter` leaves the field null, and `releaseState` only frees a
+    // recorder when it is set, so the recorder below is still readable after
+    // the adapter is gone. Reading it is the assertion: if `releaseState` freed
+    // a borrowed host this would be a use-after-free rather than a value.
+    var recorder = RecordingHost.init(std.testing.allocator);
+    defer recorder.deinit();
+    var action: RecordingAction = .{};
+    const adapter = newAdapter(null, false, recordingAction, &action, recorder.host()) orelse
+        return error.NoAdapter;
+    try testing.expect(adapter.owned_host == null);
+
+    macosAdapterFree(adapter);
+
+    // Still ours, still usable, and its own count still reads zero.
+    try testing.expectEqual(@as(usize, 0), recorder.count());
+    recorder.posts.append(std.testing.allocator, .{
+        .node = null,
+        .window = null,
+        .notification = "AXFocusedUIElement",
+    }) catch return error.NoRoom;
+    try testing.expectEqual(@as(usize, 1), recorder.count());
 }
 
 test "a queued-events handle that cannot be allocated answers null" {

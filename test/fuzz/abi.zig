@@ -74,6 +74,9 @@ pub const Row = struct {
 
 /// The whole conformance table, with the count of rows that were read.
 pub const Table = struct {
+    // SAFETY: `parseOne` writes `rows[len]` and only then bumps `len`, and
+    // every walk over the domain is `len` rows wide, so a `len`-bounded read
+    // never reaches an unwritten row.
     rows: [max_row_count]Row = undefined,
     len: usize = 0,
 

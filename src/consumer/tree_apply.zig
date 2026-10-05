@@ -468,7 +468,8 @@ test "every node the update names lands with its parent and its index" {
     // `pending_nodes` and the children loop then writes the parent and the index.
     for ([_]u64{ 3, 4 }, 0..) |local, index| {
         const id = FullNodeId.init(.{ .value = local }, TreeIndex.init(0));
-        const parent = state.nodes.get(id).?.parent_and_index.?;
+        const entry = state.nodes.get(id) orelse return error.NodeMissingFromState;
+        const parent = entry.parent_and_index orelse return error.NoParent;
         const group = FullNodeId.init(.{ .value = 2 }, TreeIndex.init(0));
         try testing.expectEqual(group, parent.parent_id);
         try testing.expectEqual(index, parent.index);
@@ -567,7 +568,8 @@ test "an existing node is rewritten in place and reported as an update, not an a
     try testing.expect(changes.updated_node_ids.contains(id));
     try testing.expect(!changes.added_node_ids.contains(id));
     try testing.expectEqual(@as(usize, 2), state.nodes.count());
-    const parent = state.nodes.get(id).?.parent_and_index.?;
+    const entry = state.nodes.get(id) orelse return error.NodeMissingFromState;
+    const parent = entry.parent_and_index orelse return error.NoParent;
     try testing.expectEqual(FullNodeId.init(.{ .value = 1 }, TreeIndex.init(0)), parent.parent_id);
 }
 
@@ -643,7 +645,8 @@ test "a graft node arrives first and the subtree that follows hangs under it" {
     try applyUpdate(gpa, &state, late, &changes);
 
     const subtree_root = FullNodeId.init(.{ .value = 50 }, TreeIndex.init(1));
-    const parent = state.nodes.get(subtree_root).?.parent_and_index.?;
+    const entry = state.nodes.get(subtree_root) orelse return error.NodeMissingFromState;
+    const parent = entry.parent_and_index orelse return error.NoParent;
     try testing.expectEqual(graft_id, parent.parent_id);
     try testing.expectEqual(@as(usize, 0), parent.index);
 }

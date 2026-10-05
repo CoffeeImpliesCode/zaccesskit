@@ -256,11 +256,17 @@ const Fixture = struct {
         const list = try self.gpa.alloc(schema.NodeId, locals.len);
         defer self.gpa.free(list);
         for (locals, list) |local, *slot| slot.* = .{ .value = local };
-        try schema.ids_props.setChildren(&self.state.nodes.getPtr(id).?.data.properties, list);
+        const entry = try self.slotOf(id);
+        try schema.ids_props.setChildren(&entry.data.properties, list);
     }
 
     fn ref(self: *Fixture, id: FullNodeId) !NodeRef {
         return NodeRef.init(&self.state, id) orelse error.NodeMissingFromState;
+    }
+
+    /// The state entry for `id`, so a test can write the node the state owns.
+    fn slotOf(self: *Fixture, id: FullNodeId) !*tree_state.NodeState {
+        return self.state.nodes.getPtr(id) orelse error.NodeMissingFromState;
     }
 };
 

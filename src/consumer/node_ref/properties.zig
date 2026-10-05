@@ -408,8 +408,8 @@ const Fixture = struct {
 
 /// The handle for the node whose local id content is `content`. Take it after
 /// the last `add`.
-fn nodeAt(fixture: *const Fixture, content: u64) NodeRef {
-    return fixture.state.nodeById(fullNodeId(content)).?;
+fn nodeAt(fixture: *const Fixture, content: u64) !NodeRef {
+    return fixture.state.nodeById(fullNodeId(content)) orelse error.NodeMissingFromFixture;
 }
 
 fn fullNodeId(content: u64) FullNodeId {
@@ -424,8 +424,11 @@ fn readLevel(data: *const Node) ?usize {
 
 /// The value `fetchInheritedProperty` finds for the node at `content`, so a test
 /// line stays short enough to read.
-fn inheritedLevel(fixture: *const Fixture, content: u64) QueryError!?usize {
-    return fetchInheritedProperty(usize, nodeAt(fixture, content), readLevel);
+fn inheritedLevel(
+    fixture: *const Fixture,
+    content: u64,
+) (QueryError || error{NodeMissingFromFixture})!?usize {
+    return fetchInheritedProperty(usize, try nodeAt(fixture, content), readLevel);
 }
 
 /// The flag getter that answers `false` for every node, so a flag walk runs the
@@ -469,8 +472,8 @@ test "a stored zero and an absent property are two different answers" {
     try fixture.add(1, null, &stated);
     try fixture.add(2, null, &plain);
 
-    try testing.expectEqual(@as(?usize, 0), level(nodeAt(&fixture, 1)));
-    try testing.expectEqual(@as(?usize, null), level(nodeAt(&fixture, 2)));
+    try testing.expectEqual(@as(?usize, 0), level(try nodeAt(&fixture, 1)));
+    try testing.expectEqual(@as(?usize, null), level(try nodeAt(&fixture, 2)));
 }
 
 test "each scroll and number read returns the value stored under its own name" {
@@ -496,7 +499,7 @@ test "each scroll and number read returns the value stored under its own name" {
     try numbers.setNumericValueJump(store, 11);
 
     try fixture.add(1, null, &source);
-    const node = nodeAt(&fixture, 1);
+    const node = try nodeAt(&fixture, 1);
 
     try testing.expectEqual(@as(?f64, 1), scrollX(node));
     try testing.expectEqual(@as(?f64, 2), scrollXMin(node));
@@ -525,7 +528,7 @@ test "each flag read answers the bit it names and not a neighbour's" {
 
     // `flag_cases` is a comptime array, so this sweep is bounded by its length.
     inline for (flag_cases) |entry| {
-        try testing.expect(!entry.read(nodeAt(&fixture, 0)));
+        try testing.expect(!entry.read(try nodeAt(&fixture, 0)));
     }
     inline for (flag_cases, 0..) |entry, index| {
         var source = Node.init(gpa, .button);
@@ -534,7 +537,7 @@ test "each flag read answers the bit it names and not a neighbour's" {
         try fixture.add(index + 1, null, &source);
     }
     inline for (flag_cases, 0..) |entry, index| {
-        const node = nodeAt(&fixture, index + 1);
+        const node = try nodeAt(&fixture, index + 1);
         inline for (flag_cases) |other| {
             try testing.expectEqual(other.read == entry.read, other.read(node));
         }
@@ -550,7 +553,7 @@ test "the string and enum reads answer the stored value and null when unset" {
     defer bare.deinit();
     try fixture.add(1, null, &bare);
 
-    const without_values = nodeAt(&fixture, 1);
+    const without_values = try nodeAt(&fixture, 1);
     try testing.expect(!hasRoleDescription(without_values));
     try testing.expect(!hasBrailleLabel(without_values));
     try testing.expect(!hasBrailleRoleDescription(without_values));
@@ -575,7 +578,7 @@ test "the string and enum reads answer the stored value and null when unset" {
     try enums.setSelected(store, false);
     try fixture.add(2, null, &source);
 
-    const with_values = nodeAt(&fixture, 2);
+    const with_values = try nodeAt(&fixture, 2);
     try testing.expect(hasRoleDescription(with_values));
     try testing.expect(hasBrailleLabel(with_values));
     try testing.expect(hasBrailleRoleDescription(with_values));
@@ -605,8 +608,8 @@ test "isGraft answers true only for a node carrying a tree id" {
     try fixture.add(1, null, &plain);
     try fixture.add(2, null, &graft);
 
-    try testing.expect(!isGraft(nodeAt(&fixture, 1)));
-    try testing.expect(isGraft(nodeAt(&fixture, 2)));
+    try testing.expect(!isGraft(try nodeAt(&fixture, 1)));
+    try testing.expect(isGraft(try nodeAt(&fixture, 2)));
 }
 
 test "locate reports the local id and the tree id behind the handle" {
@@ -620,10 +623,10 @@ test "locate reports the local id and the tree id behind the handle" {
 
     // Upstream unwraps at `node.rs:402`. With no tree index recorded the unwrap
     // would fire, so this is the case that became a value.
-    try testing.expect(locate(nodeAt(&fixture, 7)) == null);
+    try testing.expect(locate(try nodeAt(&fixture, 7)) == null);
 
     try fixture.state.tree_index_map.index_to_id.put(gpa, .init(0), schema.tree_id_root);
-    const found = locate(nodeAt(&fixture, 7)).?;
+    const found = locate(try nodeAt(&fixture, 7)) orelse return error.NoTreeIndex;
     try testing.expect(found.local_id.eql(schema.nodeIdFromContent(7)));
     try testing.expect(found.tree_id.eql(schema.tree_id_root));
 }
@@ -644,8 +647,8 @@ test "the value walk finds a level only the grandparent states" {
     try fixture.add(3, 2, &plain);
 
     // A raw read asks one node, so it does not see the grandparent.
-    try testing.expectEqual(@as(?usize, null), level(nodeAt(&fixture, 2)));
-    try testing.expectEqual(@as(?usize, null), level(nodeAt(&fixture, 3)));
+    try testing.expectEqual(@as(?usize, null), level(try nodeAt(&fixture, 2)));
+    try testing.expectEqual(@as(?usize, null), level(try nodeAt(&fixture, 3)));
     try testing.expectEqual(@as(?usize, 3), try inheritedLevel(&fixture, 3));
 }
 
@@ -682,9 +685,9 @@ test "the flag walk finds the grandparent's hidden bit" {
 
     // The raw bits on the child and the parent are still clear, so the walk and
     // the bit read cannot be the same call.
-    try testing.expect(!rawIsHidden(nodeAt(&fixture, 3)));
-    try testing.expect(!rawIsHidden(nodeAt(&fixture, 2)));
-    try testing.expect(try isHidden(nodeAt(&fixture, 3)));
+    try testing.expect(!rawIsHidden(try nodeAt(&fixture, 3)));
+    try testing.expect(!rawIsHidden(try nodeAt(&fixture, 2)));
+    try testing.expect(try isHidden(try nodeAt(&fixture, 3)));
 }
 
 test "the flag walk answers false when no ancestor sets the bit" {
@@ -699,8 +702,8 @@ test "the flag walk answers false when no ancestor sets the bit" {
     try fixture.add(2, 1, &plain);
     try fixture.add(3, 2, &plain);
 
-    try testing.expect(!try isHidden(nodeAt(&fixture, 3)));
-    try testing.expect(!try fetchInheritedFlag(nodeAt(&fixture, 3), neverSet));
+    try testing.expect(!try isHidden(try nodeAt(&fixture, 3)));
+    try testing.expect(!try fetchInheritedFlag(try nodeAt(&fixture, 3), neverSet));
 }
 
 test "the walk stops before the bound on an acyclic chain" {
@@ -743,8 +746,9 @@ test "the walk reports error.TreeCycle when the parent chain repeats a node" {
 
     try testing.expectEqual(@as(usize, 3), treeWalkStepBound(fixture.state.nodes.count()));
     try testing.expectError(error.TreeCycle, inheritedLevel(&fixture, 1));
-    try testing.expectError(error.TreeCycle, fetchInheritedFlag(nodeAt(&fixture, 1), neverSet));
-    try testing.expectError(error.TreeCycle, isHidden(nodeAt(&fixture, 1)));
+    const cycle_node = try nodeAt(&fixture, 1);
+    try testing.expectError(error.TreeCycle, fetchInheritedFlag(cycle_node, neverSet));
+    try testing.expectError(error.TreeCycle, isHidden(cycle_node));
 }
 
 test "the walk reports error.NoSuchNode when a parent id names no node" {
@@ -760,8 +764,9 @@ test "the walk reports error.NoSuchNode when a parent id names no node" {
     try fixture.add(1, 99, &plain);
 
     try testing.expectError(error.NoSuchNode, inheritedLevel(&fixture, 1));
-    try testing.expectError(error.NoSuchNode, fetchInheritedFlag(nodeAt(&fixture, 1), neverSet));
-    try testing.expectError(error.NoSuchNode, isHidden(nodeAt(&fixture, 1)));
+    const absent_parent = try nodeAt(&fixture, 1);
+    try testing.expectError(error.NoSuchNode, fetchInheritedFlag(absent_parent, neverSet));
+    try testing.expectError(error.NoSuchNode, isHidden(absent_parent));
 }
 
 // -- The range, and the four moves --

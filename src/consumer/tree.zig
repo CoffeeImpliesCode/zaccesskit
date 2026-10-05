@@ -788,10 +788,8 @@ test "init seeds the working state as a second owner, not a second handle" {
     // below into both, and a release of one would free what the other reads.
     try testing.expectEqual(schema.Role.group, tree.state.nodes.get(id).?.data.role);
     try testing.expectEqual(schema.Role.group, tree.next_state.nodes.get(id).?.data.role);
-    try schema.strings.setLabel(
-        &tree.state.nodes.getPtr(id).?.data.properties,
-        "committed only",
-    );
+    const entry = tree.state.nodes.getPtr(id) orelse return error.NodeMissingFromState;
+    try schema.strings.setLabel(&entry.data.properties, "committed only");
     try testing.expectEqualStrings(
         "committed only",
         schema.strings.label(&tree.state.nodes.get(id).?.data.properties).?,

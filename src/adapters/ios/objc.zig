@@ -416,7 +416,7 @@ pub const Platform = struct {
     /// The bindings, which a caller passes as the first argument of every entry
     /// point below. The field is here so a caller holds the pair together; it is
     /// not read by the entry points, which take it as a parameter.
-    context: ?*anyopaque,
+    context: ?*anyopaque = null,
 
     /// The three tags above.
     notification_tags: NotificationTags,
@@ -1771,17 +1771,24 @@ pub fn platform(
     };
 
     installed = resolved;
-    return platformValue(resolved);
+    var table = platformValue(resolved);
+    // The bindings escape this call through `context`, and the store is here
+    // rather than inside `platformValue` so the escape is visible at the site
+    // that allocates. `platformValue` answers a `null` context with a `null`
+    // field, and this call always has bindings, so the two agree.
+    table.context = resolved;
+    return table;
 }
 
 /// The `Platform` value over `resolved`.
 ///
 /// Every entry point takes `resolved` as its first parameter, so the value holds
-/// the same pointer twice: once in `context` and once inside each call.
+/// the same pointer twice: once in `context` and once inside each call. This
+/// function fills everything except `context`, which `platform` stores, because
+/// the allocation that owns the pointer and the field that publishes it belong
+/// to the same statement.
 fn platformValue(resolved: ?*Bindings) Platform {
-    const context: ?*anyopaque = if (resolved) |value| value else null;
     return .{
-        .context = context,
         .notification_tags = .{
             .screen_changed = if (resolved) |value| value.screen_changed else 0,
             .layout_changed = if (resolved) |value| value.layout_changed else 0,

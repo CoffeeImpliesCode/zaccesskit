@@ -529,11 +529,13 @@ fn putNode(
 }
 
 fn setChildren(state: *TreeState, id: FullNodeId, children: []const NodeId) !void {
-    try schema.ids_props.setChildren(&state.nodes.getPtr(id).?.data.properties, children);
+    const entry = state.nodes.getPtr(id) orelse return error.NodeMissingFromState;
+    try schema.ids_props.setChildren(&entry.data.properties, children);
 }
 
 fn setTreeIdOn(state: *TreeState, id: FullNodeId, subtree: TreeId) !void {
-    try schema.option.setTreeId(&state.nodes.getPtr(id).?.data.properties, subtree);
+    const entry = state.nodes.getPtr(id) orelse return error.NodeMissingFromState;
+    try schema.option.setTreeId(&entry.data.properties, subtree);
 }
 
 fn subtreeOne() TreeId {
@@ -592,10 +594,10 @@ fn graftedTree(gpa: std.mem.Allocator) !TreeState {
     try setChildren(&state, graft, &.{.{ .value = 10 }});
     try setTreeIdOn(&state, graft, subtreeOne());
     try setChildren(&state, root, &.{.{ .value = 11 }});
-    state.nodes.getPtr(root).?.parent_and_index =
-        .{ .parent_id = graft, .index = 0 };
-    state.nodes.getPtr(child).?.parent_and_index =
-        .{ .parent_id = root, .index = 0 };
+    const root_slot = state.nodes.getPtr(root) orelse return error.NodeMissingFromState;
+    const child_slot = state.nodes.getPtr(child) orelse return error.NodeMissingFromState;
+    root_slot.parent_and_index = .{ .parent_id = graft, .index = 0 };
+    child_slot.parent_and_index = .{ .parent_id = root, .index = 0 };
 
     try state.graft_parents.put(gpa, subtreeOne(), graft);
     try state.subtrees.put(gpa, subtreeOne(), .{ .root = root, .focus = root });
@@ -618,7 +620,8 @@ test "a graft chain the pass installs hangs the subtree root under its graft nod
     try scratch.resolve(&state, &changes);
 
     try testing.expectEqual(graft, state.graft_parents.get(subtreeOne()).?);
-    const parent = state.nodes.get(root).?.parent_and_index.?;
+    const entry = state.nodes.get(root) orelse return error.NodeMissingFromState;
+    const parent = entry.parent_and_index orelse return error.NoParent;
     try testing.expectEqual(graft, parent.parent_id);
     try testing.expectEqual(@as(usize, 0), parent.index);
     // The rewrite is reported as an update unless this same update added the
@@ -664,8 +667,9 @@ test "a retired graft takes its whole subtree and leaves the graft node alone" {
     const gpa = testing.allocator;
     var state = try graftedTree(gpa);
     defer state.deinit(gpa);
-    const graft = state.graft_parents.get(subtreeOne()).?;
-    const root = state.subtrees.get(subtreeOne()).?.root;
+    const graft = state.graft_parents.get(subtreeOne()) orelse return error.NoGraftParent;
+    const subtree = state.subtrees.get(subtreeOne()) orelse return error.NoSuchSubtree;
+    const root = subtree.root;
     const child = FullNodeId.init(.{ .value = 11 }, TreeIndex.init(1));
 
     var scratch = GraftScratch.init(gpa, tree_id_root, state.root_id);
@@ -690,8 +694,9 @@ test "the cursor re-reads the queue, so a nested subtree goes with its parent" {
     const gpa = testing.allocator;
     var state = try graftedTree(gpa);
     defer state.deinit(gpa);
-    const outer = state.graft_parents.get(subtreeOne()).?;
-    const subtree_root = state.subtrees.get(subtreeOne()).?.root;
+    const outer = state.graft_parents.get(subtreeOne()) orelse return error.NoGraftParent;
+    const subtree = state.subtrees.get(subtreeOne()) orelse return error.NoSuchSubtree;
+    const subtree_root = subtree.root;
     // The second graft sits inside the first subtree, which is the only place a
     // removal walk can meet it: the walk visits one tree index at a time.
     const nested_graft = FullNodeId.init(.{ .value = 12 }, TreeIndex.init(1));
@@ -772,7 +777,8 @@ test "a graft that runs out of memory leaves the tree exactly as it was" {
     // A graft does two things at once: it deletes a retired subtree and it
     // installs a graft parent, so a failure in any step of either has to leave
     // the whole tree alone.
-    const retired_root = before.subtrees.get(subtreeOne()).?.root;
+    const retired_subtree = before.subtrees.get(subtreeOne()) orelse return error.NoSuchSubtree;
+    const retired_root = retired_subtree.root;
     const arriving_graft = FullNodeId.init(.{ .value = 30 }, TreeIndex.init(0));
     const arriving_root = FullNodeId.init(.{ .value = 31 }, TreeIndex.init(1));
     _ = try putNode(gpa, &before, 30, 0, .generic_container);

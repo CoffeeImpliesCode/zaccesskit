@@ -665,7 +665,7 @@ comptime {
     if (@typeInfo(State).@"enum".tag_type != u6) @compileError("State must tag as u6");
     // No two members may share a value, because each value is a bit position.
     for (std.enums.values(State)) |value| {
-        const bit = @as(u7, @intFromEnum(value));
+        const bit: u7 = @intFromEnum(value);
         if (bit > 63) @compileError("a State value does not fit a u64 mask");
     }
 }

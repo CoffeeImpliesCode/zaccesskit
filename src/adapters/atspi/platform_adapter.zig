@@ -164,6 +164,16 @@ pub const PlatformAdapter = struct {
     /// Releases the tree and the events, exactly once. A second call releases
     /// nothing, because the reset leaves empty containers behind.
     ///
+    /// **The reset is `init`, not `undefined`, and Z030 asks for `undefined`.**
+    /// The rule's shape is right for a value nothing may touch again, and wrong
+    /// here: this function promises a second call releases nothing, and
+    /// `undefined` breaks that promise rather than the rule. The test `releasing
+    /// twice releases nothing the second time` is what holds the promise, and it
+    /// fails with a `SIGABRT` inside `Tree.deinit` under `undefined`, because
+    /// the second call reads `self.tree` and `self.gpa` out of undefined
+    /// memory. A reset that is a valid empty adapter is what makes the second
+    /// call a no-op.
+    ///
     /// **Errors.** This function does not fail.
     pub fn deinit(self: *PlatformAdapter) void {
         if (self.tree) |*tree| tree.deinit();

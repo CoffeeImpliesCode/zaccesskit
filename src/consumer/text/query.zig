@@ -441,8 +441,9 @@ fn insert(
     });
 }
 
-fn handle(state: *const TreeState, value: u64) NodeRef {
-    return NodeRef.init(state, FullNodeId.init(.{ .value = value }, .init(0))).?;
+fn handle(state: *const TreeState, value: u64) !NodeRef {
+    return NodeRef.init(state, FullNodeId.init(.{ .value = value }, .init(0))) orelse
+        error.NodeMissingFromFixture;
 }
 
 /// The map entry for `value`, which is where a fixture must write.
@@ -454,8 +455,9 @@ fn handle(state: *const TreeState, value: u64) NodeRef {
 /// write, which is why the trap is worth naming here and not only in each
 /// fixture. `NodeRef.data` cannot cause it, because it already answers
 /// `*const Node`.
-fn entry(state: *TreeState, value: u64) *tree_state.NodeState {
-    return state.nodes.getPtr(FullNodeId.init(.{ .value = value }, .init(0))).?;
+fn entry(state: *TreeState, value: u64) !*tree_state.NodeState {
+    return state.nodes.getPtr(FullNodeId.init(.{ .value = value }, .init(0))) orelse
+        error.NodeMissingFromFixture;
 }
 
 /// A text run whose `value` is `value` and whose `character_lengths` are all
@@ -495,15 +497,15 @@ test "supportsTextRanges needs an allowed role and at least one run" {
     const gpa = testing.allocator;
     try documentOver(gpa, &state, &.{"hello"});
 
-    try testing.expect(try supportsTextRanges(handle(&state, 0)));
+    try testing.expect(try supportsTextRanges(try handle(&state, 0)));
     // A plain label with no runs is not a text node, which is the second half of
     // the condition at `text.rs:1405`.
     var empty_label = schema.Node.init(gpa, .label);
     errdefer empty_label.deinit();
     try insert(gpa, &state, 9, 0, empty_label);
-    try testing.expect(!(try supportsTextRanges(handle(&state, 9))));
+    try testing.expect(!(try supportsTextRanges(try handle(&state, 9))));
     // The run itself is not a text input either.
-    try testing.expect(!(try supportsTextRanges(handle(&state, 1))));
+    try testing.expect(!(try supportsTextRanges(try handle(&state, 1))));
 }
 
 test "a label with a run supports text ranges" {
@@ -516,7 +518,7 @@ test "a label with a run supports text ranges" {
     try insert(gpa, &state, 0, null, label);
     try insert(gpa, &state, 1, 0, try textRun(gpa, "hi"));
 
-    try testing.expect(try supportsTextRanges(handle(&state, 0)));
+    try testing.expect(try supportsTextRanges(try handle(&state, 0)));
 }
 
 test "the document range spans every run in order" {
@@ -525,10 +527,10 @@ test "the document range spans every run in order" {
     const gpa = testing.allocator;
     try documentOver(gpa, &state, &.{ "hello", "world" });
 
-    const whole = try documentRange(gpa, handle(&state, 0));
-    try testing.expect(sameNode(whole.start.node, handle(&state, 1)));
+    const whole = try documentRange(gpa, try handle(&state, 0));
+    try testing.expect(sameNode(whole.start.node, try handle(&state, 1)));
     try testing.expectEqual(@as(usize, 0), whole.start.character_index);
-    try testing.expect(sameNode(whole.end.node, handle(&state, 2)));
+    try testing.expect(sameNode(whole.end.node, try handle(&state, 2)));
     try testing.expectEqual(@as(usize, 5), whole.end.character_index);
 }
 
@@ -538,15 +540,16 @@ test "a stored selection reads back as a range and as two positions" {
     const gpa = testing.allocator;
     try documentOver(gpa, &state, &.{ "hello", "world" });
 
-    const document_entry = entry(&state, 0);
+    const document_entry = try entry(&state, 0);
     try schema.option.setTextSelection(&document_entry.data.properties, .{
         .anchor = .{ .node_id = .{ .value = 1 }, .character_index = 1 },
         .focus = .{ .node_id = .{ .value = 2 }, .character_index = 3 },
     });
 
-    const node_ref = handle(&state, 0);
+    const node_ref = try handle(&state, 0);
     try testing.expect(hasTextSelection(node_ref));
-    const selected = (try textSelection(gpa, node_ref)).?;
+    const selected = (try textSelection(gpa, node_ref)) orelse
+        return error.NoSelection;
     try testing.expectEqual(@as(usize, 1), selected.start.character_index);
     try testing.expectEqual(@as(usize, 3), selected.end.character_index);
     try testing.expectEqual(@as(usize, 1), textSelectionAnchor(node_ref).?.inner.character_index);
@@ -559,13 +562,13 @@ test "a selection naming a run that is gone answers null instead of unwrapping" 
     const gpa = testing.allocator;
     try documentOver(gpa, &state, &.{"hello"});
 
-    const document_entry = entry(&state, 0);
+    const document_entry = try entry(&state, 0);
     try schema.option.setTextSelection(&document_entry.data.properties, .{
         .anchor = .{ .node_id = .{ .value = 7 }, .character_index = 0 },
         .focus = .{ .node_id = .{ .value = 7 }, .character_index = 0 },
     });
 
-    const node_ref = handle(&state, 0);
+    const node_ref = try handle(&state, 0);
     // Upstream unwraps both upgrades at `text.rs:1452` and `:1454`. A stale
     // selection is reachable from an ordinary update, so the port answers null.
     try testing.expectEqual(@as(?range.Range, null), try textSelection(gpa, node_ref));
@@ -578,19 +581,22 @@ test "a scalar index addresses the run that holds it" {
     defer state.deinit(testing.allocator);
     const gpa = testing.allocator;
     try documentOver(gpa, &state, &.{ "hello", "world" });
-    const node_ref = handle(&state, 0);
+    const node_ref = try handle(&state, 0);
 
-    const at_zero = (try textPositionFromGlobalUsvIndex(node_ref, 0)).?;
-    try testing.expect(sameNode(at_zero.inner.node, handle(&state, 1)));
+    const at_zero = (try textPositionFromGlobalUsvIndex(node_ref, 0)) orelse
+        return error.NoPosition;
+    try testing.expect(sameNode(at_zero.inner.node, try handle(&state, 1)));
     try testing.expectEqual(@as(usize, 0), at_zero.inner.character_index);
 
     // Index 5 is the leading edge of the second run, so it belongs there and not
     // at the end of the first.
-    const at_five = (try textPositionFromGlobalUsvIndex(node_ref, 5)).?;
-    try testing.expect(sameNode(at_five.inner.node, handle(&state, 2)));
+    const at_five = (try textPositionFromGlobalUsvIndex(node_ref, 5)) orelse
+        return error.NoPosition;
+    try testing.expect(sameNode(at_five.inner.node, try handle(&state, 2)));
     try testing.expectEqual(@as(usize, 0), at_five.inner.character_index);
 
-    const at_seven = (try textPositionFromGlobalUsvIndex(node_ref, 7)).?;
+    const at_seven = (try textPositionFromGlobalUsvIndex(node_ref, 7)) orelse
+        return error.NoPosition;
     try testing.expectEqual(@as(usize, 2), at_seven.inner.character_index);
 }
 
@@ -599,10 +605,11 @@ test "a scalar index equal to the document length answers the document end" {
     defer state.deinit(testing.allocator);
     const gpa = testing.allocator;
     try documentOver(gpa, &state, &.{ "hello", "world" });
-    const node_ref = handle(&state, 0);
+    const node_ref = try handle(&state, 0);
 
-    const at_end = (try textPositionFromGlobalUsvIndex(node_ref, 10)).?;
-    try testing.expect(sameNode(at_end.inner.node, handle(&state, 2)));
+    const at_end = (try textPositionFromGlobalUsvIndex(node_ref, 10)) orelse
+        return error.NoPosition;
+    try testing.expect(sameNode(at_end.inner.node, try handle(&state, 2)));
     try testing.expectEqual(@as(usize, 5), at_end.inner.character_index);
 
     try testing.expectEqual(@as(?Position, null), try textPositionFromGlobalUsvIndex(node_ref, 11));
@@ -624,11 +631,12 @@ test "a scalar index past the run lengths is refused rather than unwrapped" {
     try schema.vectors.setCharacterLengths(&run_node.properties, &.{ 1, 1 });
     try insert(gpa, &state, 1, 0, run_node);
 
-    const second = (try textPositionFromGlobalUsvIndex(handle(&state, 0), 1)).?;
+    const second = (try textPositionFromGlobalUsvIndex(try handle(&state, 0), 1)) orelse
+        return error.NoPosition;
     try testing.expectEqual(@as(usize, 1), second.inner.character_index);
     try testing.expectError(
         error.IndexOutOfRange,
-        textPositionFromGlobalUsvIndex(handle(&state, 0), 2),
+        textPositionFromGlobalUsvIndex(try handle(&state, 0), 2),
     );
 }
 
@@ -647,18 +655,22 @@ test "a UTF-16 index counts a supplementary code point as two units" {
     try schema.strings.setValue(&run_node.properties, "a\xF0\x9F\x98\x80");
     try schema.vectors.setCharacterLengths(&run_node.properties, &.{ 1, 4 });
     try insert(gpa, &state, 1, 0, run_node);
-    const node_ref = handle(&state, 0);
+    const node_ref = try handle(&state, 0);
 
-    const scalar_second = (try textPositionFromGlobalUsvIndex(node_ref, 1)).?;
+    const scalar_second = (try textPositionFromGlobalUsvIndex(node_ref, 1)) orelse
+        return error.NoPosition;
     try testing.expectEqual(@as(usize, 1), scalar_second.inner.character_index);
-    const utf16_second = (try textPositionFromGlobalUtf16Index(node_ref, 1)).?;
+    const utf16_second = (try textPositionFromGlobalUtf16Index(node_ref, 1)) orelse
+        return error.NoPosition;
     try testing.expectEqual(@as(usize, 1), utf16_second.inner.character_index);
     // Unit 2 is inside the supplementary code point, which the two counts do
     // not share, so the UTF-16 scan still answers character 1.
-    const utf16_third = (try textPositionFromGlobalUtf16Index(node_ref, 2)).?;
+    const utf16_third = (try textPositionFromGlobalUtf16Index(node_ref, 2)) orelse
+        return error.NoPosition;
     try testing.expectEqual(@as(usize, 1), utf16_third.inner.character_index);
     // Unit 3 is past the end of the run, so it is the document end.
-    const utf16_end = (try textPositionFromGlobalUtf16Index(node_ref, 3)).?;
+    const utf16_end = (try textPositionFromGlobalUtf16Index(node_ref, 3)) orelse
+        return error.NoPosition;
     try testing.expectEqual(@as(usize, 2), utf16_end.inner.character_index);
 }
 
@@ -667,7 +679,7 @@ test "a UTF-16 index past the document length answers null" {
     defer state.deinit(testing.allocator);
     const gpa = testing.allocator;
     try documentOver(gpa, &state, &.{"hello"});
-    const node_ref = handle(&state, 0);
+    const node_ref = try handle(&state, 0);
 
     try testing.expectEqual(
         @as(?Position, null),
@@ -691,7 +703,7 @@ test "a UTF-16 index past the run lengths is refused rather than unwrapped" {
 
     try testing.expectError(
         error.IndexOutOfRange,
-        textPositionFromGlobalUtf16Index(handle(&state, 0), 2),
+        textPositionFromGlobalUtf16Index(try handle(&state, 0), 2),
     );
 }
 
@@ -703,14 +715,14 @@ test "a weak range whose node and endpoints survive upgrades" {
 
     var weak = try range.downgrade(gpa, try range.init(
         gpa,
-        handle(&state, 0),
-        .{ .node = handle(&state, 1), .character_index = 1 },
-        .{ .node = handle(&state, 2), .character_index = 3 },
+        try handle(&state, 0),
+        .{ .node = try handle(&state, 1), .character_index = 1 },
+        .{ .node = try handle(&state, 2), .character_index = 3 },
     ));
     defer weak.deinit();
 
-    const upgraded = (try upgrade(weak, &state)).?;
-    try testing.expect(sameNode(upgraded.node, handle(&state, 0)));
+    const upgraded = (try upgrade(weak, &state)) orelse return error.NoUpgradedRange;
+    try testing.expect(sameNode(upgraded.node, try handle(&state, 0)));
     try testing.expectEqual(@as(usize, 1), upgraded.start.character_index);
     try testing.expectEqual(@as(usize, 3), upgraded.end.character_index);
     try testing.expect((try upgradeNode(weak, &state)) != null);
@@ -724,15 +736,15 @@ test "a weak range over a node that no longer supports text upgrades to null" {
 
     var weak = try range.downgrade(gpa, try range.init(
         gpa,
-        handle(&state, 0),
-        .{ .node = handle(&state, 1), .character_index = 1 },
-        .{ .node = handle(&state, 1), .character_index = 3 },
+        try handle(&state, 0),
+        .{ .node = try handle(&state, 1), .character_index = 1 },
+        .{ .node = try handle(&state, 1), .character_index = 3 },
     ));
     defer weak.deinit();
 
     // The role stops allowing text, so the filter at `text.rs:922` drops the
     // node and neither upgrade answers.
-    entry(&state, 0).data.setRole(.button);
+    (try entry(&state, 0)).data.setRole(.button);
     try testing.expectEqual(@as(?NodeRef, null), try upgradeNode(weak, &state));
     try testing.expectEqual(@as(?range.Range, null), try upgrade(weak, &state));
 }
@@ -743,13 +755,13 @@ test "a point on the far edge of a run selects the position past its last charac
     const gpa = testing.allocator;
     try documentOver(gpa, &state, &.{"abcd"});
 
-    const run_entry = entry(&state, 1);
+    const run_entry = try entry(&state, 1);
     try schema.option.setBounds(&run_entry.data.properties, schema.rectInit(0, 0, 40, 20));
     try schema.vectors.setCharacterPositions(&run_entry.data.properties, &.{ 0, 10, 20, 30 });
     try schema.vectors.setCharacterWidths(&run_entry.data.properties, &.{ 10, 10, 10, 10 });
     try schema.enums.setTextDirection(&run_entry.data.properties, .left_to_right);
 
-    const node_ref = handle(&state, 0);
+    const node_ref = try handle(&state, 0);
     // x = 20 sits exactly on the edge character 1 ends at and character 2
     // begins at, and x = 40 is the run's own far edge.
     const on_edge = try textPositionAtPoint(gpa, node_ref, schema.pointInit(20, 10));
@@ -770,16 +782,16 @@ test "a property write through the map entry lands in the node the map holds" {
     // storage the map still names, and `deinit` would abort in
     // `schema/props/table.zig` on a corrupt value rather than fail an
     // assertion here.
-    entry(&state, 0).data.setRole(.document);
-    try schema.strings.setLabel(&entry(&state, 0).data.properties, "Greeting");
-    try schema.option.setTextSelection(&entry(&state, 0).data.properties, .{
+    (try entry(&state, 0)).data.setRole(.document);
+    try schema.strings.setLabel(&(try entry(&state, 0)).data.properties, "Greeting");
+    try schema.option.setTextSelection(&(try entry(&state, 0)).data.properties, .{
         .anchor = .{ .node_id = .{ .value = 1 }, .character_index = 0 },
         .focus = .{ .node_id = .{ .value = 2 }, .character_index = 5 },
     });
 
     // The writes are visible through the map's own storage, which is what
     // proves they landed in the node rather than on a detached copy.
-    const document_node = handle(&state, 0);
+    const document_node = try handle(&state, 0);
     try testing.expectEqual(schema.Role.document, document_node.data().role);
     try testing.expectEqualStrings(
         "Greeting",
@@ -793,14 +805,15 @@ test "a line range covers the only line and a line past it is absent" {
     defer state.deinit(testing.allocator);
     const gpa = testing.allocator;
     try documentOver(gpa, &state, &.{"hello"});
-    const node_ref = handle(&state, 0);
+    const node_ref = try handle(&state, 0);
 
     // "hello" has no hard line break, so the document is one line and line 0 is
     // the whole document.
-    const first = (try lineRangeFromIndex(gpa, node_ref, 0)).?;
-    try testing.expect(sameNode(first.start.node, handle(&state, 1)));
+    const first = (try lineRangeFromIndex(gpa, node_ref, 0)) orelse
+        return error.NoLineRange;
+    try testing.expect(sameNode(first.start.node, try handle(&state, 1)));
     try testing.expectEqual(@as(usize, 0), first.start.character_index);
-    try testing.expect(sameNode(first.end.node, handle(&state, 1)));
+    try testing.expect(sameNode(first.end.node, try handle(&state, 1)));
     try testing.expectEqual(@as(usize, 5), first.end.character_index);
     // Line 1 does not exist, so the answer is null rather than a clamped range.
     try testing.expectEqual(@as(?range.Range, null), try lineRangeFromIndex(gpa, node_ref, 1));

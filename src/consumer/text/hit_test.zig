@@ -143,7 +143,8 @@ fn insert(
     const id = FullNodeId.init(.{ .value = value }, .init(0));
     const parent_and_index: ?ParentAndIndex = if (parent) |parent_value| blk: {
         const parent_id = FullNodeId.init(.{ .value = parent_value }, .init(0));
-        const parent_ref = NodeRef.init(state, parent_id).?;
+        const parent_ref = NodeRef.init(state, parent_id) orelse
+            return error.NodeMissingFromFixture;
         const listed = schema.ids_props.children(&parent_ref.data().properties);
         var found: usize = 0;
         for (listed, 0..) |child, position| {
@@ -157,8 +158,9 @@ fn insert(
     try state.nodes.put(gpa, id, .{ .parent_and_index = parent_and_index, .data = node });
 }
 
-fn handle(state: *const tree_state.TreeState, value: u64) NodeRef {
-    return NodeRef.init(state, FullNodeId.init(.{ .value = value }, .init(0))).?;
+fn handle(state: *const tree_state.TreeState, value: u64) !NodeRef {
+    return NodeRef.init(state, FullNodeId.init(.{ .value = value }, .init(0))) orelse
+        error.NodeMissingFromFixture;
 }
 
 /// A run of four single-byte characters, 10 units apart and 40 units wide.
@@ -183,11 +185,11 @@ test "textRunFilter includes a text run and excludes every other role" {
 
     try testing.expectEqual(
         FilterResult.include,
-        try text_run_filter.call(handle(&state, 1)),
+        try text_run_filter.call(try handle(&state, 1)),
     );
     try testing.expectEqual(
         FilterResult.exclude_node,
-        try text_run_filter.call(handle(&state, 2)),
+        try text_run_filter.call(try handle(&state, 2)),
     );
 }
 
@@ -203,10 +205,10 @@ test "textNodeFilter adds the root that the stateless filter excludes" {
     // stateless filter loses nothing for the iterators.
     const root_id = FullNodeId.init(.{ .value = 2 }, .init(0));
     const with_root: FilterFn = .{ .context = @constCast(&root_id), .filter = textNodeFilter };
-    try testing.expectEqual(FilterResult.include, try with_root.call(handle(&state, 2)));
+    try testing.expectEqual(FilterResult.include, try with_root.call(try handle(&state, 2)));
     // The run is not the root, so the run clause alone includes it and the root
     // clause adds nothing for this node.
-    try testing.expectEqual(FilterResult.include, try with_root.call(handle(&state, 1)));
+    try testing.expectEqual(FilterResult.include, try with_root.call(try handle(&state, 1)));
 }
 
 test "a point on the shared edge of two characters names the one that starts there" {
@@ -214,7 +216,7 @@ test "a point on the shared edge of two characters names the one that starts the
     defer state.deinit(testing.allocator);
     const gpa = testing.allocator;
     try insert(gpa, &state, 1, null, try fourCharRun(gpa));
-    const run_node = handle(&state, 1);
+    const run_node = try handle(&state, 1);
 
     // x = 9 is inside character 0, and x = 10 sits exactly on the edge the
     // first character ends at and the second begins at. A closed far edge would
@@ -242,7 +244,7 @@ test "a point on the far edge of the last character is the character count" {
     defer state.deinit(testing.allocator);
     const gpa = testing.allocator;
     try insert(gpa, &state, 1, null, try fourCharRun(gpa));
-    const run_node = handle(&state, 1);
+    const run_node = try handle(&state, 1);
 
     try testing.expectEqual(
         @as(?usize, 3),
@@ -264,7 +266,7 @@ test "a right-to-left run measures the point from the right edge" {
     errdefer run_node.deinit();
     try schema.enums.setTextDirection(&run_node.properties, .right_to_left);
     try insert(gpa, &state, 1, null, run_node);
-    const node_ref = handle(&state, 1);
+    const node_ref = try handle(&state, 1);
 
     // Measured from the right edge, x = 31 is 9 units in and so is inside the
     // first character, and x = 30 is exactly 10 units in, on the edge.
@@ -291,7 +293,7 @@ test "a run with no bounds reports no character index instead of unwrapping" {
 
     try testing.expectEqual(
         @as(?usize, null),
-        try characterIndexAtPoint(handle(&state, 1), schema.pointInit(1, 1)),
+        try characterIndexAtPoint(try handle(&state, 1), schema.pointInit(1, 1)),
     );
 }
 
@@ -311,7 +313,7 @@ test "a run with no text direction reports character zero" {
     // at `text.rs:957-961` and the port returns the same value.
     try testing.expectEqual(
         @as(?usize, 0),
-        try characterIndexAtPoint(handle(&state, 1), schema.pointInit(25, 10)),
+        try characterIndexAtPoint(try handle(&state, 1), schema.pointInit(25, 10)),
     );
 }
 
@@ -336,6 +338,6 @@ test "a direction on the parent reaches the run that declares none" {
     // document one step up and the run is measured from its right edge.
     try testing.expectEqual(
         @as(?usize, 0),
-        try characterIndexAtPoint(handle(&state, 1), schema.pointInit(31, 10)),
+        try characterIndexAtPoint(try handle(&state, 1), schema.pointInit(31, 10)),
     );
 }

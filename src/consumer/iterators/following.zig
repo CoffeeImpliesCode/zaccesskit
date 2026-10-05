@@ -446,20 +446,24 @@ const Fixture = struct {
         const list = try self.gpa.alloc(NodeId, locals.len);
         defer self.gpa.free(list);
         for (locals, list) |local, *slot| slot.* = .{ .value = local };
-        try schema.ids_props.setChildren(&self.state.nodes.getPtr(id).?.data.properties, list);
+        const entry = try self.slotOf(id);
+        try schema.ids_props.setChildren(&entry.data.properties, list);
     }
 
     /// Appends one local id to the node's `children` property, growing the
     /// list the store already holds.
     fn pushChild(self: *Fixture, id: FullNodeId, local: u64) !void {
-        try schema.ids_props.pushChild(
-            &self.state.nodes.getPtr(id).?.data.properties,
-            .{ .value = local },
-        );
+        const entry = try self.slotOf(id);
+        try schema.ids_props.pushChild(&entry.data.properties, .{ .value = local });
     }
 
     fn ref(self: *Fixture, id: FullNodeId) !NodeRef {
         return NodeRef.init(&self.state, id) orelse error.NodeMissingFromState;
+    }
+
+    /// The state entry for `id`, so a test can write the node the state owns.
+    fn slotOf(self: *Fixture, id: FullNodeId) !*tree_state.NodeState {
+        return self.state.nodes.getPtr(id) orelse error.NodeMissingFromState;
     }
 };
 
@@ -597,10 +601,8 @@ test "a graft parent yields no following sibling even with a child of its own" {
     _ = try fixture.add(2, graft, 0, .button);
     try fixture.setChildren(root, &.{1});
     try fixture.setChildren(graft, &.{2});
-    try schema.option.setTreeId(
-        &fixture.state.nodes.getPtr(graft).?.data.properties,
-        schema.treeIdFromBytes(.{7} ** 16),
-    );
+    const entry = try fixture.slotOf(graft);
+    try schema.option.setTreeId(&entry.data.properties, schema.treeIdFromBytes(.{7} ** 16));
 
     // A graft node has one child and no siblings, so upstream `iterators.rs:92-94`
     // yields nothing. A cursor that read the `children` property first would
@@ -732,7 +734,8 @@ test "an abandoned filtered iteration writes nothing and a later read sees the w
     try testing.expectEqualSlices(u64, &.{ 2, 3 }, after.items);
 
     // The abandoned iteration left the tree itself intact.
-    const listed = schema.ids_props.children(&fixture.state.nodes.getPtr(root).?.data.properties);
+    const entry = try fixture.slotOf(root);
+    const listed = schema.ids_props.children(&entry.data.properties);
     try testing.expectEqual(@as(usize, 3), listed.len);
     try testing.expectEqual(@as(u64, 3), listed[2].value);
 }

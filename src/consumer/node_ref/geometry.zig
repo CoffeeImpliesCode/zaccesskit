@@ -341,20 +341,28 @@ const Fixture = struct {
         const list = try self.gpa.alloc(schema.NodeId, locals.len);
         defer self.gpa.free(list);
         for (locals, list) |local, *slot| slot.* = .{ .value = local };
-        try schema.ids_props.setChildren(&self.state.nodes.getPtr(id).?.data.properties, list);
+        const entry = try self.slotOf(id);
+        try schema.ids_props.setChildren(&entry.data.properties, list);
     }
 
     fn setTransform(self: *Fixture, id: FullNodeId, value: Affine) !void {
-        try schema.option.setTransform(&self.state.nodes.getPtr(id).?.data.properties, value);
+        const entry = try self.slotOf(id);
+        try schema.option.setTransform(&entry.data.properties, value);
     }
 
     /// Writes the box `rect` as the node's `bounds` property.
     fn setBounds(self: *Fixture, id: FullNodeId, box: Rect) !void {
-        try schema.option.setBounds(&self.state.nodes.getPtr(id).?.data.properties, box);
+        const entry = try self.slotOf(id);
+        try schema.option.setBounds(&entry.data.properties, box);
     }
 
     fn ref(self: *Fixture, id: FullNodeId) !NodeRef {
         return NodeRef.init(&self.state, id) orelse error.NodeMissingFromState;
+    }
+
+    /// The state entry for `id`, so a test can write the node the state owns.
+    fn slotOf(self: *Fixture, id: FullNodeId) !*tree_state.NodeState {
+        return self.state.nodes.getPtr(id) orelse error.NodeMissingFromState;
     }
 };
 
@@ -690,11 +698,13 @@ test "an ancestor cycle makes the two transform walks report TreeCycle" {
     const first_id = try fixture.add(0, null);
     const second_id = try fixture.add(1, first_id);
     const outside_id = try fixture.add(2, null);
-    fixture.state.nodes.getPtr(first_id).?.parent_and_index = .{
+    const first_entry = try fixture.slotOf(first_id);
+    first_entry.parent_and_index = .{
         .parent_id = second_id,
         .index = 0,
     };
-    fixture.state.nodes.getPtr(second_id).?.parent_and_index = .{
+    const second_entry = try fixture.slotOf(second_id);
+    second_entry.parent_and_index = .{
         .parent_id = first_id,
         .index = 0,
     };
@@ -707,6 +717,6 @@ test "an ancestor cycle makes the two transform walks report TreeCycle" {
     try testing.expectError(error.TreeCycle, relativeTransform(first, try fixture.ref(outside_id)));
 
     // The positive half: the chain reaches the root and both answer.
-    fixture.state.nodes.getPtr(second_id).?.parent_and_index = null;
+    (try fixture.slotOf(second_id)).parent_and_index = null;
     try testing.expectEqual(schema.affine_identity, try transform(first));
 }

@@ -335,6 +335,14 @@ fn refOf(state: *TreeState, id: NodeId) !NodeRef {
     return NodeRef.init(state, fullNodeId(id)) orelse error.NodeMissingFromFixture;
 }
 
+/// A mutable handle on a node the state owns. A test needs one to write a
+/// property after the node is in the state, because a `NodeRef` hands back only
+/// a `*const Node`.
+fn writable(state: *TreeState, id: NodeId) !*Node {
+    const entry = state.nodes.getPtr(fullNodeId(id)) orelse return error.NodeMissingFromFixture;
+    return &entry.data;
+}
+
 test "rawValue reads the stored property and clears to null" {
     var state = testState();
     defer state.deinit(test_allocator);
@@ -345,7 +353,7 @@ test "rawValue reads the stored property and clears to null" {
     const node_ref = try refOf(&state, nodeId(1));
     const text = rawValue(node_ref) orelse return error.ExpectedTheStoredValue;
     try testing.expectEqualStrings("typed", text);
-    schema.strings.clearValue(&state.nodes.getPtr(fullNodeId(nodeId(1))).?.data.properties);
+    schema.strings.clearValue(&(try writable(&state, nodeId(1))).properties);
     try testing.expect(rawValue(node_ref) == null);
 }
 

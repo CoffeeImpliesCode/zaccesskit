@@ -605,10 +605,14 @@ pub const QueuedEventsHolder = struct {
     /// Releases the events without raising any of them.
     ///
     /// The providers the queue owns are released with the seam that built
-    /// them, which is the one `adapter` holds. The box is left in its reset
-    /// form, so a second call releases nothing. The adapter is not released.
+    /// them, which is the one `adapter` holds. The queue is put back in the
+    /// empty form it was built in, so a second call releases nothing rather
+    /// than reaching freed storage. The adapter is borrowed and is left alone:
+    /// the box never owned it, and clearing the field would drop the only
+    /// pointer the box has without releasing anything.
     pub fn deinit(self: *QueuedEventsHolder) void {
         self.queue.deinit(self.adapter.platform);
+        self.queue = queued_events.QueuedEvents.init(self.adapter.gpa);
     }
 
     /// Raises the events, releases the box, and answers what the raise did.
@@ -996,6 +1000,9 @@ test "a factory that answers null is refused and leaves the state untouched" {
 /// **Errors.** `error.OutOfMemory` from building the adapter, plus the tags the
 /// body names.
 fn placeholderUpdateFailingAt(gpa: std.mem.Allocator, index: usize) !bool {
+    // SAFETY: `fixture.gpa` is overwritten before any read of `fixture`, and
+    // every other field of `Fixture` carries a default, so nothing here is
+    // observed uninitialised.
     var fixture: Fixture = .{ .gpa = undefined };
     // The default configuration never fails, so the adapter and the
     // placeholder are built whole and `index` counts from the update's own

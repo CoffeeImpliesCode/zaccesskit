@@ -907,6 +907,11 @@ const PlatformNodes = struct {
     }
 
     /// Releases the map. Nothing else survives.
+    ///
+    /// The last line is the reset: `self.*` is one whole `PlatformNodes` with
+    /// every field at the value `init` gives it. That is the Z030 shape, and the
+    /// rule does not read an assignment to `self.*` as a reset, so this comment
+    /// says why the assignment is there.
     fn deinit(self: *PlatformNodes) void {
         self.objects.deinit(self.gpa);
         self.* = .{ .gpa = self.gpa };
@@ -2024,6 +2029,11 @@ const Fake = struct {
 
     /// Releases every record the fixture holds. The observations themselves
     /// borrow table rows, so nothing else is freed.
+    ///
+    /// The last line is the reset: `self.*` is one whole `Fake` with every field
+    /// at the value `init` gives it. That is the Z030 shape, and the rule does
+    /// not read an assignment to `self.*` as a reset, so this comment says why
+    /// the assignment is there.
     fn deinit(self: *Fake) void {
         self.known_classes.deinit(self.gpa);
         self.observers.deinit(self.gpa);
@@ -2321,6 +2331,12 @@ const FactoryFixture = struct {
 
     /// Releases an answer no call took, which is every answer in a test where
     /// the factory never ran. A call that took the answer leaves nothing here.
+    ///
+    /// The reset to `self.*` is the Z030 shape, and the rule does not read an
+    /// assignment to `self.*` as a reset. It sits above the release on purpose:
+    /// the answer is read into a local first, so the value is already reset
+    /// before anything below this line can return, and a second call finds
+    /// `answer` null rather than an answer it has released.
     fn deinit(self: *FactoryFixture) void {
         const gpa = self.gpa;
         const built = self.answer;

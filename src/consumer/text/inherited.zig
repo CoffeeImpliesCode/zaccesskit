@@ -470,7 +470,8 @@ fn insert(
     const id = FullNodeId.init(.{ .value = value }, .init(0));
     const parent_and_index: ?ParentAndIndex = if (parent) |parent_value| blk: {
         const parent_id = FullNodeId.init(.{ .value = parent_value }, .init(0));
-        const parent_ref = NodeRef.init(state, parent_id).?;
+        const parent_ref = NodeRef.init(state, parent_id) orelse
+            return error.NodeMissingFromFixture;
         const listed = schema.ids_props.children(&parent_ref.data().properties);
         var found: usize = 0;
         for (listed, 0..) |child, child_slot| {
@@ -487,8 +488,9 @@ fn insert(
     });
 }
 
-fn handle(state: *const tree_state.TreeState, value: u64) NodeRef {
-    return NodeRef.init(state, FullNodeId.init(.{ .value = value }, .init(0))).?;
+fn handle(state: *const tree_state.TreeState, value: u64) !NodeRef {
+    return NodeRef.init(state, FullNodeId.init(.{ .value = value }, .init(0))) orelse
+        error.NodeMissingFromFixture;
 }
 
 fn textRun(gpa: std.mem.Allocator, text_value: []const u8) !schema.Node {
@@ -589,9 +591,9 @@ test "a child overrides the parent it would otherwise inherit from" {
     // The document declares "Noto" and run 2 declares its own family, so the
     // walk must stop at the run and never reach the document. Comparing
     // strings, not slice headers: the two live in different buffers.
-    try testing.expectEqualStrings("Inconsolata", (try nodeFontFamily(handle(&state, 2))).?);
-    try testing.expectEqualStrings("Noto", (try nodeFontFamily(handle(&state, 1))).?);
-    try testing.expectEqualStrings("Noto", (try nodeFontFamily(handle(&state, 0))).?);
+    try testing.expectEqualStrings("Inconsolata", (try nodeFontFamily(try handle(&state, 2))).?);
+    try testing.expectEqualStrings("Noto", (try nodeFontFamily(try handle(&state, 1))).?);
+    try testing.expectEqualStrings("Noto", (try nodeFontFamily(try handle(&state, 0))).?);
 }
 
 test "a position reports the value its own run inherits" {
@@ -601,8 +603,8 @@ test "a position reports the value its own run inherits" {
     try twoRunDocument(gpa, &state, "Noto", "Inconsolata");
 
     const position_value: Position = .{
-        .root_node = handle(&state, 0),
-        .inner = .{ .node = handle(&state, 2), .character_index = 0 },
+        .root_node = try handle(&state, 0),
+        .inner = .{ .node = try handle(&state, 2), .character_index = 0 },
     };
     // Upstream `Position::$getter` reads `self.inner.node`, so the position
     // reports the run it sits in and not the document around it.
@@ -672,18 +674,18 @@ test "a range is mixed when one child overrides the document around both runs" {
     // two equal strings in two different buffers would fail here. The fold
     // stores "Noto" in the document's own buffer and the walk answers that
     // buffer, and it is not the same allocation the literal is.
-    try testing.expectEqualStrings("Noto", (try nodeFontFamily(handle(&state, 0))).?);
+    try testing.expectEqualStrings("Noto", (try nodeFontFamily(try handle(&state, 0))).?);
     const position_at_second: Position = .{
-        .root_node = handle(&state, 0),
-        .inner = .{ .node = handle(&state, 2), .character_index = 0 },
+        .root_node = try handle(&state, 0),
+        .inner = .{ .node = try handle(&state, 2), .character_index = 0 },
     };
     try testing.expectEqualStrings(
         "Inconsolata",
         (try positionFontFamily(position_at_second)).?,
     );
     const position_at_first: Position = .{
-        .root_node = handle(&state, 0),
-        .inner = .{ .node = handle(&state, 1), .character_index = 0 },
+        .root_node = try handle(&state, 0),
+        .inner = .{ .node = try handle(&state, 1), .character_index = 0 },
     };
     try testing.expectEqualStrings("Noto", (try positionFontFamily(position_at_first)).?);
     const folded = try rangeFontFamily(gpa, try wholeRange(gpa, &state));
@@ -693,9 +695,9 @@ test "a range is mixed when one child overrides the document around both runs" {
 fn wholeRange(gpa: std.mem.Allocator, state: *const tree_state.TreeState) !Range {
     return range.init(
         gpa,
-        handle(state, 0),
-        .{ .node = handle(state, 1), .character_index = 0 },
-        .{ .node = handle(state, 2), .character_index = 6 },
+        try handle(state, 0),
+        .{ .node = try handle(state, 1), .character_index = 0 },
+        .{ .node = try handle(state, 2), .character_index = 6 },
     );
 }
 
@@ -704,14 +706,15 @@ test "a flag set on the run reaches the run and folds across a range" {
     defer state.deinit(testing.allocator);
     const gpa = testing.allocator;
     try twoRunDocument(gpa, &state, null, null);
-    const second_run = state.nodes.getPtr(FullNodeId.init(.{ .value = 2 }, .init(0))).?;
+    const second_run = state.nodes.getPtr(FullNodeId.init(.{ .value = 2 }, .init(0))) orelse
+        return error.NodeMissingFromFixture;
     schema.flags.setItalic(&second_run.data.flags, true);
 
-    try testing.expect((try nodeIsItalic(handle(&state, 2))));
+    try testing.expect((try nodeIsItalic(try handle(&state, 2))));
 
     const position_value: Position = .{
-        .root_node = handle(&state, 0),
-        .inner = .{ .node = handle(&state, 2), .character_index = 0 },
+        .root_node = try handle(&state, 0),
+        .inner = .{ .node = try handle(&state, 2), .character_index = 0 },
     };
     try testing.expect((try positionIsItalic(position_value)));
 
@@ -741,7 +744,7 @@ test "no ancestor declares the value and the family answers null" {
     // The walk climbs to the document and stops there, which is what the doc
     // comment on `nodeFontFamily` promises.
 
-    try testing.expectEqual(@as(?[]const u8, null), try nodeFontFamily(handle(&state, 0)));
+    try testing.expectEqual(@as(?[]const u8, null), try nodeFontFamily(try handle(&state, 0)));
 
     // A range whose runs declare nothing folds to a single absent value, which
     // is a different answer from mixed.
@@ -765,17 +768,18 @@ test "the shared walk stops with TreeCycle at its bound" {
     for (1..4) |value| {
         const id = FullNodeId.init(.{ .value = value }, .init(0));
         const parent_id = FullNodeId.init(.{ .value = value % 3 + 1 }, .init(0));
-        state.nodes.getPtr(id).?.parent_and_index = .{ .parent_id = parent_id, .index = 0 };
+        const entry = state.nodes.getPtr(id) orelse return error.NodeMissingFromFixture;
+        entry.parent_and_index = .{ .parent_id = parent_id, .index = 0 };
     }
 
     // Every step of the walk moves to a different node and the count also
     // catches a repeat, so a bound equal to the node count stops the cycle.
     try testing.expectEqual(@as(usize, 3), walkStepBound(state.nodes.count()));
-    try testing.expectError(error.TreeCycle, nodeFontFamily(handle(&state, 1)));
+    try testing.expectError(error.TreeCycle, nodeFontFamily(try handle(&state, 1)));
 
     // The flag walk is the same loop over the same bound, so it reports the
     // same tag rather than a second one.
-    try testing.expectError(error.TreeCycle, nodeIsItalic(handle(&state, 1)));
+    try testing.expectError(error.TreeCycle, nodeIsItalic(try handle(&state, 1)));
 }
 
 test "the same walk one step short of the bound still finds the value" {
@@ -800,8 +804,8 @@ test "the same walk one step short of the bound still finds the value" {
     // Both runs declare nothing, so both must reach the top node and find its
     // family. Comparing strings rather than slice headers: the value lives in
     // the top node's buffer, not in the literal's.
-    try testing.expectEqualStrings("Noto", (try nodeFontFamily(handle(&state, 3))).?);
-    try testing.expectEqualStrings("Noto", (try nodeFontFamily(handle(&state, 2))).?);
+    try testing.expectEqualStrings("Noto", (try nodeFontFamily(try handle(&state, 3))).?);
+    try testing.expectEqualStrings("Noto", (try nodeFontFamily(try handle(&state, 2))).?);
 }
 
 comptime {

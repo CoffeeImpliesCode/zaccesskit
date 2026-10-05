@@ -618,7 +618,12 @@ fn toolkitCopy(
     which: ToolkitField,
 ) TreeInfoError!?[*:0]u8 {
     const value = toolkitValue(tree, which) orelse return null;
-    return try marshal.dup_c_string(gpa, value);
+    // The `try` is hoisted out of the `return` so the error union is unwrapped
+    // at the binding and the `?[*:0]u8` the caller receives is a plain
+    // `return` of an already-unwrapped value rather than a payload coercion
+    // performed by `return` itself.
+    const copy = try marshal.dup_c_string(gpa, value);
+    return copy;
 }
 
 /// Writes the text `accesskit_tree_info_debug` returns.

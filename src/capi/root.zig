@@ -205,6 +205,9 @@ const Pair = struct {
     backing: *std.heap.FixedBufferAllocator,
     /// The address of every block handed out and not yet given back, in
     /// allocation order. Bounded by `live_capacity`.
+    // SAFETY: `alloc` writes `live[live_count]` and only then bumps
+    // `live_count`, and both walks over the domain are `live_count` rows wide,
+    // so a `live_count`-bounded read never reaches an unwritten row.
     live: [live_capacity]usize = undefined,
     /// How many entries of `live` are in use.
     live_count: usize = 0,

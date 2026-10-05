@@ -499,6 +499,9 @@ const Counters = struct {
     /// is 16 bytes, which `carve` rounds to 48, and a 13-byte C string rounds
     /// to 48 as well, so no case hands out more than 96. A case that outgrows
     /// the store gets `null`, which is the allocator contract for exhaustion.
+    // SAFETY: `allocThunk` is the only code that touches `store`, and it writes
+    // `store[start..start + size]` before returning that range, so every byte a
+    // caller can name was written by the allocation that named it.
     store: [256]u8 align(@alignOf(Head)) = undefined,
 
     fn allocThunk(size: usize, context: ?*anyopaque) callconv(.c) ?*anyopaque {

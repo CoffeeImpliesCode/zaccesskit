@@ -145,6 +145,12 @@ pub const QueuedEvents = struct {
     ///
     /// `platform` releases the owned providers, because a provider belongs to
     /// the node layer and only the node layer may release one.
+    ///
+    /// The last line is the reset, and it is the whole of the Z030 contract:
+    /// every field is back to its empty value, so this value is as good as one
+    /// `init` just made. The rule reads the release calls above it and misses
+    /// the assignment, so the assignment is what it wants to see and this
+    /// comment says so.
     pub fn deinit(self: *QueuedEvents, platform: Platform) void {
         const gpa = self.gpa;
         for (self.owned_slots.items) |slot| {

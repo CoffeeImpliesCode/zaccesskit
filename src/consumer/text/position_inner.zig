@@ -1046,7 +1046,8 @@ test "textAttributesDiffer answers on the eleven properties upstream compares" {
     // comparison that treated an absent value as a sentinel would get wrong.
     try testing.expect(!textAttributesDiffer(plain, same));
 
-    const entry = state.nodes.getPtr(fullId(localId(2))).?;
+    const entry = state.nodes.getPtr(fullId(localId(2))) orelse
+        return error.NodeMissingFromFixture;
     try schema.numbers.setFontSize(&entry.data.properties, 12);
     try testing.expect(textAttributesDiffer(plain, same));
 
@@ -1063,7 +1064,8 @@ test "textAttributesDiffer separates two runs that differ only in alignment" {
     const left = try refOf(&state, localId(1));
     const right = try refOf(&state, localId(2));
 
-    const entry = state.nodes.getPtr(fullId(localId(2))).?;
+    const entry = state.nodes.getPtr(fullId(localId(2))) orelse
+        return error.NodeMissingFromFixture;
     try schema.enums.setTextAlign(&entry.data.properties, .center);
 
     // Alignment is the last of the eleven comparisons, so a port that stopped at

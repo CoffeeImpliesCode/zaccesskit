@@ -166,7 +166,8 @@ test "NodeRef.data exposes the properties the state holds" {
 
     const id = FullNodeId.init(.{ .value = 5 }, .init(0));
     try putNode(gpa, &state, id, .button);
-    try schema.strings.setLabel(&state.nodes.getPtr(id).?.data.properties, "Save");
+    const entry = state.nodes.getPtr(id) orelse return error.NodeMissingFromState;
+    try schema.strings.setLabel(&entry.data.properties, "Save");
 
     const node = NodeRef.init(&state, id) orelse return error.NodeMissingFromState;
     const label = schema.strings.label(&node.data().properties) orelse return error.NoLabel;
@@ -213,10 +214,8 @@ test "activeDescendant returns null when the named node is not in the state" {
     defer state.deinit(gpa);
     const host = FullNodeId.init(.{ .value = 3 }, .init(0));
     try putNode(gpa, &state, host, .group);
-    try schema.ids_props.setActiveDescendant(
-        &state.nodes.getPtr(host).?.data.properties,
-        .{ .value = 404 },
-    );
+    const entry = state.nodes.getPtr(host) orelse return error.NodeMissingFromState;
+    try schema.ids_props.setActiveDescendant(&entry.data.properties, .{ .value = 404 });
 
     const node = NodeRef.init(&state, host) orelse return error.NodeMissingFromState;
     try testing.expect(activeDescendant(node) == null);
@@ -235,10 +234,8 @@ test "activeDescendant resolves the local id in the node's own tree" {
     try putNode(gpa, &state, in_root, .group);
     try putNode(gpa, &state, in_graft, .button);
     try putNode(gpa, &state, host, .group);
-    try schema.ids_props.setActiveDescendant(
-        &state.nodes.getPtr(host).?.data.properties,
-        .{ .value = 7 },
-    );
+    const entry = state.nodes.getPtr(host) orelse return error.NodeMissingFromState;
+    try schema.ids_props.setActiveDescendant(&entry.data.properties, .{ .value = 7 });
 
     const node = NodeRef.init(&state, host) orelse return error.NodeMissingFromState;
     const resolved = activeDescendant(node) orelse return error.NoActiveDescendant;

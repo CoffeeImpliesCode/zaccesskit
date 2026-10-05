@@ -339,11 +339,17 @@ const Fixture = struct {
         const list = try self.gpa.alloc(NodeId, locals.len);
         defer self.gpa.free(list);
         for (locals, list) |local, *slot| slot.* = .{ .value = local };
-        try schema.ids_props.setChildren(&self.state.nodes.getPtr(id).?.data.properties, list);
+        const entry = try self.slotOf(id);
+        try schema.ids_props.setChildren(&entry.data.properties, list);
     }
 
     fn ref(self: *Fixture, id: FullNodeId) !NodeRef {
         return NodeRef.init(&self.state, id) orelse error.NodeMissingFromState;
+    }
+
+    /// The state entry for `id`, so a test can write the node the state owns.
+    fn slotOf(self: *Fixture, id: FullNodeId) !*tree_state.NodeState {
+        return self.state.nodes.getPtr(id) orelse error.NodeMissingFromState;
     }
 };
 
@@ -480,10 +486,8 @@ test "a graft parent yields no preceding sibling even with a child of its own" {
     _ = try fixture.add(2, graft, 0, .button);
     try fixture.setChildren(root, &.{1});
     try fixture.setChildren(graft, &.{2});
-    try schema.option.setTreeId(
-        &fixture.state.nodes.getPtr(graft).?.data.properties,
-        schema.treeIdFromBytes(.{7} ** 16),
-    );
+    const entry = try fixture.slotOf(graft);
+    try schema.option.setTreeId(&entry.data.properties, schema.treeIdFromBytes(.{7} ** 16));
 
     // A graft node has one child and no siblings, so upstream `iterators.rs:184-186`
     // yields nothing. A cursor that read the `children` property first would
@@ -602,7 +606,8 @@ test "a cycle in the parent chain reaches the filtered cursor bound" {
     // The root points back into its own subtree, so the parent chain visits
     // second, first, root, second for ever. The front scan walks that chain
     // and the cursor construction reports the tag rather than running on.
-    fixture.state.nodes.getPtr(root).?.parent_and_index = .{
+    const cyclic = try fixture.slotOf(root);
+    cyclic.parent_and_index = .{
         .parent_id = second,
         .index = 0,
     };
@@ -614,7 +619,8 @@ test "a cycle in the parent chain reaches the filtered cursor bound" {
     // The positive half, one step short of the bound: break the cycle at the
     // root and the same call answers. `exclude_node` on the root stops the walk
     // there, so the answer is `null`.
-    fixture.state.nodes.getPtr(root).?.parent_and_index = null;
+    const broken = try fixture.slotOf(root);
+    broken.parent_and_index = null;
     var built = try precedingFilteredSiblings(try fixture.ref(second), roleFilter());
     try testing.expect((try built.next()) == null);
 
