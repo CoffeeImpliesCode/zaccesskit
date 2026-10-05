@@ -440,7 +440,7 @@ const Probe = struct {
     answers_tree: bool = false,
 
     fn activation(context: ?*anyopaque) callconv(.c) ?*CTreeUpdate {
-        const probe: *Probe = @ptrCast(@alignCast(context.?));
+        const probe: *Probe = @ptrCast(@alignCast(context orelse return null));
         probe.calls += 1;
         probe.last_userdata = context;
         if (!probe.answers_tree) return null;
@@ -454,19 +454,19 @@ const Probe = struct {
 
     fn action(request: *boundary.CActionRequest, context: ?*anyopaque) callconv(.c) void {
         _ = request;
-        const probe: *Probe = @ptrCast(@alignCast(context.?));
+        const probe: *Probe = @ptrCast(@alignCast(context orelse return));
         probe.calls += 1;
         probe.last_userdata = context;
     }
 
     fn deactivation(context: ?*anyopaque) callconv(.c) void {
-        const probe: *Probe = @ptrCast(@alignCast(context.?));
+        const probe: *Probe = @ptrCast(@alignCast(context orelse return));
         probe.calls += 1;
         probe.last_userdata = context;
     }
 
     fn factory(context: ?*anyopaque) callconv(.c) ?*CTreeUpdate {
-        const probe: *Probe = @ptrCast(@alignCast(context.?));
+        const probe: *Probe = @ptrCast(@alignCast(context orelse return null));
         probe.calls += 1;
         probe.last_userdata = context;
         const update = adapter_allocator.create(CTreeUpdate) catch return null;

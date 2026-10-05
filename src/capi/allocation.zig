@@ -292,8 +292,11 @@ pub fn installAllocator(alloc: ?AllocFn, free: ?FreeFn, context: ?*anyopaque) vo
 /// The result is `std.heap.c_allocator` while no pair is installed, so this
 /// module requires a libc link on every target.
 pub fn allocator() std.mem.Allocator {
-    if (installed == null) return std.heap.c_allocator;
-    return .{ .ptr = &installed.?, .vtable = &pair_vtable };
+    // The pointer capture keeps the address of the module's own field, which is
+    // what `installAllocator`'s doc says a store built before a second install
+    // reads. A copy taken into a local would not.
+    if (installed) |*pair| return .{ .ptr = pair, .vtable = &pair_vtable };
+    return std.heap.c_allocator;
 }
 
 /// Allocates one `T` and returns it zeroed.
@@ -614,7 +617,8 @@ test "the context reaches the installed pair unchanged" {
 
     const block = try create(Fixture);
     try testing.expectEqual(@as(usize, 1), counters.allocs);
-    try testing.expect(counters.context.? == @as(*anyopaque, @ptrCast(&counters)));
+    const context = counters.context orelse return error.NoContext;
+    try testing.expect(context == @as(*anyopaque, @ptrCast(&counters)));
     release(block);
 }
 
@@ -719,7 +723,11 @@ test "every carved block is large enough for its payload" {
             const block_end = @intFromPtr(head.raw) + head.bytes;
             if (payload_end > block_end) return error.PayloadPastEndOfBlock;
 
-            allocator().free(head.raw.?[0..head.bytes]);
+            // A head with no block behind it has nothing to hand back, and the
+            // length check above already read its size, so the test cannot say
+            // anything about a block it does not have.
+            const raw = head.raw orelse return error.CarveAnsweredNull;
+            allocator().free(raw[0..head.bytes]);
         }
     }
 }

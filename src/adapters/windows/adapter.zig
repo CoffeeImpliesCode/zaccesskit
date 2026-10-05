@@ -239,7 +239,9 @@ pub const WindowsAdapter = struct {
                     self.last_error = err;
                     return err;
                 };
-                const was_focused = self.tree().?.stateOf().isHostFocused();
+                // `.placeholder` is entered with a tree in hand, so the absent
+                // case is a branch the switch answers rather than a claim.
+                const was_focused = (self.tree() orelse return null).stateOf().isHostFocused();
                 // The real tree is built before the placeholder is released, so
                 // an allocation failure leaves the placeholder in the state
                 // rather than leaving the adapter inactive.
@@ -251,7 +253,7 @@ pub const WindowsAdapter = struct {
                 self.state = .{ .active = real };
 
                 var queue = QueuedEventsHolder.init(self);
-                const focused = self.tree().?.stateOf().focus();
+                const focused = (self.tree() orelse return queue).stateOf().focus();
                 if (focused) |node| {
                     const slot = self.registry.slotFor(self.platform, node.id()) catch |err| {
                         self.last_error = err;
@@ -288,7 +290,7 @@ pub const WindowsAdapter = struct {
                 );
                 defer handler.deinit();
 
-                const held = self.tree().?;
+                const held = self.tree() orelse return null;
                 held.updateAndProcessChanges(update, &handler.changeHandler()) catch |err| {
                     self.last_error = err;
                     return err;
@@ -300,11 +302,12 @@ pub const WindowsAdapter = struct {
                     return error.TreeQueryFailed;
                 };
                 if (handler.takeFailure()) |failure| {
-                    self.last_error = if (failure.out_of_memory)
+                    const tag: Error = if (failure.out_of_memory)
                         error.OutOfMemory
                     else
                         error.TreeQueryFailed;
-                    return self.last_error.?;
+                    self.last_error = tag;
+                    return tag;
                 }
                 self.last_error = null;
                 return queue;
@@ -340,7 +343,7 @@ pub const WindowsAdapter = struct {
                 );
                 defer handler.deinit();
 
-                const held = self.tree().?;
+                const held = self.tree() orelse return null;
                 held.updateHostFocusStateAndProcessChanges(
                     is_focused,
                     &handler.changeHandler(),
@@ -355,11 +358,12 @@ pub const WindowsAdapter = struct {
                     return error.TreeQueryFailed;
                 };
                 if (handler.takeFailure()) |failure| {
-                    self.last_error = if (failure.out_of_memory)
+                    const tag: Error = if (failure.out_of_memory)
                         error.OutOfMemory
                     else
                         error.TreeQueryFailed;
-                    return self.last_error.?;
+                    self.last_error = tag;
+                    return tag;
                 }
                 self.last_error = null;
                 return queue;
@@ -409,7 +413,8 @@ pub const WindowsAdapter = struct {
                 return noLResult(),
             .placeholder => self.registry.placeholderSlot(),
             .active => blk: {
-                const root_id = self.tree().?.stateOf().rootId();
+                const active_tree = self.tree() orelse return noLResult();
+                const root_id = active_tree.stateOf().rootId();
                 const built = self.registry.slotFor(self.platform, root_id) catch {
                     self.last_error = error.OutOfMemory;
                     return noLResult();
@@ -477,7 +482,8 @@ pub const WindowsAdapter = struct {
                 return null;
             };
             self.state = .{ .active = real };
-            const root_id = self.tree().?.stateOf().rootId();
+            const active_tree = self.tree() orelse return null;
+            const root_id = active_tree.stateOf().rootId();
             const built = self.registry.slotFor(self.platform, root_id) catch {
                 return null;
             };
@@ -975,7 +981,8 @@ test "a factory that answers null is refused and leaves the state untouched" {
         &fixture,
     );
     try testing.expectError(error.NullTreeUpdate, target.updateIfActive(&nullFactory, &fixture));
-    try testing.expectEqual(error.NullTreeUpdate, target.last_error.?);
+    const recorded = target.last_error orelse return error.NoLastError;
+    try testing.expectEqual(error.NullTreeUpdate, recorded);
     try expectActivated(target);
 }
 

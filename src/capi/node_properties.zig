@@ -7396,9 +7396,10 @@ const CountingPair = struct {
     /// `inner` needs the exact length and the C pair is handed only a pointer.
     fn free(ptr: ?*anyopaque, ctx: ?*anyopaque) callconv(.c) void {
         const self: *CountingPair = @ptrCast(@alignCast(ctx orelse return));
-        const address = @intFromPtr(ptr orelse return);
+        const held = ptr orelse return;
+        const address = @intFromPtr(held);
         const size = self.live.fetchRemove(address) orelse return;
-        const slice = @as([*]align(8) u8, @ptrCast(@alignCast(ptr.?)))[0..size.value];
+        const slice = @as([*]align(8) u8, @ptrCast(@alignCast(held)))[0..size.value];
         const entry = self.releases.getOrPut(self.inner, address) catch {
             self.inner.free(slice);
             return;
@@ -8330,12 +8331,12 @@ test "a string getter answers null for unset and one zero byte for a set empty s
         try testing.expect(allocation.lastError() == .none);
 
         row[1](fixture.handle, cText(""));
-        const empty = row[0](fixture.handle).?;
+        const empty = row[0](fixture.handle) orelse return error.GetterAnsweredNull;
         defer releaseCString(empty);
         try testing.expectEqual(@as(usize, 0), span(empty).len);
 
         row[1](fixture.handle, cText("value"));
-        const filled = row[0](fixture.handle).?;
+        const filled = row[0](fixture.handle) orelse return error.GetterAnsweredNull;
         defer releaseCString(filled);
         try testing.expectEqualStrings("value", span(filled));
 
@@ -8355,7 +8356,7 @@ test "a byte string holding an interior NUL comes back cut at the first one" {
     defer fixture.deinit(gpa);
 
     accesskit_node_set_label_with_length(fixture.handle, "ab\x00cd".ptr, 5);
-    const copy = accesskit_node_label(fixture.handle).?;
+    const copy = accesskit_node_label(fixture.handle) orelse return error.GetterAnsweredNull;
     defer releaseCString(copy);
     try testing.expectEqualStrings("ab", span(copy));
     try testing.expect(allocation.lastError() == .none);
@@ -8374,13 +8375,13 @@ test "the transform getter answers null for unset and borrows the node's own coe
 
     const wanted: Affine = .{ .coeffs = .{ 2, 0, 0, 3, 4, 5 } };
     accesskit_node_set_transform(fixture.handle, wanted);
-    const read = accesskit_node_transform(fixture.handle).?;
+    const read = accesskit_node_transform(fixture.handle) orelse return error.GetterAnsweredNull;
     try testing.expectEqualSlices(f64, &wanted.coeffs, &read.coeffs);
     // Two reads answer the same address, which is what makes this a borrow of
     // the node's own storage rather than a fresh copy per call, and which is why
     // there is nothing to release. The store's payload is a separate heap block,
     // so there is no address range inside the node this can be checked against.
-    const again = accesskit_node_transform(fixture.handle).?;
+    const again = accesskit_node_transform(fixture.handle) orelse return error.GetterAnsweredNull;
     try testing.expectEqual(@intFromPtr(read), @intFromPtr(again));
 
     accesskit_node_clear_transform(fixture.handle);
@@ -8402,7 +8403,7 @@ test "the custom-actions getter answers an owned list, an empty one included" {
     defer accesskit_node_free(handle);
 
     const gpa = allocation.allocator();
-    const empty = accesskit_node_custom_actions(handle).?;
+    const empty = accesskit_node_custom_actions(handle) orelse return error.GetterAnsweredNull;
     try testing.expectEqual(@as(usize, 0), empty.length);
     try testing.expect(empty.values != null);
     marshal.custom_actions_deinit(gpa, empty);
@@ -8415,7 +8416,7 @@ test "the custom-actions getter answers an owned list, an empty one included" {
     // The push took ownership, so the two handles are the node's now and the
     // test must not release them. The node's own copies are what the getter
     // answers.
-    const listed = accesskit_node_custom_actions(handle).?;
+    const listed = accesskit_node_custom_actions(handle) orelse return error.GetterAnsweredNull;
     try testing.expectEqual(@as(usize, 2), listed.length);
     try testing.expectEqual(@as(c_int, 7), listed.values[0].?.id);
     try testing.expectEqualStrings("Delete", listed.values[0].?.description.items);
@@ -8423,7 +8424,7 @@ test "the custom-actions getter answers an owned list, an empty one included" {
     marshal.custom_actions_deinit(gpa, listed);
 
     accesskit_node_clear_custom_actions(handle);
-    const after = accesskit_node_custom_actions(handle).?;
+    const after = accesskit_node_custom_actions(handle) orelse return error.GetterAnsweredNull;
     try testing.expectEqual(@as(usize, 0), after.length);
     marshal.custom_actions_deinit(gpa, after);
     try testing.expect(allocation.lastError() == .none);
@@ -8450,7 +8451,7 @@ test "set_custom_actions copies the array and leaves the caller's handles alone"
     const array = [_]?*CustomAction{ first, second };
 
     accesskit_node_set_custom_actions(handle, array.len, cActions(&array));
-    const listed = accesskit_node_custom_actions(handle).?;
+    const listed = accesskit_node_custom_actions(handle) orelse return error.GetterAnsweredNull;
     defer marshal.custom_actions_deinit(gpa, listed);
     try testing.expectEqual(@as(usize, 2), listed.length);
     try testing.expectEqual(@as(c_int, 1), listed.values[0].?.id);
@@ -8482,7 +8483,7 @@ test "set_custom_actions copies the descriptions, so the caller's handles stay t
     const array = [_]?*CustomAction{ first, second };
 
     accesskit_node_set_custom_actions(handle, array.len, cActions(&array));
-    const listed = accesskit_node_custom_actions(handle).?;
+    const listed = accesskit_node_custom_actions(handle) orelse return error.GetterAnsweredNull;
     defer marshal.custom_actions_deinit(gpa, listed);
     try testing.expectEqual(@as(usize, 2), listed.length);
     try testing.expectEqualSlices(u8, "One", listed.values[0].?.description.items);
@@ -8526,7 +8527,7 @@ test "a null slot leaves the custom-action list untouched" {
     const array = [_]?*CustomAction{ held, null };
 
     accesskit_node_set_custom_actions(handle, array.len, cActions(&array));
-    const listed = accesskit_node_custom_actions(handle).?;
+    const listed = accesskit_node_custom_actions(handle) orelse return error.GetterAnsweredNull;
     defer marshal.custom_actions_deinit(gpa, listed);
     try testing.expectEqual(@as(usize, 1), listed.length);
     try testing.expectEqual(@as(c_int, 3), listed.values[0].?.id);
@@ -8633,7 +8634,7 @@ test "a setter that cannot copy changes nothing and sets the failure tag" {
     // The two reads below release through the declared allocator as they go,
     // rather than in a `defer`, because the counter check at the foot is the
     // assertion and a `defer` would run after it.
-    const label = accesskit_node_label(handle).?;
+    const label = accesskit_node_label(handle) orelse return error.GetterAnsweredNull;
     try testing.expectEqualStrings("before", span(label));
     releaseCString(label);
     const children = accesskit_node_children(handle);
@@ -8644,7 +8645,7 @@ test "a setter that cannot copy changes nothing and sets the failure tag" {
     try testing.expect(accesskit_node_is_expanded(handle).value);
     try testing.expect(!accesskit_node_is_selected(handle).has_value);
     try testing.expect(!accesskit_node_invalid(handle).has_value);
-    const listed = accesskit_node_custom_actions(handle).?;
+    const listed = accesskit_node_custom_actions(handle) orelse return error.GetterAnsweredNull;
     try testing.expectEqual(@as(usize, 0), listed.length);
     marshal.custom_actions_deinit(gpa, listed);
 
@@ -8686,7 +8687,7 @@ test "a fresh node carries no property, so every getter answers its absent form"
         try testing.expect(row[0](handle) == null);
     }
     try testing.expect(accesskit_node_transform(handle) == null);
-    const listed = accesskit_node_custom_actions(handle).?;
+    const listed = accesskit_node_custom_actions(handle) orelse return error.GetterAnsweredNull;
     try testing.expectEqual(@as(usize, 0), listed.length);
     marshal.custom_actions_deinit(allocation.allocator(), listed);
 
@@ -8730,7 +8731,7 @@ test "the node debug text names the role and every property that is set" {
 
     accesskit_node_set_label(handle, cText("Save"));
     accesskit_node_set_expanded(handle, true);
-    const text = accesskit_node_debug(handle).?;
+    const text = accesskit_node_debug(handle) orelse return error.GetterAnsweredNull;
     defer releaseCString(text);
     // The whole text rather than three searches for a substring: the store
     // writes its properties in ascending `PropertyId` order, so `label` at 15

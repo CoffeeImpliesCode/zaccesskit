@@ -61,5 +61,10 @@
         "README.md",
         "AGENTS.md",
         "fuzz_root.zig",
+        // `.ziglint.zon` is here because a packaged copy runs the same gate.
+        // Without it the copy has Z001 enabled and reports all 498 C ABI
+        // exports, so the exemption would hold for this checkout and not for
+        // anything built from the package.
+        ".ziglint.zon",
     },
 }

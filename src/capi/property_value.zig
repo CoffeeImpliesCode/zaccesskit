@@ -949,7 +949,13 @@ fn assertGate(comptime key: EnumDomain, comptime decode: anytype) void {
             @compileError("a row names a variant its enum does not declare, or not in order");
         }
         const wanted: row.zig_type = @field(row.zig_type, entry.zig_name);
-        if (decode(@intCast(index)).? != wanted) {
+        // The last row's own tag is the byte this loop is about, so a gate that
+        // rejects it is a gate with a hole in it. That is a build failure, and
+        // naming it is better than a panic nobody would see until runtime.
+        const decoded = decode(@intCast(index)) orelse @compileError(
+            "a gate rejects the byte its own row places there",
+        );
+        if (decoded != wanted) {
             @compileError("a gate does not decode the byte its own row places there");
         }
     }

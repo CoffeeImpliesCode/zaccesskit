@@ -1484,12 +1484,12 @@ fn raiseAnnouncement(ctx: ?*anyopaque, text: []const u8, assertive: bool) void {
     const priority = if (assertive) current.priority_high else current.priority_low;
     const priority_key = current.announcement_priority_key;
     const queue_key = current.queue_announcement_key;
-    const argument: ?*runtime.AnyObject = if (priority != null and
-        priority_key != null and
-        queue_key != null)
-        attributedAnnouncement(current, text_object, priority.?, priority_key.?, queue_key.?)
-    else
-        null;
+    const argument: ?*runtime.AnyObject = blk: {
+        const high = priority orelse break :blk null;
+        const key = priority_key orelse break :blk null;
+        const queue = queue_key orelse break :blk null;
+        break :blk attributedAnnouncement(current, text_object, high, key, queue);
+    };
     postNotificationOf(current, current.announcement, argument orelse text_object);
 }
 
@@ -1911,7 +1911,7 @@ test "the required table is three predicates, one post, one convert and three ta
     var type_identifier: usize = 0;
     var posted: usize = 0;
     for (required_uikit_symbols) |name| {
-        const identifier = uikit.find(name).?;
+        const identifier = uikit.find(name) orelse return error.NoSuchSymbol;
         switch (identifier.kind) {
             .predicate => predicates += 1,
             .posting_function => posting += 1,
@@ -1940,7 +1940,8 @@ test "the three notification tags are resolved as data symbols, never as numbers
         "UIAccessibilityAnnouncementNotification",
     }) |tag| {
         try testing.expect(hasRequiredSymbol(tag));
-        try testing.expectEqual(uikit.Kind.posted_notification, uikit.find(tag).?.kind);
+        const identifier = uikit.find(tag) orelse return error.NoSuchSymbol;
+        try testing.expectEqual(uikit.Kind.posted_notification, identifier.kind);
     }
 }
 
@@ -1992,9 +1993,9 @@ test "the module resolves no trait, so the no_trait fallback is not one of its r
         try testing.expect(row.fallback != .no_trait);
     }
     // The fourth row of `runtime.weak_constants` is the toggle trait.
-    try testing.expectEqual(runtime.Fallback.no_trait, runtime.weakConstant(
-        "UIAccessibilityTraitToggleButton",
-    ).?.fallback);
+    const toggle = runtime.weakConstant("UIAccessibilityTraitToggleButton") orelse
+        return error.NoSuchSymbol;
+    try testing.expectEqual(runtime.Fallback.no_trait, toggle.fallback);
 }
 
 test "the sent selector table pins every spelling the port sends" {

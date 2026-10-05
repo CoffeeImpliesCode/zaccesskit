@@ -1165,9 +1165,13 @@ pub fn custom_actions_to_c(
     errdefer {
         var index: usize = 0;
         while (index < written) : (index += 1) {
-            const held = owned[index].?;
-            held.deinit(gpa);
-            gpa.destroy(held);
+            // A slot below `written` holds the action this loop built and a
+            // slot above it was never assigned, so the capture is the question
+            // and the unwrap would have been the answer.
+            if (owned[index]) |held| {
+                held.deinit(gpa);
+                gpa.destroy(held);
+            }
         }
     }
 
@@ -1195,9 +1199,14 @@ pub fn custom_actions_to_c(
 pub fn custom_actions_deinit(gpa: std.mem.Allocator, value: *CCustomActions) void {
     const owned = value.values[0..value.length];
     for (owned) |slot| {
-        const held = slot.?;
-        held.deinit(gpa);
-        gpa.destroy(held);
+        // Every slot of a list this module built is written before the list
+        // is handed over, so a null slot is not a shape the list can have. The
+        // capture keeps that a question the loop asks rather than a panic it
+        // asserts against.
+        if (slot) |held| {
+            held.deinit(gpa);
+            gpa.destroy(held);
+        }
     }
     gpa.free(owned);
     gpa.destroy(value);
@@ -1992,7 +2001,8 @@ test "an action request reaches a C handler and comes back released" {
     try testing.expect(schema.tree_id_root.eql(request.target_tree));
     try testing.expectEqual(@as(u64, 42), request.target_node.value);
     try testing.expect(request.data.has_value);
-    try testing.expectEqualStrings("cut", std.mem.span(request.data.value.payload.value.?));
+    const carried = request.data.value.payload.value orelse return error.NoCarriedText;
+    try testing.expectEqualStrings("cut", std.mem.span(carried));
 
     // And the same bytes read back into the core form.
     var read_back = try schema.actionDataFromC(gpa, request.data.value);

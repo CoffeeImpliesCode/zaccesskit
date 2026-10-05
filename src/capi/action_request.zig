@@ -699,9 +699,13 @@ test "the list free walks the actions, the array and the outer struct" {
     errdefer {
         var index: usize = 0;
         while (index < written) : (index += 1) {
-            const held = slots[index].?;
-            held.deinit(gpa);
-            gpa.destroy(held);
+            // A slot below `written` holds the action this loop built and a
+            // slot above it was never assigned, so the capture is the question
+            // and the unwrap would have been the answer.
+            if (slots[index]) |held| {
+                held.deinit(gpa);
+                gpa.destroy(held);
+            }
         }
     }
     while (written < length) : (written += 1) {
@@ -729,7 +733,8 @@ test "the request free runs end to end on a built request" {
     var seen: SeenRequest = .{};
     callActionHandler(&recordRequest, request, &seen);
     try testing.expectEqual(@as(usize, 1), seen.calls);
-    try testing.expectEqualStrings("typed", std.mem.span(seen.text.?));
+    const recorded = seen.text orelse return error.NoRecordedText;
+    try testing.expectEqualStrings("typed", std.mem.span(recorded));
 
     accesskit_action_request_free(request);
 }

@@ -599,10 +599,11 @@ test "a dialog node added queues the window opened event" {
 
     // The dialog is the only thing that queues anything, and it queues one.
     try testing.expectEqual(@as(usize, 1), queue.len());
-    try testing.expectEqual(EventId.window_window_opened, queue.at(0).?.simple.event_id);
+    const only = queue.at(0) orelse return error.NoQueuedEvent;
+    try testing.expectEqual(EventId.window_window_opened, only.simple.event_id);
     try testing.expectEqual(
         try slotForLocal(&registry, platform, 2),
-        queue.at(0).?.simple.slot,
+        only.simple.slot,
     );
 }
 
@@ -637,12 +638,14 @@ test "a text run queues its parent's text change at the front" {
     try handler.nodeAdded(run);
 
     try testing.expectEqual(@as(usize, 2), queue.len());
-    try testing.expectEqual(EventId.text_text_changed, queue.at(0).?.simple.event_id);
+    const first = queue.at(0) orelse return error.NoQueuedEvent;
+    const second = queue.at(1) orelse return error.NoQueuedEvent;
+    try testing.expectEqual(EventId.text_text_changed, first.simple.event_id);
     try testing.expectEqual(
         try slotForLocal(&registry, platform, 2),
-        queue.at(0).?.simple.slot,
+        first.simple.slot,
     );
-    try testing.expectEqual(EventId.window_window_opened, queue.at(1).?.simple.event_id);
+    try testing.expectEqual(EventId.window_window_opened, second.simple.event_id);
 }
 
 test "a text change is queued once however many runs changed" {
@@ -675,7 +678,8 @@ test "a text change is queued once however many runs changed" {
 
     // Both runs share one filtered parent, so the set holds the parent once.
     try testing.expectEqual(@as(usize, 1), queue.len());
-    try testing.expectEqual(EventId.text_text_changed, queue.at(0).?.simple.event_id);
+    const only = queue.at(0) orelse return error.NoQueuedEvent;
+    try testing.expectEqual(EventId.text_text_changed, only.simple.event_id);
 }
 
 test "the focus move queues the automation focus changed event" {
@@ -705,10 +709,11 @@ test "the focus move queues the automation focus changed event" {
 
     try handler.focusMoved(button);
     try testing.expectEqual(@as(usize, 1), queue.len());
-    try testing.expectEqual(EventId.automation_focus_changed, queue.at(0).?.simple.event_id);
+    const only = queue.at(0) orelse return error.NoQueuedEvent;
+    try testing.expectEqual(EventId.automation_focus_changed, only.simple.event_id);
     try testing.expectEqual(
         try slotForLocal(&registry, platform, 2),
-        queue.at(0).?.simple.slot,
+        only.simple.slot,
     );
 }
 
@@ -741,10 +746,11 @@ test "a live region queues the live region changed event once" {
 
     // The polite node announces; the plain node has no live setting.
     try testing.expectEqual(@as(usize, 1), queue.len());
-    try testing.expectEqual(EventId.live_region_changed, queue.at(0).?.simple.event_id);
+    const only = queue.at(0) orelse return error.NoQueuedEvent;
+    try testing.expectEqual(EventId.live_region_changed, only.simple.event_id);
     try testing.expectEqual(
         try slotForLocal(&registry, platform, 2),
-        queue.at(0).?.simple.slot,
+        only.simple.slot,
     );
 }
 
@@ -776,8 +782,12 @@ test "one selected child takes the optimized selection path" {
     // Upstream's optimized path: one selection event and one property change
     // for the only selected child, and nothing for the unselected one.
     try testing.expectEqual(@as(usize, 2), queue.len());
-    try testing.expectEqual(EventId.selection_item_element_selected, queue.at(0).?.simple.event_id);
-    const change = queue.at(1).?;
+    const chosen_event = queue.at(0) orelse return error.NoQueuedEvent;
+    try testing.expectEqual(
+        EventId.selection_item_element_selected,
+        chosen_event.simple.event_id,
+    );
+    const change = queue.at(1) orelse return error.NoQueuedEvent;
     try testing.expectEqual(
         syscalls.PropertyId.selection_item_is_selected,
         change.property_changed.property_id,
@@ -817,8 +827,10 @@ test "two selected children take the enumerated selection path" {
     // One selection event and one property change per selected child, so four
     // events rather than the optimized pair.
     try testing.expectEqual(@as(usize, 4), queue.len());
-    try testing.expectEqual(EventId.selection_item_element_selected, queue.at(0).?.simple.event_id);
-    try testing.expectEqual(EventId.selection_item_element_selected, queue.at(2).?.simple.event_id);
+    const first_event = queue.at(0) orelse return error.NoQueuedEvent;
+    const third_event = queue.at(2) orelse return error.NoQueuedEvent;
+    try testing.expectEqual(EventId.selection_item_element_selected, first_event.simple.event_id);
+    try testing.expectEqual(EventId.selection_item_element_selected, third_event.simple.event_id);
 }
 
 test "more changes than the limit invalidate the container instead of enumerating" {
@@ -868,10 +880,11 @@ test "more changes than the limit invalidate the container instead of enumeratin
 
     // One event, not two per option.
     try testing.expectEqual(@as(usize, 1), queue.len());
-    try testing.expectEqual(EventId.selection_invalidated, queue.at(0).?.simple.event_id);
+    const only = queue.at(0) orelse return error.NoQueuedEvent;
+    try testing.expectEqual(EventId.selection_invalidated, only.simple.event_id);
     try testing.expectEqual(
         try slotForLocal(&registry, platform, 2),
-        queue.at(0).?.simple.slot,
+        only.simple.slot,
     );
 }
 
@@ -897,13 +910,14 @@ test "a removed dialog queues the closed event on a provider the queue owns" {
     try handler.nodeRemoved(dialog);
 
     try testing.expectEqual(@as(usize, 1), queue.len());
-    try testing.expectEqual(EventId.window_window_closed, queue.at(0).?.simple.event_id);
+    const only = queue.at(0) orelse return error.NoQueuedEvent;
+    try testing.expectEqual(EventId.window_window_closed, only.simple.event_id);
     // Upstream's first branch at `adapter.rs:87-92`: a node the state still
     // holds reuses the provider it already had, so the event names the registry
     // slot rather than a fresh one.
     try testing.expectEqual(
         try slotForLocal(&registry, platform, 2),
-        queue.at(0).?.simple.slot,
+        only.simple.slot,
     );
 
     // Raising releases the queue, and the queue owns no provider here, so the

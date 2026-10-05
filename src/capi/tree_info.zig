@@ -676,7 +676,12 @@ fn assertPointerShaped(signature: anytype) void {
         std.debug.assert(!isAggregate(returned));
     }
     for (info.params) |param| {
-        std.debug.assert(!isAggregate(param.type.?));
+        // A parameter reflection names no type for cannot be an aggregate, so
+        // the absence is an answer this gate can act on rather than a gap it
+        // has to step over.
+        if (param.type) |declared| {
+            std.debug.assert(!isAggregate(declared));
+        }
     }
 }
 
@@ -908,9 +913,10 @@ test "a getter returns the value the setter stored, on both fields" {
     try treeInfoSetToolkitName(tree, "gtk");
     try treeInfoSetToolkitVersion(tree, "3.24.38");
 
-    const name = (try treeInfoGetToolkitName(gpa, tree)).?;
+    const name = (try treeInfoGetToolkitName(gpa, tree)) orelse return error.ToolkitNameIsUnset;
     defer releaseCString(gpa, name);
-    const version = (try treeInfoGetToolkitVersion(gpa, tree)).?;
+    const version = (try treeInfoGetToolkitVersion(gpa, tree)) orelse
+        return error.ToolkitVersionIsUnset;
     defer releaseCString(gpa, version);
 
     try testing.expectEqualStrings("gtk", span(name));
@@ -926,7 +932,7 @@ test "a getter's copy outlives the tree info it came from" {
     const tree = try treeInfoNew(gpa, 1);
     try treeInfoSetToolkitName(tree, "gtk");
 
-    const name = (try treeInfoGetToolkitName(gpa, tree)).?;
+    const name = (try treeInfoGetToolkitName(gpa, tree)) orelse return error.ToolkitNameIsUnset;
     defer releaseCString(gpa, name);
     treeInfoFree(tree);
 
@@ -945,7 +951,7 @@ test "a setter copies, so the buffer the caller passed is still the caller's" {
     try treeInfoSetToolkitName(tree, caller_buffer[0..]);
     @memset(caller_buffer[0..], 'x');
 
-    const name = (try treeInfoGetToolkitName(gpa, tree)).?;
+    const name = (try treeInfoGetToolkitName(gpa, tree)) orelse return error.ToolkitNameIsUnset;
     defer releaseCString(gpa, name);
     try testing.expectEqualStrings("gtk", span(name));
 }
@@ -1001,13 +1007,13 @@ test "a second set releases the first copy once and keeps the second" {
     try treeInfoSetToolkitName(tree, "gtk");
     // The copy the second set displaces, so the count below is asked about the
     // bytes that were released and not about the ones the handle still holds.
-    const displaced = storage(tree, .name).?;
+    const displaced = storage(tree, .name) orelse return error.ToolkitNameIsUnset;
     try treeInfoSetToolkitName(tree, "gtk4");
 
     try testing.expectEqual(@as(usize, 1), counting.released.count());
     try testing.expectEqual(@as(usize, 1), counting.timesReleased(displaced.ptr));
 
-    const name = (try treeInfoGetToolkitName(gpa, tree)).?;
+    const name = (try treeInfoGetToolkitName(gpa, tree)) orelse return error.ToolkitNameIsUnset;
     try testing.expectEqualStrings("gtk4", span(name));
 
     // Every pointer goes back before the counter is released, because the
@@ -1063,7 +1069,7 @@ test "an empty value is a set property, not an unset one" {
     defer treeInfoFree(tree);
 
     try treeInfoSetToolkitName(tree, "");
-    const name = (try treeInfoGetToolkitName(gpa, tree)).?;
+    const name = (try treeInfoGetToolkitName(gpa, tree)) orelse return error.ToolkitNameIsUnset;
     defer releaseCString(gpa, name);
     try testing.expectEqualStrings("", span(name));
     try testing.expect(toolkitValue(tree, .name) != null);
@@ -1079,7 +1085,7 @@ test "a value is stored up to the first NUL byte" {
 
     try treeInfoSetToolkitNameWithLength(tree, "ab\x00cd", 5);
 
-    const name = (try treeInfoGetToolkitName(gpa, tree)).?;
+    const name = (try treeInfoGetToolkitName(gpa, tree)) orelse return error.ToolkitNameIsUnset;
     defer releaseCString(gpa, name);
     try testing.expectEqualStrings("ab", span(name));
 }
@@ -1093,7 +1099,8 @@ test "the with-length setter takes bytes a NUL-terminated one could not spell" {
     // setter reads `length` bytes and stops there.
     try treeInfoSetToolkitVersionWithLength(tree, "3.24.38-longer", 6);
 
-    const version = (try treeInfoGetToolkitVersion(gpa, tree)).?;
+    const version = (try treeInfoGetToolkitVersion(gpa, tree)) orelse
+        return error.ToolkitVersionIsUnset;
     defer releaseCString(gpa, version);
     try testing.expectEqualStrings("3.24.3", span(version));
 }
@@ -1109,7 +1116,7 @@ test "bytes that are not valid UTF-8 come back as the bytes that went in" {
     const raw = [_]u8{ 0xff, 0xfe, 'g', 't', 'k' };
     try treeInfoSetToolkitName(tree, &raw);
 
-    const name = (try treeInfoGetToolkitName(gpa, tree)).?;
+    const name = (try treeInfoGetToolkitName(gpa, tree)) orelse return error.ToolkitNameIsUnset;
     defer releaseCString(gpa, name);
     try testing.expectEqualSlices(u8, &raw, span(name));
 }
@@ -1125,7 +1132,8 @@ test "a getter fails on its one allocation and leaves the property owned" {
         treeInfoGetToolkitName(failing.allocator(), tree),
     );
     // The property is still the object's, and the next getter reads it.
-    try testing.expectEqualStrings("gtk", toolkitValue(tree, .name).?);
+    const kept = toolkitValue(tree, .name) orelse return error.ToolkitNameIsUnset;
+    try testing.expectEqualStrings("gtk", kept);
 }
 
 test "a setter allocates through the handle, and fails there and nowhere else" {
@@ -1215,7 +1223,8 @@ test "both toolkit fields answer the same way, member by member" {
 
         try testing.expectEqual(@as(?[]const u8, null), toolkitValue(tree, which));
         try tree.setToolkit(which, "gtk");
-        try testing.expectEqualStrings("gtk", toolkitValue(tree, which).?);
+        const stored = toolkitValue(tree, which) orelse return error.ToolkitIsUnset;
+        try testing.expectEqualStrings("gtk", stored);
 
         const text = try treeInfoDebug(gpa, tree);
         defer releaseCString(gpa, text);
@@ -1293,7 +1302,8 @@ test "the value out of the handle borrows the handle's own two strings" {
     try treeInfoSetToolkitName(tree, "gtk");
 
     const borrowed = tree.value();
-    try testing.expectEqualStrings("gtk", borrowed.toolkit_name.?);
+    const borrowed_name = borrowed.toolkit_name orelse return error.ToolkitNameIsUnborrowed;
+    try testing.expectEqualStrings("gtk", borrowed_name);
     try testing.expectEqual(@as(NodeIdContent, 9), borrowed.root.value);
 
     // The value borrows rather than snapshots: both spellings carry the same
@@ -1302,8 +1312,6 @@ test "the value out of the handle borrows the handle's own two strings" {
     // the handle's own field and leaves this copy holding the header it was
     // given. Reading the bytes through it after that set would be a read of
     // memory the second set already released.
-    try testing.expectEqual(
-        storage(tree, .name).?.ptr,
-        borrowed.toolkit_name.?.ptr,
-    );
+    const owned = storage(tree, .name) orelse return error.ToolkitNameIsUnset;
+    try testing.expectEqual(owned.ptr, borrowed_name.ptr);
 }

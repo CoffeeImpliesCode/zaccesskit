@@ -251,6 +251,35 @@ Each item names the failure it prevents. Do not rediscover them.
   therefore has a test in `src/root.zig` that calls
   `std.testing.refAllDecls` on it, and a fourth namespace needs one in the
   same change.
+- **Z001 is off in `.ziglint.zon`, and it stays off.** Z001 asks for a
+  camelCase function name. 498 of its findings are the C ABI surface, where
+  the Zig identifier **is** the C symbol in `include/zaccesskit.h` byte for
+  byte: 440 are `export fn accesskit_*` across seven files under `src/capi/`,
+  and 58 are the `@export`-driven declarations in `src/capi/platform.zig`,
+  whose emitted symbol name is the C name. Renaming one to
+  `accesskitNodeChildren` satisfies Z001 and breaks every C caller. A rename
+  driver in this repository did exactly that and corrupted 807 sites across
+  nine files. **A lint rule that would break a foreign-function boundary is
+  not a style rule for this package**, so the rule goes off and the count
+  means what it says.
+  - `zig build capi-parity` is what holds the 498 to the header instead. The
+    property it asserts is two-directional: it compares the header
+    declarations against the symbols the Zig side exports and fails on a
+    symbol present on one side and not the other. That holds against a rename
+    applied to the Zig side alone, which is the mistake this exemption exists
+    because it happened. **Its limit: the Zig side is scanned lexically, so a
+    rename applied to both the Zig declarations and the tool's own
+    expectations would pass.** Reaching that needs an edit to
+    `include/zaccesskit.h` too, so the header is the fixed side and the blind
+    spot is a coordinated edit of the header and the tool.
+  - The cost is stated, not hidden. Z001 reported 546 findings, so turning it
+    off also stops reporting the 48 that are fixable. `ziglint` 0.5.3 loads
+    one `.ziglint.zon` per run and has no per-directory rule scoping, so a
+    config cannot exempt `src/capi/` alone. Naming and review own those 48.
+  - Do not "fix" this by renaming a C symbol, by adding
+    `// ziglint-ignore: Z001` to 498 lines, or by adding a second config.
+    `docs/32-layout-and-naming-corrections.md:206-221` settles naming for the
+    Zig half, and this settles it for the boundary.
 - **Bound the address space on native runs only.** `build.zig:22` sets four
   gibibytes and `addCeilingedRun` applies it through a `bash -c` launcher whose
   script is `ulimit -v 4194304; exec "$0"`. Keep it off `cross-test`. Under
@@ -378,6 +407,22 @@ Each item names the failure it prevents. Do not rediscover them.
   `/tmp/scratch/accesskit-c` and
   `/tmp/scratch/goose` hold the pinned upstream sources. Read
   them, do not edit them, and do not add agent rules to them.
+- **Never write to `/tmp` or `/var/tmp`.** Not a scratch directory, not a
+  probe output, not a cache, not an archive, not a temporary file, and not as
+  the `TMPDIR`, `TMP` or `TEMP` of a command that writes one. Every byte this
+  work produces goes under `/tmp/scratch/<slice>/` or the
+  cache at `/tmp/cache/zaccesskit/`. This is the user's standing
+  instruction and it is not a default to be overridden when a tool suggests
+  one: `zig build` has been seen to land a `cimport.h` under a path containing
+  a `tmp` segment, so when a tool writes somewhere unexpected, move the result
+  and point the tool at `/home/tmp2` rather than accepting the path.
+  `/vol/tmp` is a read-only mount holding reference headers such as the JDK
+  used by `docs/42`; it is read, never written, and it is not a scratch
+  directory either.
+- **Clean up your own scratch before you finish.** `/tmp/scratch/`
+  accumulates a directory per slice. Remove yours when the slice lands, and
+  remove it when the slice fails, because a failed slice's scratch is the one
+  somebody will mistake for evidence later.
 - **`HANDOFF.md` is never committed.** The `.gitignore` lists it for that
   reason.
 

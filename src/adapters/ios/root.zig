@@ -2032,9 +2032,15 @@ const Fake = struct {
     }
 };
 
-/// The fake a `Platform` entry point receives as its context.
-fn fakeFrom(ctx: ?*anyopaque) *Fake {
-    return @ptrCast(@alignCast(ctx.?));
+/// The fake a `Platform` entry point receives as its context, or `null` when the
+/// caller supplies none.
+///
+/// Every entry point below answers its own absent form when this is `null`: the
+/// false boolean, the null pointer, the zero scalar, the empty point. A handler
+/// with no state behind it is not a crash, and this file's rule is that a
+/// failure path is a value the caller can read.
+fn fakeFrom(ctx: ?*anyopaque) ?*Fake {
+    return @ptrCast(@alignCast(ctx));
 }
 
 /// The platform an object with no state answers from.
@@ -2048,11 +2054,11 @@ fn fakeClassFrom(backing: u32) *runtime.ObjClass {
 }
 
 fn fakeAnyAssistiveTechRunning(ctx: ?*anyopaque) bool {
-    return fakeFrom(ctx).assistive_tech_running;
+    return (fakeFrom(ctx) orelse return false).assistive_tech_running;
 }
 
 fn fakeObserverNew(ctx: ?*anyopaque, _: *runtime.ObjClass, _: ?*anyopaque) ?*runtime.AnyObject {
-    const self = fakeFrom(ctx);
+    const self = fakeFrom(ctx) orelse return null;
     self.observers_built += 1;
     return self.observer orelse fakePointerFrom(0x1000);
 }
@@ -2062,39 +2068,39 @@ fn fakeAddStatusObserver(
     _: *runtime.AnyObject,
     notification_name: [:0]const u8,
 ) void {
-    const self = fakeFrom(ctx);
+    const self = fakeFrom(ctx) orelse return;
     self.observers.append(self.gpa, notification_name) catch return;
 }
 
 fn fakeRemoveStatusObserver(ctx: ?*anyopaque, _: *runtime.AnyObject) void {
-    const self = fakeFrom(ctx);
+    const self = fakeFrom(ctx) orelse return;
     self.observer_removals += 1;
 }
 
 fn fakeClaimObject(ctx: ?*anyopaque, _: *runtime.AnyObject, adapter: ?*anyopaque) void {
-    fakeFrom(ctx).claimed = adapter;
+    (fakeFrom(ctx) orelse return).claimed = adapter;
 }
 
 fn fakeReleaseObject(ctx: ?*anyopaque, _: *runtime.AnyObject) void {
-    const self = fakeFrom(ctx);
+    const self = fakeFrom(ctx) orelse return;
     self.claimed = null;
     self.releases += 1;
 }
 
 fn fakeObjectOwner(ctx: ?*anyopaque, _: *runtime.AnyObject) bool {
-    return fakeFrom(ctx).claimed != null;
+    return (fakeFrom(ctx) orelse return false).claimed != null;
 }
 
 fn fakeViewWindow(ctx: ?*anyopaque, _: *runtime.AnyObject) ?*runtime.AnyObject {
-    return fakeFrom(ctx).window;
+    return (fakeFrom(ctx) orelse return null).window;
 }
 
 fn fakeViewScreen(ctx: ?*anyopaque, _: *runtime.AnyObject) ?*runtime.AnyObject {
-    return fakeFrom(ctx).screen;
+    return (fakeFrom(ctx) orelse return null).screen;
 }
 
 fn fakeScreenCoordinateSpace(ctx: ?*anyopaque, _: *runtime.AnyObject) ?*runtime.AnyObject {
-    return fakeFrom(ctx).space;
+    return (fakeFrom(ctx) orelse return null).space;
 }
 
 fn fakeViewConvertPoint(
@@ -2103,7 +2109,7 @@ fn fakeViewConvertPoint(
     point: foundation.CGPoint,
     _: *runtime.AnyObject,
 ) foundation.CGPoint {
-    const self = fakeFrom(ctx);
+    const self = fakeFrom(ctx) orelse return .{ .x = 0, .y = 0 };
     self.conversions += 1;
     self.last_point = point;
     return .{
@@ -2113,28 +2119,28 @@ fn fakeViewConvertPoint(
 }
 
 fn fakeViewContentScaleFactor(ctx: ?*anyopaque, _: *runtime.AnyObject) foundation.CGFloat {
-    return fakeFrom(ctx).content_scale;
+    return (fakeFrom(ctx) orelse return 0).content_scale;
 }
 
 fn fakeWindowRootView(ctx: ?*anyopaque, _: *runtime.AnyObject) ?*runtime.AnyObject {
-    return fakeFrom(ctx).window_root_view_value;
+    return (fakeFrom(ctx) orelse return null).window_root_view_value;
 }
 
 fn fakeViewClass(ctx: ?*anyopaque, _: *runtime.AnyObject) ?*runtime.ObjClass {
-    return fakeFrom(ctx).view_class_value;
+    return (fakeFrom(ctx) orelse return null).view_class_value;
 }
 
 fn fakeClassName(ctx: ?*anyopaque, _: *runtime.ObjClass) ?[*:0]const u8 {
-    const self = fakeFrom(ctx);
+    const self = fakeFrom(ctx) orelse return null;
     return self.class_name_value.ptr;
 }
 
 fn fakeClassSuperclass(ctx: ?*anyopaque, _: *runtime.ObjClass) ?*runtime.ObjClass {
-    return fakeFrom(ctx).superclass_value;
+    return (fakeFrom(ctx) orelse return null).superclass_value;
 }
 
 fn fakeClassWithName(ctx: ?*anyopaque, name: [:0]const u8) ?*runtime.ObjClass {
-    const self = fakeFrom(ctx);
+    const self = fakeFrom(ctx) orelse return null;
     if (self.known_classes.get(name)) |known| return known;
     // The Foundation root class is registered on every real platform, so the
     // fixture answers it and nothing else. That makes the adapter build the
@@ -2149,7 +2155,7 @@ fn fakeBuildObserverClass(
     _: [:0]const u8,
     _: *runtime.ObjClass,
 ) ?*runtime.ObjClass {
-    const self = fakeFrom(ctx);
+    const self = fakeFrom(ctx) orelse return null;
     if (self.class_pair_refused) return null;
     self.classes_built += 1;
     return fakeClassFrom(@intCast(0x2000 + self.classes_built));
@@ -2160,7 +2166,7 @@ fn fakeBuildViewSubclass(
     _: [:0]const u8,
     _: *runtime.ObjClass,
 ) ?*runtime.ObjClass {
-    const self = fakeFrom(ctx);
+    const self = fakeFrom(ctx) orelse return null;
     if (self.class_pair_refused) return null;
     self.classes_built += 1;
     return fakeClassFrom(@intCast(0x2000 + self.classes_built));
@@ -2171,18 +2177,18 @@ fn fakeSetViewClass(
     _: *runtime.AnyObject,
     class: *runtime.ObjClass,
 ) void {
-    const self = fakeFrom(ctx);
+    const self = fakeFrom(ctx) orelse return;
     self.view_class_value = class;
     self.set_view_class_calls += 1;
 }
 
 fn fakePostNotification(ctx: ?*anyopaque, notification: u64, _: ?*runtime.AnyObject) void {
-    const self = fakeFrom(ctx);
+    const self = fakeFrom(ctx) orelse return;
     self.posted.append(self.gpa, notification) catch return;
 }
 
 fn fakeRaiseAnnouncement(ctx: ?*anyopaque, text: []const u8, assertive: bool) void {
-    const self = fakeFrom(ctx);
+    const self = fakeFrom(ctx) orelse return;
     self.announcements.append(
         self.gpa,
         .{ .text = text, .assertive = assertive },
@@ -2190,7 +2196,7 @@ fn fakeRaiseAnnouncement(ctx: ?*anyopaque, text: []const u8, assertive: bool) vo
 }
 
 fn fakeEmptyArray(ctx: ?*anyopaque) ?*runtime.AnyObject {
-    const self = fakeFrom(ctx);
+    const self = fakeFrom(ctx) orelse return null;
     self.empty_array_calls += 1;
     return self.array_value orelse fakePointerFrom(0x3000);
 }
@@ -2201,7 +2207,7 @@ fn fakeEmptyArray(ctx: ?*anyopaque) ?*runtime.AnyObject {
 /// counter is the observation, so a path that must release the table it was
 /// given says so in a test.
 fn fakeReleasePlatform(ctx: ?*anyopaque) void {
-    const self = fakeFrom(ctx);
+    const self = fakeFrom(ctx) orelse return;
     self.platform_releases += 1;
 }
 
@@ -2257,7 +2263,8 @@ const ActivationFixture = struct {
 fn activationHandler() boundary.ActivationHandler {
     return struct {
         fn call(userdata: ?*anyopaque) callconv(.c) ?*boundary.CTreeUpdate {
-            const fixture: *ActivationFixture = @ptrCast(@alignCast(userdata.?));
+            const fixture: *ActivationFixture = @ptrCast(@alignCast(userdata orelse
+                return null));
             fixture.calls += 1;
             const built = fixture.answer orelse return null;
             // A fixture that cannot allocate answers "no tree", and the test
@@ -2280,7 +2287,8 @@ const DeactivationFixture = struct {
 fn deactivationHandler() boundary.DeactivationHandler {
     return struct {
         fn call(userdata: ?*anyopaque) callconv(.c) void {
-            const fixture: *DeactivationFixture = @ptrCast(@alignCast(userdata.?));
+            const fixture: *DeactivationFixture = @ptrCast(@alignCast(userdata orelse
+                return));
             fixture.calls += 1;
         }
     }.call;
@@ -2324,7 +2332,8 @@ const FactoryFixture = struct {
 fn updateFactory() boundary.TreeUpdateFactory {
     return struct {
         fn call(userdata: ?*anyopaque) callconv(.c) ?*boundary.CTreeUpdate {
-            const fixture: *FactoryFixture = @ptrCast(@alignCast(userdata.?));
+            const fixture: *FactoryFixture = @ptrCast(@alignCast(userdata orelse
+                return null));
             fixture.calls += 1;
             const built = fixture.answer orelse return null;
             const block = allocation.create(boundary.CTreeUpdate) catch return null;
@@ -2924,10 +2933,11 @@ test "a view with no window answers the hit test with no window" {
 
     activation.answer = try fixtureUpdate(gpa, .window, &.{}, .{ .value = 0 }, false);
     raiseEvents(iosAdapterViewDidAppear(adapter));
+    const active = activeTree(adapter) orelse return error.NoActiveTree;
     try testing.expectError(error.NoWindow, treePoint(
         adapter,
         fakePointerFrom(0x10),
-        activeTree(adapter).?.stateOf().root(),
+        active.stateOf().root(),
         .{ .x = 0, .y = 0 },
     ));
     try testing.expectEqual(@as(usize, 0), state.conversions);
@@ -2974,8 +2984,8 @@ test "the subclassing adapter names the subclass after the view class and restor
     try testing.expectEqualStrings("AccessKitSubclassOfAKFakeView", name);
     try testing.expect(state.claimed != null);
     try testing.expectEqual(@as(usize, 1), state.set_view_class_calls);
-    try testing.expect(state.view_class_value != null);
-    try testing.expect(state.view_class_value.? != fakeClassFrom(0x51));
+    const assigned = state.view_class_value orelse return error.NoAssignedClass;
+    try testing.expect(assigned != fakeClassFrom(0x51));
 }
 
 test "a second subclassing adapter on the same view is refused and changes nothing" {

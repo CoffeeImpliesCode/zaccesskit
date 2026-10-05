@@ -617,7 +617,7 @@ test "a property is stored once and read back unchanged" {
     try properties.put(gpa, "new_value", .{ .boolean = true });
 
     try testing.expectEqual(@as(usize, 1), properties.count());
-    const found = properties.get("new_value").?;
+    const found = properties.get("new_value") orelse return error.NoSuchProperty;
     // A union with no `eql` compares field by field, and this test reads the
     // boolean itself so a failure names the value rather than the tag.
     try testing.expect(found == .boolean);
@@ -635,7 +635,8 @@ test "putting a key twice replaces the value instead of appending" {
     // A dictionary has one value per key. Two entries under one key is a list
     // where a peer reads a map, and the peer keeps the first it finds.
     try testing.expectEqual(@as(usize, 1), properties.count());
-    try testing.expectEqualStrings("new", properties.get("detail").?.text);
+    const replaced = properties.get("detail") orelse return error.NoSuchProperty;
+    try testing.expectEqualStrings("new", replaced.text);
 }
 
 test "the scan for a duplicate key walks the whole list" {
@@ -651,9 +652,12 @@ test "the scan for a duplicate key walks the whole list" {
     try properties.put(gpa, "second", .{ .integer = 20 });
 
     try testing.expectEqual(@as(usize, 3), properties.count());
-    try testing.expectEqual(@as(i32, 1), properties.get("first").?.integer);
-    try testing.expectEqual(@as(i32, 20), properties.get("second").?.integer);
-    try testing.expectEqual(@as(i32, 3), properties.get("third").?.integer);
+    const first = properties.get("first") orelse return error.NoSuchProperty;
+    const second = properties.get("second") orelse return error.NoSuchProperty;
+    const third = properties.get("third") orelse return error.NoSuchProperty;
+    try testing.expectEqual(@as(i32, 1), first.integer);
+    try testing.expectEqual(@as(i32, 20), second.integer);
+    try testing.expectEqual(@as(i32, 3), third.integer);
 }
 
 test "every property value carries the signature the reference declares" {
@@ -742,7 +746,8 @@ test "draining moves each event's dictionary rather than copying or dropping it"
     // The dictionary arrives intact, which is what a move gives and a copy of
     // the header fields alone would not.
     try testing.expectEqual(@as(usize, 1), taken.items.len);
-    const carried = taken.items[0].properties.get("new_value").?;
+    const carried = taken.items[0].properties.get("new_value") orelse
+        return error.NoSuchProperty;
     try testing.expect(carried == .boolean);
     try testing.expect(carried.boolean);
 

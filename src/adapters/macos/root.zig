@@ -253,7 +253,7 @@ const Context = struct {
     /// The walk is over `nodes`, whose length is the number of platform nodes
     /// this context created, and the map does not change while it is walked.
     fn postDestroyedForEveryNode(self: *Context) void {
-        const name = events_mod.notificationFor(.node_destroyed).?;
+        const name = events_mod.notificationFor(.node_destroyed) orelse return;
         var it = self.nodes.iterator();
         while (it.next()) |entry| {
             self.host.post(self.host.ptr, entry.value_ptr.*, name);
@@ -348,7 +348,7 @@ pub const MacosQueuedEvents = struct {
                     // A node with no platform node was never shown to a client,
                     // so there is nothing to tell it about.
                     const node = self.context.removePlatformNode(id) orelse continue;
-                    const name = events_mod.notificationFor(.node_destroyed).?;
+                    const name = events_mod.notificationFor(.node_destroyed) orelse continue;
                     self.context.host.post(self.context.host.ptr, node, name);
                 },
                 .announcement => |announcement| {
@@ -484,7 +484,11 @@ pub const MacosAdapter = struct {
                     list.append(self.allocator, .{
                         .generic = .{
                             .node_id = id,
-                            .notification = events_mod.notificationFor(.focus_moved).?,
+                            .notification = events_mod.notificationFor(.focus_moved) orelse {
+                                list.deinit(self.allocator);
+                                context.release();
+                                return null;
+                            },
                         },
                     }) catch {
                         list.deinit(self.allocator);
@@ -1590,7 +1594,8 @@ test "an inactive adapter produces no events and no tree" {
     var recorder = RecordingHost.init(std.testing.allocator);
     defer recorder.deinit();
     var action = RecordingAction{};
-    const adapter = newAdapter(null, false, recordingAction, &action, recorder.host()).?;
+    const adapter = newAdapter(null, false, recordingAction, &action, recorder.host()) orelse
+        return error.NoAdapter;
     defer macosAdapterFree(adapter);
 
     try testing.expect(macosAdapterUpdateIfActive(adapter, oneShotFactory, null) == null);
@@ -1605,7 +1610,8 @@ test "a focus update before the first tree is kept for the tree that arrives" {
     var recorder = RecordingHost.init(std.testing.allocator);
     defer recorder.deinit();
     var action = RecordingAction{};
-    const adapter = newAdapter(null, false, recordingAction, &action, recorder.host()).?;
+    const adapter = newAdapter(null, false, recordingAction, &action, recorder.host()) orelse
+        return error.NoAdapter;
     defer macosAdapterFree(adapter);
 
     try testing.expect(macosAdapterUpdateViewFocusState(adapter, true) == null);
@@ -1622,7 +1628,8 @@ test "a null answer from an activation handler installs the placeholder" {
     defer recorder.deinit();
     var action = RecordingAction{};
     var activation = AnsweringActivation{ .tree = null, .calls = 0 };
-    const adapter = newAdapter(null, false, recordingAction, &action, recorder.host()).?;
+    const adapter = newAdapter(null, false, recordingAction, &action, recorder.host()) orelse
+        return error.NoAdapter;
     defer macosAdapterFree(adapter);
 
     // A placeholder makes `focus` answer the placeholder root, which is a
@@ -1642,7 +1649,8 @@ test "a tree from an activation handler makes the adapter active" {
     var action = RecordingAction{};
     const tree = try boxTwoNodeTree(allocation.allocator(), child_id);
     var activation = AnsweringActivation{ .tree = tree, .calls = 0 };
-    const adapter = newAdapter(null, true, recordingAction, &action, recorder.host()).?;
+    const adapter = newAdapter(null, true, recordingAction, &action, recorder.host()) orelse
+        return error.NoAdapter;
     defer macosAdapterFree(adapter);
 
     const focused = macosAdapterFocus(adapter, answeringActivation, &activation);
@@ -1661,22 +1669,23 @@ test "the first update over a placeholder yields the focus event" {
     defer recorder.deinit();
     var action = RecordingAction{};
     var activation = AnsweringActivation{ .tree = null, .calls = 0 };
-    const adapter = newAdapter(null, true, recordingAction, &action, recorder.host()).?;
+    const adapter = newAdapter(null, true, recordingAction, &action, recorder.host()) orelse
+        return error.NoAdapter;
     defer macosAdapterFree(adapter);
 
     _ = macosAdapterFocus(adapter, answeringActivation, &activation);
     try testing.expect(adapter.state == .placeholder);
 
     const tree = try boxTwoNodeTree(allocation.allocator(), child_id);
-    const handle = macosAdapterUpdateIfActive(adapter, oneShotFactory, tree);
-    try testing.expect(handle != null);
+    const handle = macosAdapterUpdateIfActive(adapter, oneShotFactory, tree) orelse
+        return error.NoQueuedEvents;
     try testing.expect(adapter.state == .active);
-    try testing.expectEqual(@as(usize, 1), handle.?.events.items.len);
+    try testing.expectEqual(@as(usize, 1), handle.events.items.len);
     try testing.expectEqualStrings(
-        events_mod.notificationFor(.focus_moved).?,
-        handle.?.events.items[0].generic.notification,
+        events_mod.notificationFor(.focus_moved) orelse return error.NoSuchNotification,
+        handle.events.items[0].generic.notification,
     );
-    macosQueuedEventsRaise(handle.?);
+    macosQueuedEventsRaise(handle);
 }
 
 test "raising the handle posts the event and the handle is then spent" {
@@ -1687,17 +1696,19 @@ test "raising the handle posts the event and the handle is then spent" {
     defer recorder.deinit();
     var action = RecordingAction{};
     var activation = AnsweringActivation{ .tree = null, .calls = 0 };
-    const adapter = newAdapter(null, true, recordingAction, &action, recorder.host()).?;
+    const adapter = newAdapter(null, true, recordingAction, &action, recorder.host()) orelse
+        return error.NoAdapter;
     defer macosAdapterFree(adapter);
 
     _ = macosAdapterFocus(adapter, answeringActivation, &activation);
     const tree = try boxTwoNodeTree(allocation.allocator(), child_id);
-    const handle = macosAdapterUpdateIfActive(adapter, oneShotFactory, tree).?;
+    const handle = macosAdapterUpdateIfActive(adapter, oneShotFactory, tree) orelse
+        return error.NoQueuedEvents;
     try testing.expectEqual(@as(usize, 0), recorder.count());
     macosQueuedEventsRaise(handle);
     try testing.expectEqual(@as(usize, 1), recorder.count());
     try testing.expectEqualStrings(
-        events_mod.notificationFor(.focus_moved).?,
+        events_mod.notificationFor(.focus_moved) orelse return error.NoSuchNotification,
         recorder.posts.items[0].notification,
     );
 }
@@ -1709,7 +1720,8 @@ test "dropping a context posts one destroyed notification per live node" {
     var action = RecordingAction{};
     const tree = try boxTwoNodeTree(allocation.allocator(), child_id);
     var activation = AnsweringActivation{ .tree = tree, .calls = 0 };
-    const adapter = newAdapter(null, true, recordingAction, &action, recorder.host()).?;
+    const adapter = newAdapter(null, true, recordingAction, &action, recorder.host()) orelse
+        return error.NoAdapter;
 
     // Two platform nodes, one for the root and one for the focus.
     try testing.expect(macosAdapterFocus(adapter, answeringActivation, &activation) != null);
@@ -1725,7 +1737,7 @@ test "dropping a context posts one destroyed notification per live node" {
     macosAdapterFree(adapter);
     try testing.expectEqual(@as(usize, 2), recorder.count() - before);
     try testing.expectEqualStrings(
-        events_mod.notificationFor(.node_destroyed).?,
+        events_mod.notificationFor(.node_destroyed) orelse return error.NoSuchNotification,
         recorder.posts.items[recorder.count() - 1].notification,
     );
 }
@@ -1736,7 +1748,8 @@ test "the debug text names the state and the platform node count" {
     var recorder = RecordingHost.init(std.testing.allocator);
     defer recorder.deinit();
     var action = RecordingAction{};
-    const adapter = newAdapter(null, true, recordingAction, &action, recorder.host()).?;
+    const adapter = newAdapter(null, true, recordingAction, &action, recorder.host()) orelse
+        return error.NoAdapter;
     defer macosAdapterFree(adapter);
 
     const text = macosAdapterDebug(adapter) orelse return error.NoText;
@@ -1764,7 +1777,7 @@ test "the focus forwarder records a class name once" {
     try testing.expectEqual(before + 1, registeredWindowClassCount());
     try testing.expectEqualStrings(
         "AccessKitTestWindow",
-        registeredWindowClass(registeredWindowClassCount() - 1).?,
+        registeredWindowClass(registeredWindowClassCount() - 1) orelse return error.NoWindowClass,
     );
     macosAddFocusForwarderToWindowClass("AccessKitTestWindow");
     try testing.expectEqual(before + 1, registeredWindowClassCount());
@@ -1778,7 +1791,7 @@ test "the focus forwarder records a class name once" {
     try testing.expectEqual(before + 2, registeredWindowClassCount());
     try testing.expectEqualStrings(
         padded,
-        registeredWindowClass(registeredWindowClassCount() - 1).?,
+        registeredWindowClass(registeredWindowClassCount() - 1) orelse return error.NoWindowClass,
     );
 }
 
@@ -1793,7 +1806,7 @@ test "a name read from the registry outlives the call that returned it" {
     const index = registeredWindowClassCount();
     try testing.expect(index + 2 < window_class_capacity);
     macosAddFocusForwarderToWindowClass("AccessKitTestHeldName");
-    const held = registeredWindowClass(index).?;
+    const held = registeredWindowClass(index) orelse return error.NoWindowClass;
     const table = @intFromPtr(&window_class_names);
     const address = @intFromPtr(held.ptr);
     try testing.expect(address >= table);
@@ -1805,7 +1818,7 @@ test "a name read from the registry outlives the call that returned it" {
     try testing.expectEqualStrings("AccessKitTestHeldName", held);
     try testing.expectEqualStrings(
         "AccessKitTestLaterName",
-        registeredWindowClass(index + 1).?,
+        registeredWindowClass(index + 1) orelse return error.NoWindowClass,
     );
     try testing.expectEqual(index + 2, registeredWindowClassCount());
     try testing.expect(registeredWindowClass(index + 2) == null);
@@ -1823,7 +1836,7 @@ test "the subclassing adapter forwards its four calls" {
         recordingAction,
         &action,
         recorder.host(),
-    ).?;
+    ) orelse return error.NoAdapter;
     try testing.expect(adapter.window == @as(?*anyopaque, &window));
     try testing.expect(adapter.adapter.state == .inactive);
 
@@ -1845,7 +1858,8 @@ test "a queued-events handle that cannot be allocated answers null" {
     var action = RecordingAction{};
     const tree = try boxTwoNodeTree(allocation.allocator(), child_id);
     var activation = AnsweringActivation{ .tree = tree, .calls = 0 };
-    const adapter = newAdapter(null, true, recordingAction, &action, recorder.host()).?;
+    const adapter = newAdapter(null, true, recordingAction, &action, recorder.host()) orelse
+        return error.NoAdapter;
     defer macosAdapterFree(adapter);
 
     // A live tree, so the handle allocation is the only thing left to fail.

@@ -82,7 +82,10 @@ pub const change_count = 7;
 /// caller that posts without a `userInfo` cannot post it by accident.
 ///
 /// **Returns.** A borrowed string from `literals.notifications`, or `null` for
-/// `.announcement`. There is no error: the table is total over the 7 tags.
+/// `.announcement` and for nothing else. There is no error: the table is total
+/// over the 7 tags. A caller that has already chosen one of the other six
+/// writes `orelse return`, which is a branch on the tag rather than a claim
+/// that the name is there.
 pub fn notificationFor(change: Change) ?[:0]const u8 {
     const name = switch (change) {
         .focus_moved => "NSAccessibilityFocusedUIElementChangedNotification",
@@ -274,7 +277,7 @@ pub const EventGenerator = struct {
         // a hash and not a walk.
         const entry = try self.text_changed.getOrPut(self.gpa, id);
         if (entry.found_existing) return;
-        try self.insertGenericFront(id, notificationFor(.value_changed).?);
+        try self.insertGenericFront(id, notificationFor(.value_changed) orelse return);
     }
 
     /// Queues a value change for the parent of a changed text run.
@@ -294,7 +297,7 @@ pub const EventGenerator = struct {
         const id = node.id();
         const entry = try self.selected_rows_changed.getOrPut(self.gpa, id);
         if (entry.found_existing) return;
-        try self.pushGeneric(id, notificationFor(.selected_rows_changed).?);
+        try self.pushGeneric(id, notificationFor(.selected_rows_changed) orelse return);
     }
 
     /// Queues a selected-rows change for the container of a selected item.
@@ -387,7 +390,7 @@ pub const EventGenerator = struct {
             properties.roleDescription(old),
             properties.roleDescription(new),
         )) {
-            try self.pushGeneric(node_id, notificationFor(.title_changed).?);
+            try self.pushGeneric(node_id, notificationFor(.title_changed) orelse return);
         }
         if (!optionalValueEquals(old, new)) {
             // A bool value change on the focused node comes last, because
@@ -395,13 +398,13 @@ pub const EventGenerator = struct {
             // Upstream `event.rs:262-271`.
             const focused = predicatesIsFocused(new);
             if (!focused and isBoolValue(new)) {
-                try self.insertGenericFront(node_id, notificationFor(.value_changed).?);
+                try self.insertGenericFront(node_id, notificationFor(.value_changed) orelse return);
             } else {
-                try self.pushGeneric(node_id, notificationFor(.value_changed).?);
+                try self.pushGeneric(node_id, notificationFor(.value_changed) orelse return);
             }
         }
         if (try textSelectionDiffers(old, new)) {
-            try self.pushGeneric(node_id, notificationFor(.selected_text_changed).?);
+            try self.pushGeneric(node_id, notificationFor(.selected_text_changed) orelse return);
         }
         if (try strings.label(self.gpa, new)) |new_label| {
             defer self.gpa.free(new_label.items);
@@ -434,7 +437,7 @@ pub const EventGenerator = struct {
         _ = old;
         const gained = new orelse return;
         if (try consumer.filter.commonFilter(gained) != .include) return;
-        try self.pushGeneric(gained.id(), notificationFor(.focus_moved).?);
+        try self.pushGeneric(gained.id(), notificationFor(.focus_moved) orelse return);
     }
 
     /// The body of `node_removed`, upstream `AK/macos/src/event.rs:317-325`.
@@ -516,8 +519,9 @@ fn rawValueEquals(a: NodeRef, b: NodeRef) bool {
 
 /// Whether two optional texts are the same text or the same absence.
 fn optionalTextEquals(a: ?[]const u8, b: ?[]const u8) bool {
-    if (a == null or b == null) return a == null and b == null;
-    return std.mem.eql(u8, a.?, b.?);
+    const left = a orelse return b == null;
+    const right = b orelse return false;
+    return std.mem.eql(u8, left, right);
 }
 
 /// Whether the two nodes' values are the same, upstream `:258`.
@@ -546,8 +550,10 @@ fn predicatesIsFocused(node: NodeRef) bool {
 fn textSelectionDiffers(a: NodeRef, b: NodeRef) !bool {
     const left = consumer.node_ref.set_state.rawTextSelection(a);
     const right = consumer.node_ref.set_state.rawTextSelection(b);
-    if (left == null or right == null) return left == null and right == null;
-    return !std.meta.eql(left.?, right.?);
+    if (left == null and right == null) return false;
+    const left_range = left orelse return true;
+    const right_range = right orelse return true;
+    return !std.meta.eql(left_range, right_range);
 }
 
 /// The filter the generator's walks read, upstream

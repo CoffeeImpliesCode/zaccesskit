@@ -635,7 +635,12 @@ fn assertPointerShaped(signature: anytype) void {
         std.debug.assert(!isAggregate(returned));
     }
     for (info.params) |param| {
-        std.debug.assert(!isAggregate(param.type.?));
+        // A parameter reflection names no type for cannot be an aggregate, so
+        // the absence is an answer this gate can act on rather than a gap it
+        // has to step over.
+        if (param.type) |declared| {
+            std.debug.assert(!isAggregate(declared));
+        }
     }
 }
 
@@ -1018,16 +1023,15 @@ test "a tree info is attached, kept and released with the update" {
 
     treeUpdateSetTreeInfo(update, info);
 
-    const attached = update.update.tree.?;
+    const attached = update.update.tree orelse return error.TreeInfoIsNotAttached;
     try testing.expectEqual(@as(NodeIdContent, 3), attached.root.value);
     // The value borrows rather than snapshots: the slice the update carries is
     // the handle's own copy, at the handle's own address, which is what makes
     // the handle the owner and the free the only release.
-    try testing.expectEqual(
-        info.toolkit_name_storage.?.ptr,
-        attached.toolkit_name.?.ptr,
-    );
-    try testing.expectEqualStrings("gtk", attached.toolkit_name.?);
+    const stored = info.toolkit_name_storage orelse return error.ToolkitNameIsUnset;
+    const attached_name = attached.toolkit_name orelse return error.ToolkitNameIsNotAttached;
+    try testing.expectEqual(stored.ptr, attached_name.ptr);
+    try testing.expectEqualStrings("gtk", attached_name);
 
     // Three blocks: the update handle, the tree info handle and the toolkit
     // name. The node array was never allocated, because nothing was pushed.
@@ -1062,7 +1066,7 @@ test "a second tree info releases the one it displaces" {
     const update = try treeUpdateWithFocus(gpa, 0);
     const first = try tree_info.treeInfoNew(gpa, 1);
     try tree_info.treeInfoSetToolkitName(first, "gtk");
-    const displaced = first.toolkit_name_storage.?;
+    const displaced = first.toolkit_name_storage orelse return error.ToolkitNameIsUnset;
     treeUpdateSetTreeInfo(update, first);
 
     const second = try tree_info.treeInfoNew(gpa, 2);
@@ -1070,7 +1074,8 @@ test "a second tree info releases the one it displaces" {
 
     try testing.expectEqual(@as(usize, 2), counting.released.count());
     try testing.expectEqual(@as(usize, 1), counting.timesReleased(displaced.ptr));
-    try testing.expectEqual(@as(NodeIdContent, 2), update.update.tree.?.root.value);
+    const current = update.update.tree orelse return error.TreeInfoIsNotAttached;
+    try testing.expectEqual(@as(NodeIdContent, 2), current.root.value);
 
     treeUpdateFree(update);
     counting.release();
@@ -1234,7 +1239,8 @@ test "the exported tree info calls answer through the C layer" {
     const info = try tree_info.treeInfoNew(allocation.allocator(), 4);
     try tree_info.treeInfoSetToolkitName(info, "gtk");
     accesskit_tree_update_set_tree_info(update, info);
-    try testing.expectEqual(@as(NodeIdContent, 4), update.update.tree.?.root.value);
+    const attached = update.update.tree orelse return error.TreeInfoIsNotAttached;
+    try testing.expectEqual(@as(NodeIdContent, 4), attached.root.value);
 
     // The clear releases nothing, so the update still owns the handle and the
     // free below releases the handle and the string together.
