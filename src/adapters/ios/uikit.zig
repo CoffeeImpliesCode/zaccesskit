@@ -244,10 +244,38 @@ pub const ContainerType = enum(c_int) { _ };
 /// returns.
 ///
 /// `docs/29-apple-android-apis.md` row 34 counts three expanded-status values
-/// in the adapter and gives no number for any of them.
-/// **Unverified**: no iOS SDK is installed on this host, so
-/// `UIAccessibilityConstants.h` was not read.
-pub const ExpandedStatus = enum(c_int) { _ };
+/// in the adapter and gives no number for any of them, but
+/// `AK/ios/src/util.rs:23-27` writes all three, and that is the tree this port
+/// follows, so the three cases and their numbers come from there. The names are
+/// the Zig spellings of the three `#[allow(non_upper_case_globals)]` constants
+/// upstream, which are the UIKit names.
+///
+/// The numbers are **unverified** against UIKit: no iOS SDK is installed on this
+/// host, so `UIAccessibilityConstants.h` was not read.
+pub const ExpandedStatus = enum(c_int) {
+    /// `Self(0)` at `AK/ios/src/util.rs:24`: the element has no expanded state
+    /// to report.
+    unsupported = 0,
+    /// `Self(1)` at `:25`: the element is expanded.
+    expanded = 1,
+    /// `Self(2)` at `:26`: the element is collapsed.
+    collapsed = 2,
+};
+
+/// How many cases `ExpandedStatus` holds, which is the three of
+/// `AK/ios/src/util.rs:24-26`.
+pub const expanded_status_count: usize = 3;
+
+comptime {
+    if (@typeInfo(ExpandedStatus).@"enum".fields.len != expanded_status_count) {
+        @compileError("AK/ios/src/util.rs:24-26 names three expanded-status values");
+    }
+    for (@typeInfo(ExpandedStatus).@"enum".fields) |field| {
+        if (field.value < 0 or field.value > 2) {
+            @compileError("AK/ios/src/util.rs:24-26 writes 0, 1 and 2 and no other number");
+        }
+    }
+}
 
 /// `UIAccessibilityScrollDirection`, the argument `accessibilityScroll:` takes.
 ///
@@ -404,6 +432,17 @@ test "find returns the record that carries the spelling, or null" {
     try testing.expect(toggle != null);
     try testing.expectEqual(Kind.trait, toggle.?.kind);
     try testing.expectEqual(@as(?Identifier, null), find("UIAccessibilityTraitNoSuchName"));
+}
+
+test "the three expanded-status values carry the numbers AK/ios/src/util.rs writes" {
+    // `AK/ios/src/util.rs:24-26` writes `Self(0)`, `Self(1)` and `Self(2)`, and
+    // `docs/29` row 34 gives no number. Asserting the three numbers is what ties
+    // this enumeration to the tree this port follows rather than to a document
+    // that does not exist on this host.
+    try testing.expectEqual(@as(usize, 3), expanded_status_count);
+    try testing.expectEqual(@as(c_int, 0), @intFromEnum(ExpandedStatus.unsupported));
+    try testing.expectEqual(@as(c_int, 1), @intFromEnum(ExpandedStatus.expanded));
+    try testing.expectEqual(@as(c_int, 2), @intFromEnum(ExpandedStatus.collapsed));
 }
 
 /// Checks that the identifiers of `kind` are exactly `expected`, in order.

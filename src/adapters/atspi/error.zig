@@ -7,10 +7,10 @@
 //! `docs/41-atspi-build-map.md` section 1.9 is the checked table of the five
 //! names that reach the wire.
 //!
-//! **What this module owns.** The six members, the five D-Bus error names, and
-//! the text each carries. No other module may name `org.freedesktop.DBus.Error.*`
-//! except the dispatch layer, which is what puts a name on the wire and which
-//! does not exist yet.
+//! **What this module owns.** The six member errors, the three transport errors
+//! and the predicate over them, the five D-Bus error names, and the text each
+//! carries. No other module may name `org.freedesktop.DBus.Error.*` except the
+//! dispatch layer, which is what puts a name on the wire and does not exist yet.
 //!
 //! **Why the source is a path and not an `ObjectId`.** `docs/41` section 2.3
 //! puts `object_id.zig` below every other module and gives `error.zig` no
@@ -146,6 +146,60 @@ pub fn mapErrorFromNode(source: anytype, err: Error) DbusError {
     return mapError(source.path(), err);
 }
 
+/// The three failures a call on the accessibility bus can report.
+///
+/// Upstream classifies a `zbus::Error` at `bus.rs:505-510`, which is a foreign
+/// enum this port never names. `docs/12:1392` requires the surviving cases to be
+/// members of a declared set, so a comptime sweep over `@typeInfo` proves that
+/// every path is handled, and it names the three: `BusUnavailable`,
+/// `InterfaceExists` and `MissingParameter`.
+///
+/// **Why it is declared after the member-error map.** `Error`, `DbusError`,
+/// `mapError` and `mapErrorFromNode` sit at the lines the translation ledger
+/// records for them, and `docs/35` section 1.3 makes the disposition the whole
+/// claim of a row. Inserting above them would move four cited lines for no gain.
+/// Read the two sets as a pair: this one answers whether a call may be
+/// swallowed, and the other answers what a member that answered writes.
+///
+/// **Who raises a member.** The bus connection and the object register arrive
+/// with milestone M5, at `docs/40-plan.md:256`. Until then nothing in this
+/// adapter performs a call, so nothing raises these three.
+pub const BusError = error{
+    /// The accessibility bus is not reachable, or the socket it lives on is
+    /// gone. Recoverable: the adapter drops the bus and waits for
+    /// `org.a11y.Status` to report `IsEnabled` again.
+    BusUnavailable,
+    /// A name this adapter asked the bus daemon to own already belongs to
+    /// someone else. Not recoverable: asking again asks for the same name.
+    InterfaceExists,
+    /// A method call arrived without one of its arguments. Not recoverable: the
+    /// peer sent the message, and no reply makes it send a different one.
+    MissingParameter,
+};
+
+/// Whether `err` has to reach the caller rather than be replaced by a default.
+///
+/// **Upstream.** `zbus_error_is_unrecoverable` at `bus.rs:505-510`, whose
+/// `matches!` names exactly `InterfaceExists` and `MissingParameter` and
+/// answers `false` for everything else. `docs/12:1051` gives this the name
+/// `isUnrecoverable` with no host dependency, and `docs/41:1269` merges it into
+/// this module.
+///
+/// **The contract.** The answer is `true` for the two members the upstream
+/// `matches!` names and `false` for every other member of `BusError`, which is
+/// today `BusUnavailable` alone. The `else` arm is the default arm
+/// `docs/12:1392` asks for: a member added later is recoverable until someone
+/// writes the arm that says otherwise, and the sweep in the test below names
+/// every member so the addition cannot pass unseen.
+///
+/// **Errors.** This function does not fail and allocates nothing.
+pub fn isUnrecoverable(err: BusError) bool {
+    return switch (err) {
+        error.InterfaceExists, error.MissingParameter => true,
+        else => false,
+    };
+}
+
 const testing = std.testing;
 // `AGENTS.md` section 3 asks for a sweep over `@typeInfo` of every declared
 // error set. `mapError` is total over the set, so the sweep has two jobs: it
@@ -237,4 +291,44 @@ test "three names are declared here and two more belong to their call sites" {
         "org.freedesktop.DBus.Error.NotSupported",
         error_not_supported,
     );
+}
+
+// The transport set gets the same sweep `AGENTS.md` section 3 asks for. The
+// predicate is total, so every member reaches it; the count pins the set, and
+// naming each member on its own line is what makes a failure name the member
+// rather than a line in the switch above. A fourth member added later fails the
+// count here rather than falling silently into the default arm.
+test "the transport set names three members and the sweep reaches every one" {
+    const members = switch (@typeInfo(BusError)) {
+        .error_set => |set| set orelse return error.EmptyErrorSet,
+        else => return error.NotAnErrorSet,
+    };
+    try testing.expectEqual(@as(usize, 3), members.len);
+
+    try testing.expect(!isUnrecoverable(error.BusUnavailable));
+    try testing.expect(isUnrecoverable(error.InterfaceExists));
+    try testing.expect(isUnrecoverable(error.MissingParameter));
+}
+
+test "the reference matches two of the three and the third takes the default arm" {
+    // Upstream `bus.rs:506-509` is
+    // `matches!(error, InterfaceExists(..) | MissingParameter(..))`, so two of
+    // the three members are unrecoverable and the third reaches the `else` arm
+    // this predicate writes. The count is the claim: a change that swallowed all
+    // three, or none, gives a different number and fails here.
+    const members = [_]BusError{
+        error.BusUnavailable,
+        error.InterfaceExists,
+        error.MissingParameter,
+    };
+    var unrecoverable_count: usize = 0;
+    for (members) |member| {
+        if (isUnrecoverable(member)) unrecoverable_count += 1;
+    }
+    try testing.expectEqual(@as(usize, 2), unrecoverable_count);
+
+    // The two names the reference names, and the one it does not.
+    try testing.expect(isUnrecoverable(error.InterfaceExists));
+    try testing.expect(isUnrecoverable(error.MissingParameter));
+    try testing.expect(!isUnrecoverable(error.BusUnavailable));
 }

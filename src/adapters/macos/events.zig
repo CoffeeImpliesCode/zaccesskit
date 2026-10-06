@@ -13,6 +13,11 @@
 //! cannot do here is call `NSAccessibilityPostNotification`: that call is the
 //! platform seam and lives in `root.zig`, behind `MacosQueuedEvents`.
 //!
+//! **The node wrapper is the port of `AK/macos/src/node.rs:309-382`, and it is
+//! in `node.zig`.** `event.rs:236`, `:264`, `:270-272` and `:300-302` read the
+//! label, the title, the value and the value's shape through it, so this module
+//! calls it rather than reading the properties itself.
+//!
 //! **Three ordering rules are the contract, and each is a test.**
 //!
 //! 1. **Text changes come before selection changes**, and text change events are
@@ -38,6 +43,7 @@ const std = @import("std");
 const consumer = @import("../../consumer/root.zig");
 const schema = @import("../../schema/root.zig");
 const literals = @import("literals.zig");
+const node_wrapper = @import("node.zig");
 
 const Allocator = std.mem.Allocator;
 const ArrayList = std.ArrayList;
@@ -375,12 +381,14 @@ pub const EventGenerator = struct {
         }
         const live = try consumer.node_ref.set_state.live(node);
         if (live != .off) {
-            if (try consumer.node_ref.strings.label(self.gpa, node)) |label_list| {
-                // `strings.label` answers a list whose capacity exceeds its
-                // length, so the release must go through `deinit`. A
-                // `gpa.free` of `items` would hand the allocator a slice
-                // shorter than the block it took.
-                var list = label_list;
+            // `AK/macos/src/event.rs:236` reads the label through
+            // `NodeWrapper::label`, so a node whose label comes from its value
+            // announces the value and not the label. The buffer answers a list
+            // whose capacity exceeds its length, so the release must go through
+            // `deinit`: a `gpa.free` of `items` would hand the allocator a
+            // slice shorter than the block it took.
+            const wrapper = node_wrapper.NodeWrapper.init(self.gpa, node);
+            if (try wrapper.label()) |list| {
                 defer list.deinit(self.gpa);
                 try self.pushAnnouncement(list.items, live);
             }
@@ -397,7 +405,6 @@ pub const EventGenerator = struct {
     /// **Returns.** `SlotError`, which the slot records in `failure`.
     pub fn slotNodeUpdated(self: *EventGenerator, old: NodeRef, new: NodeRef) SlotError!void {
         const properties = consumer.node_ref.properties;
-        const strings = consumer.node_ref.strings;
         const set_state = consumer.node_ref.set_state;
 
         if (!rawValueEquals(old, new)) try self.insertTextChangeIfNeeded(new);
@@ -417,18 +424,22 @@ pub const EventGenerator = struct {
         }
 
         const node_id = new.id();
-        if (!optionalTextEquals(
-            properties.roleDescription(old),
-            properties.roleDescription(new),
-        )) {
+        if (try node_wrapper.titlesDiffer(self.gpa, old, new)) {
             try self.pushGeneric(node_id, notificationFor(.title_changed) orelse return);
         }
-        if (!optionalValueEquals(old, new)) {
+        // Upstream computes the new value once and asks it two questions: the
+        // `!=` at `AK/macos/src/event.rs:271` and the
+        // `matches!(v, Value::Bool(_))` at `:272`. The bool shape comes from a
+        // toggled state or from the selection state of a tab, so
+        // `node.isBoolean` reads the value and not the toggled state.
+        const change = try node_wrapper.valueChange(self.gpa, old, new);
+        defer change.deinit(self.gpa);
+        if (change.differs) {
             // A bool value change on the focused node comes last, because
             // otherwise VoiceOver announces another node's change instead.
             // Upstream `event.rs:262-271`.
             const focused = predicatesIsFocused(new);
-            if (!focused and isBoolValue(new)) {
+            if (!focused and node_wrapper.isBoolean(change.value)) {
                 try self.insertGenericFront(node_id, notificationFor(.value_changed) orelse return);
             } else {
                 try self.pushGeneric(node_id, notificationFor(.value_changed) orelse return);
@@ -437,21 +448,21 @@ pub const EventGenerator = struct {
         if (try textSelectionDiffers(old, new)) {
             try self.pushGeneric(node_id, notificationFor(.selected_text_changed) orelse return);
         }
-        if (try strings.label(self.gpa, new)) |new_label| {
-            // Both releases go through `deinit`. `strings.label` answers a list
-            // whose capacity exceeds its length, so a `gpa.free` of `items`
-            // hands the allocator a slice shorter than the block it took.
-            var new_list = new_label;
+        // `AK/macos/src/event.rs:300-302` reads both labels through
+        // `NodeWrapper::label`, so a node whose label comes from its value
+        // announces the value and not the label. Both releases go through
+        // `deinit`: the answer is a list whose capacity exceeds its length, so a
+        // `gpa.free` of `items` hands the allocator a slice shorter than the
+        // block it took.
+        const old_wrapper = node_wrapper.NodeWrapper.init(self.gpa, old);
+        const new_wrapper = node_wrapper.NodeWrapper.init(self.gpa, new);
+        if (try new_wrapper.label()) |new_list| {
             defer new_list.deinit(self.gpa);
             const live = try set_state.live(new);
             const old_live = try set_state.live(old);
-            const old_label = try strings.label(self.gpa, old);
-            var old_list = old_label;
-            defer if (old_list) |*list| list.deinit(self.gpa);
-            const changed = if (old_list) |list|
-                !std.mem.eql(u8, list.items, new_list.items)
-            else
-                true;
+            const old_label = try old_wrapper.label();
+            defer node_wrapper.releaseText(self.gpa, old_label);
+            const changed = !node_wrapper.textEql(old_label, new_list);
             if (live != .off and (changed or live != old_live or old_filtered != .include)) {
                 try self.pushAnnouncement(new_list.items, live);
             }
@@ -543,27 +554,6 @@ fn rawValueEquals(a: NodeRef, b: NodeRef) bool {
     const left = set_state.rawValue(a) orelse return set_state.rawValue(b) == null;
     const right = set_state.rawValue(b) orelse return false;
     return std.mem.eql(u8, left, right);
-}
-
-/// Whether two optional texts are the same text or the same absence.
-fn optionalTextEquals(a: ?[]const u8, b: ?[]const u8) bool {
-    const left = a orelse return b == null;
-    const right = b orelse return false;
-    return std.mem.eql(u8, left, right);
-}
-
-/// Whether the two nodes' values are the same, upstream `:258`.
-///
-/// Upstream compares `NodeWrapper::value`, which is the interpreted value: a
-/// toggled state, a numeric value or a string. This module compares the raw
-/// bytes, because that is what the consumer layer reads without a schema walk.
-fn optionalValueEquals(a: NodeRef, b: NodeRef) bool {
-    return rawValueEquals(a, b);
-}
-
-/// Whether the node carries a toggled state, which is the bool value shape.
-fn isBoolValue(node: NodeRef) bool {
-    return consumer.node_ref.properties.toggled(node) != null;
 }
 
 /// Whether the node holds the focus.
@@ -837,19 +827,6 @@ test "two absent raw values are equal and one absent value is a change" {
     try testing.expect(!rawValueEquals(valued, bare));
     // Both present and equal: the `std.mem.eql` arm.
     try testing.expect(rawValueEquals(valued, valued_again));
-    // `optionalValueEquals` is the port's own spelling of the same question.
-    try testing.expectEqual(rawValueEquals(bare, valued), optionalValueEquals(bare, valued));
-}
-
-test "two absent texts are equal and one absent text is a change" {
-    // `optionalTextEquals` at `:522-523` carries the same two arms on plain
-    // slices, so this reaches them without a tree. A `null` on one side and a
-    // string on the other is the half-absent case in both directions.
-    try testing.expect(optionalTextEquals(null, null));
-    try testing.expect(!optionalTextEquals(null, "text"));
-    try testing.expect(!optionalTextEquals("text", null));
-    try testing.expect(optionalTextEquals("text", "text"));
-    try testing.expect(!optionalTextEquals("text", "other"));
 }
 
 test "one absent text selection is a change in either direction" {

@@ -47,6 +47,7 @@ const std = @import("std");
 const consumer = @import("../../consumer/root.zig");
 const schema = @import("../../schema/root.zig");
 const literals = @import("literals.zig");
+const util = @import("util.zig");
 
 const NodeRef = consumer.node_id.NodeRef;
 const QueryError = consumer.tree_state.QueryError;
@@ -74,9 +75,9 @@ pub const number_of_characters_zero: i64 = 0;
 /// The `NSRange` a node answers for its selected text when it is gone, upstream
 /// `:782`.
 ///
-/// An `NSRange` is a location and a length, both `NSInteger`, so this is the
-/// empty range at the start of the document.
-pub const selected_text_range_zero: [2]i64 = .{ 0, 0 };
+/// It is the `NsRange` of `util.zig:66` at the start of the document, so the
+/// sentinel and the type the conversions answer cannot drift apart.
+pub const selected_text_range_zero = util.NsRange{ .location = 0, .length = 0 };
 
 /// What one of the 54 selectors returns.
 ///
@@ -889,7 +890,7 @@ test "the four non-nil selectors answer their sentinel when the node is gone" {
     // returns `nil` from these four is a change a client sees as a crash.
     try testing.expectEqual([4]f64{ 0, 0, 0, 0 }, frame_zero);
     try testing.expectEqual(@as(i64, 0), number_of_characters_zero);
-    try testing.expectEqual([2]i64{ 0, 0 }, selected_text_range_zero);
+    try testing.expectEqual(util.NsRange{ .location = 0, .length = 0 }, selected_text_range_zero);
     try testing.expectEqual(@as(i32, 0), orientation_unknown);
     // The four are the total-answer shapes, so none of them can answer `nil`.
     for ([_][:0]const u8{

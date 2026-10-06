@@ -382,8 +382,8 @@ const Bindings = struct {
     /// `UIAccessibilityConvertFrameToScreenCoordinates`.
     ///
     /// Resolved because the port must reach the symbol and it is one of the eight
-    /// required. No `Platform` entry point calls it, because the adapter body
-    /// converts points itself through `view_convert_point`.
+    /// required. `to_screen_rect` is the entry point that calls it, which is
+    /// `AK/ios/src/util.rs:46-48`.
     convert_frame_to_screen: *const uikit.ConvertFrameToScreenCoordinatesFn,
 
     /// `UIAccessibilityScreenChangedNotification`, read through its address.
