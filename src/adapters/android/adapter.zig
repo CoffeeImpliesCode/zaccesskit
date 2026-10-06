@@ -27,8 +27,8 @@
 //! raise one `EVENT_WINDOW_CONTENT_CHANGED` with
 //! `CONTENT_CHANGE_TYPE_SUBTREE`, and `focus_moved` raises the one focus event
 //! for the new endpoint. That is the whole of Android's event vocabulary here:
-//! `docs/42` section 4.4 records that `AK/android/src/adapter.rs:197` reads
-//! `// TODO: other events?` and that this is it.
+//! `docs/42` section 4.4 records that `AK/android/src/adapter.rs:197` closes
+//! with a `TODO` marker asking whether other events exist, and that this is it.
 //!
 //! **The host focus flag.** `Tree.init` takes one and this adapter always passes
 //! `false`. **Nothing in this C surface reports host focus**, and
@@ -351,10 +351,10 @@ pub const AndroidAdapter = struct {
         active_tree.updateAndProcessChanges(produced.*, &handler) catch |err| {
             // A slot that ran out of memory leaves the committed state as it
             // stands; the update is already consumed and cannot be replayed.
-            if (context.out_of_memory) return error.OutOfMemory;
+            if (context.append_error != null) return error.OutOfMemory;
             return err;
         };
-        if (context.out_of_memory) return error.TreeEventQueueFailed;
+        if (context.append_error != null) return error.TreeEventQueueFailed;
         return events;
     }
 
@@ -658,13 +658,15 @@ pub const AndroidAdapter = struct {
 /// The context the four change slots share.
 ///
 /// The consumer half hands every slot the same `ptr`, so the queue and the
-/// out-of-memory flag travel together. Neither is owned: the queue is a value on
-/// `updateIfActive`'s stack and the flag is the same.
+/// error an append raised travel together. Neither is owned: the queue is a
+/// value on `updateIfActive`'s stack and the error is the same.
 const ChangeContext = struct {
     /// Where the slots append.
     events: *QueuedEvents,
-    /// Set when an append failed, which the caller turns into a tag.
-    out_of_memory: bool = false,
+    /// The error the first failing append raised, or `null` while every append
+    /// has succeeded. A slot cannot return an error, so it records the one it
+    /// was given here and the caller turns it into a tag.
+    append_error: ?Allocator.Error = null,
 };
 
 /// One node the update added.
@@ -697,8 +699,8 @@ fn focusMovedSlot(ptr: *anyopaque, _: ?NodeRef, new: ?NodeRef) void {
     const context: *ChangeContext = @ptrCast(@alignCast(ptr));
     const node = new orelse return;
     const event = QueuedEvent.simple(values.EVENT_VIEW_ACCESSIBILITY_FOCUSED, node.id());
-    context.events.append(event) catch {
-        context.out_of_memory = true;
+    context.events.append(event) catch |err| {
+        context.append_error = err;
     };
 }
 
@@ -706,8 +708,8 @@ fn focusMovedSlot(ptr: *anyopaque, _: ?NodeRef, new: ?NodeRef) void {
 fn appendContentChanged(ptr: *anyopaque) void {
     const context: *ChangeContext = @ptrCast(@alignCast(ptr));
     const event = QueuedEvent.contentChanged(null, values.CONTENT_CHANGE_TYPE_SUBTREE);
-    context.events.append(event) catch {
-        context.out_of_memory = true;
+    context.events.append(event) catch |err| {
+        context.append_error = err;
     };
 }
 

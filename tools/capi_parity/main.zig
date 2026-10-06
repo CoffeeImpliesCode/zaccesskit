@@ -742,11 +742,11 @@ fn compareTarget(
 
     for (doc.functions) |f| {
         if (!f.guard.active) continue;
-        if (declared.contains(f.name)) {
+        if (declared.get(f.name)) |first_line| {
             try w.print("  {s}: declared twice, at {s}:{d} and {s}:{d}\n", .{
                 f.name,
                 sweep.options.header_path,
-                declared.get(f.name).?,
+                first_line,
                 sweep.options.header_path,
                 f.line,
             });

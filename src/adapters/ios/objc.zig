@@ -1462,7 +1462,10 @@ fn attributedAnnouncement(
 fn raiseAnnouncement(ctx: ?*anyopaque, text: []const u8, assertive: bool) void {
     const current = bindings(ctx) orelse return;
     const string_class = current.get_class("NSString") orelse return;
-    const terminated = current.gpa.dupeZ(u8, text) catch return;
+    // The sentinel type is written out because the free below needs it. `dupeZ`
+    // takes `text.len + 1` bytes, and only a `[:0]u8` tells `free` so. A `[]u8`
+    // binding would release one byte short of the block.
+    const terminated: [:0]u8 = current.gpa.dupeZ(u8, text) catch return;
     defer current.gpa.free(terminated);
     const text_object = sendCString(
         current,

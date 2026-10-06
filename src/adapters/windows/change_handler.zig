@@ -192,6 +192,27 @@ pub const Handler = struct {
         return recorded;
     }
 
+    /// Records `err` in the field its tag names, and keeps the first failure.
+    ///
+    /// `HandlerError` is `error.OutOfMemory` plus `QueryError`, and `QueryError`
+    /// carries `OutOfMemory` of its own, so one prong on the allocation tag and
+    /// one `else` reach the two fields with no overlap. A second failure never
+    /// clears the first: both fields are written with an assignment, and
+    /// `takeFailure` is what resets them.
+    ///
+    /// **Why this is one method and not four assignments.** A slot cannot
+    /// report, so it records and returns. When each slot wrote
+    /// `failure.out_of_memory` whatever the tag was, every `QueryError` reached
+    /// `adapter.zig` as `error.OutOfMemory` and the `query_error` field was
+    /// never written outside a test. The caller maps the two fields onto two
+    /// different C error tags, so the tag is behaviour, not bookkeeping.
+    fn record(self: *Handler, err: HandlerError) void {
+        switch (err) {
+            error.OutOfMemory => self.failure.out_of_memory = true,
+            else => |query| self.failure.query_error = query,
+        }
+    }
+
     /// Turns the selection sets into events, once the update has committed.
     ///
     /// This is the port of `enqueue_selection_changes` at `adapter.rs:125-229`.
@@ -507,31 +528,23 @@ fn isLiveRegion(node: NodeRef) !bool {
 
 fn nodeAddedSlot(context: *anyopaque, node: NodeRef) void {
     const self: *Handler = @ptrCast(@alignCast(context));
-    self.nodeAdded(node) catch {
-        self.failure.out_of_memory = true;
-    };
+    self.nodeAdded(node) catch |err| self.record(err);
 }
 
 fn nodeUpdatedSlot(context: *anyopaque, old: NodeRef, new: NodeRef) void {
     const self: *Handler = @ptrCast(@alignCast(context));
-    self.nodeUpdated(old, new) catch {
-        self.failure.out_of_memory = true;
-    };
+    self.nodeUpdated(old, new) catch |err| self.record(err);
 }
 
 fn focusMovedSlot(context: *anyopaque, old: ?NodeRef, new: ?NodeRef) void {
     _ = old;
     const self: *Handler = @ptrCast(@alignCast(context));
-    self.focusMoved(new) catch {
-        self.failure.out_of_memory = true;
-    };
+    self.focusMoved(new) catch |err| self.record(err);
 }
 
 fn nodeRemovedSlot(context: *anyopaque, node: NodeRef) void {
     const self: *Handler = @ptrCast(@alignCast(context));
-    self.nodeRemoved(node) catch {
-        self.failure.out_of_memory = true;
-    };
+    self.nodeRemoved(node) catch |err| self.record(err);
 }
 
 // --- Tests -----------------------------------------------------------------
@@ -962,13 +975,49 @@ test "a slot that runs out of memory records it and the caller reads it" {
     // The slot cannot report, so it records. `takeFailure` is the only way out
     // and it answers the flag.
     try testing.expectEqual(@as(?Failure, null), handler.takeFailure());
-    handler.nodeAdded(dialog) catch {
-        handler.failure.out_of_memory = true;
-    };
+    handler.nodeAdded(dialog) catch |err| handler.record(err);
     const recorded = handler.takeFailure() orelse return error.NoFailureRecorded;
     try testing.expect(recorded.out_of_memory);
     try testing.expect(!recorded.isEmpty());
     try testing.expectEqual(@as(?Failure, null), handler.takeFailure());
+}
+
+test "a query error is recorded as a query error and not as a failure of the allocator" {
+    // The defect this pins. All four slots ran
+    // `catch { self.failure.out_of_memory = true; }`, so every tag of
+    // `HandlerError` that a tree walk raises reached `adapter.zig` as
+    // `error.OutOfMemory` and nothing but the test below ever wrote the
+    // `query_error` field. `adapter.zig:305` maps that field onto
+    // `error.TreeQueryFailed`, so the tag decides what a C caller sees.
+    //
+    // `Tree.init` refuses an update that leaves a node unattached, and no
+    // `QueryError` is reachable from a well-formed tree, so the tag is driven
+    // through `record` rather than through a slot. `record` is the one function
+    // the four slots share, and the four one-line bodies are what call it.
+    const gpa = testing.allocator;
+    const platform = syscalls.unavailablePlatform();
+    var registry = elements.Registry.init(gpa);
+    defer registry.deinit(platform);
+    var queue = queued_events.QueuedEvents.init(gpa);
+    defer queue.deinit(platform);
+    var handler = Handler.init(gpa, platform, &registry, &queue);
+    defer handler.deinit();
+
+    // The sweep is the one `schema/geometry/rect.zig:483` uses, so a tag added
+    // to `QueryError` is named here without an edit. `error.OutOfMemory` is the
+    // only member that is an allocation failure, so it is the only one that
+    // reaches `out_of_memory`; the test says that rather than assuming it.
+    inline for (@typeInfo(HandlerError).error_set.?) |member| {
+        const tag: HandlerError = @field(HandlerError, member.name);
+        const is_allocation = std.mem.eql(u8, member.name, "OutOfMemory");
+        handler.record(tag);
+        const recorded = handler.takeFailure() orelse return error.NoFailureRecorded;
+        try testing.expectEqual(is_allocation, recorded.out_of_memory);
+        try testing.expectEqual(
+            if (is_allocation) @as(?QueryError, null) else @as(?QueryError, tag),
+            recorded.query_error,
+        );
+    }
 }
 
 test "the four slots of the change handler are all bound" {

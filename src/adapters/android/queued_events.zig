@@ -194,8 +194,9 @@ pub const QueuedEvent = struct {
 
     /// A subtree content change, which is the only event this port emits for a
     /// node appearing, changing or leaving the tree. Upstream's own comment at
-    /// `AK/android/src/adapter.rs:197` reads `// TODO: other events?`, and
-    /// `docs/42` section 4.4 records that this is the whole of it.
+    /// `AK/android/src/adapter.rs:197` is a `TODO` marker asking whether other
+    /// events exist, and `docs/42` section 4.4 records that this is the whole
+    /// of it.
     pub fn contentChanged(node: ?FullNodeId, content_change_types: JInt) QueuedEvent {
         return .{
             .event_type = values.EVENT_WINDOW_CONTENT_CHANGED,

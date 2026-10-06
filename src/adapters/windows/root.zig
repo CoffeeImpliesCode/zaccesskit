@@ -43,8 +43,12 @@ const allocation = @import("../../capi/allocation.zig");
 const boundary = @import("../../capi/boundary.zig");
 
 const adapter = @import("adapter.zig");
+const bindings_mod = @import("bindings.zig");
+const com_mod = @import("com.zig");
+const error_codes_mod = @import("error_codes.zig");
 const subclass = @import("subclass.zig");
 const syscalls = @import("syscalls.zig");
+const window_handle_mod = @import("window_handle.zig");
 const schema = @import("../../schema/root.zig");
 
 /// The COM boundary, as one namespace. These four files carry the type half
@@ -55,10 +59,10 @@ const schema = @import("../../schema/root.zig");
 /// `refAllDecls` test at the end of this file is what forces their bodies to
 /// be analysed rather than only their containers.
 pub const WindowsBoundary = struct {
-    pub const bindings = @import("bindings.zig");
-    pub const com = @import("com.zig");
-    pub const error_codes = @import("error_codes.zig");
-    pub const window_handle = @import("window_handle.zig");
+    pub const bindings = bindings_mod;
+    pub const com = com_mod;
+    pub const error_codes = error_codes_mod;
+    pub const window_handle = window_handle_mod;
 };
 
 const ActionHandler = boundary.ActionHandler;

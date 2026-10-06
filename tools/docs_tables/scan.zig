@@ -140,42 +140,53 @@ pub fn scanTree(gpa: Allocator, io: std.Io, src_dir: []const u8) !Tree {
     std.mem.sort([]const u8, paths.items, {}, lessThanPath);
 
     for (paths.items) |path| {
-        const raw = try std.Io.Dir.cwd().readFileAlloc(
-            io,
-            path,
-            gpa,
-            .limited(16 * 1024 * 1024),
-        );
-        defer gpa.free(raw);
-
-        // `Ast.parse` takes a sentinel-terminated slice, and `readFileAlloc`
-        // returns one without. The extra byte is the sentinel, so no realloc and
-        // no copy of the source.
-        //
-        // **The sentinel buffer is not released here.** Every name a module
-        // records is a `tokenSlice` pointing into it, so freeing it at the end
-        // of the iteration leaves the tree holding slices into reclaimed
-        // memory: the names come back as whatever the allocator wrote there
-        // next, and a lookup for a symbol reports garbage rather than nothing.
-        // The tree outlives every name it holds, so the tree's allocator keeps
-        // the source for the life of the run.
-        const source = try gpa.allocSentinel(u8, raw.len, 0);
-        @memcpy(source, raw);
-
-        const module = scanModule(gpa, source, path) catch |err| switch (err) {
-            error.SourceDoesNotParse => {
-                try tree.rejected.append(gpa, .{
-                    .path = path,
-                    .line = 0,
-                    .message = "the parser rejected this file",
-                });
-                continue;
-            },
-            else => return err,
-        };
-        try tree.modules.put(gpa, path, module);
+        try scanOneFile(&tree, gpa, io, path);
     }
     return tree;
+}
+
+/// Reads one file and files its module under `tree`, or files the rejection
+/// when the parser will not take it.
+///
+/// One file per call, so the read buffer below has exactly one owner and one
+/// release. The loop over the collected paths then reads as a list of files,
+/// and the part that reads and parses a file is one body to check rather than
+/// forty lines inside a loop.
+fn scanOneFile(tree: *Tree, gpa: Allocator, io: std.Io, path: []const u8) !void {
+    const raw = try std.Io.Dir.cwd().readFileAlloc(
+        io,
+        path,
+        gpa,
+        .limited(16 * 1024 * 1024),
+    );
+    defer gpa.free(raw);
+
+    // `Ast.parse` takes a sentinel-terminated slice, and `readFileAlloc`
+    // returns one without. The extra byte is the sentinel, so no realloc and
+    // no copy of the source.
+    //
+    // **The sentinel buffer is not released here.** Every name a module
+    // records is a `tokenSlice` pointing into it, so freeing it at the end
+    // of the call leaves the tree holding slices into reclaimed memory: the
+    // names come back as whatever the allocator wrote there next, and a
+    // lookup for a symbol reports garbage rather than nothing. The tree
+    // outlives every name it holds, so the tree's allocator keeps the source
+    // for the life of the run.
+    const source = try gpa.allocSentinel(u8, raw.len, 0);
+    @memcpy(source, raw);
+
+    const module = scanModule(gpa, source, path) catch |err| switch (err) {
+        error.SourceDoesNotParse => {
+            try tree.rejected.append(gpa, .{
+                .path = path,
+                .line = 0,
+                .message = "the parser rejected this file",
+            });
+            return;
+        },
+        else => return err,
+    };
+    try tree.modules.put(gpa, path, module);
 }
 
 /// The directories one walk descends. A path deeper than this is not a module

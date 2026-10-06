@@ -57,7 +57,6 @@ const LParam = boundary.LParam;
 const LResult = syscalls.LResult;
 const WParam = boundary.WParam;
 
-const EventId = syscalls.EventId;
 const Platform = syscalls.Platform;
 const ProviderSlot = syscalls.ProviderSlot;
 const RaiseReport = queued_events.RaiseReport;

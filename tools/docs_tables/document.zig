@@ -308,7 +308,9 @@ test "rewrite replaces one region and leaves the rest of the file alone" {
     defer report.deinit();
 
     const bodies = [_]?[]const u8{ "new\n", null };
-    const out = (try rewrite(testing.allocator, source, report.regions, &bodies)).?;
+    const out = (try rewrite(testing.allocator, source, report.regions, &bodies)) orelse
+        return error.RewriteFoundNoChange;
+    defer testing.allocator.free(out);
     try testing.expectEqualStrings(
         \\# Title
         \\

@@ -1194,10 +1194,10 @@ fn parseParams(
             });
             continue;
         }
-        if (functionPointerName(chunk) != null) {
+        if (functionPointerName(chunk)) |pointer_name| {
             try out.append(arena, .{
                 .type = try typeFromTokens(arena, chunk),
-                .name = functionPointerName(chunk).?,
+                .name = pointer_name,
                 .variadic = false,
                 .line = chunk[0].line,
             });
@@ -1628,14 +1628,16 @@ fn classify(
     const is_typedef = slice[0].kind == .ident and std.mem.eql(u8, slice[0].text, "typedef");
     const body = if (is_typedef) slice[1..] else slice;
 
-    if (is_typedef and functionPointerName(body) != null) {
-        try out.typedefs.append(arena, .{
-            .name = functionPointerName(body).?,
-            .line = line,
-            .kind = .function_pointer,
-            .underlying = null,
-        });
-        return;
+    if (is_typedef) {
+        if (functionPointerName(body)) |pointer_name| {
+            try out.typedefs.append(arena, .{
+                .name = pointer_name,
+                .line = line,
+                .kind = .function_pointer,
+                .underlying = null,
+            });
+            return;
+        }
     }
 
     const open = blk: {

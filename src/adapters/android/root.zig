@@ -1075,11 +1075,11 @@ test "a platform action over an unattached environment answers the simple form" 
 test "every failure an adapter call can report is named" {
     // The walk is over the tags of `adapter.Error`, so the error set's own length
     // is the bound. A tag added without a decision behind it is the finding.
-    const Errors = @typeInfo(adapter_module.Error).error_set.?;
+    const adapter_errors = @typeInfo(adapter_module.Error).error_set.?;
     var seen_null_update = false;
     var seen_tree_rejected = false;
     var seen_queue_failure = false;
-    for (Errors) |tag| {
+    for (adapter_errors) |tag| {
         if (std.mem.eql(u8, tag.name, "NullTreeUpdate")) seen_null_update = true;
         if (std.mem.eql(u8, tag.name, "TreeRejected")) seen_tree_rejected = true;
         if (std.mem.eql(u8, tag.name, "TreeEventQueueFailed")) seen_queue_failure = true;

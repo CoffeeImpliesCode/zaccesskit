@@ -278,7 +278,7 @@ fn writePath(
 /// bound and names each byte it checks.
 ///
 /// **Errors.** `error.TestUnexpectedResult` from a non-zero pad byte.
-fn expectNulAt(body: []const u8, comptime offsets: []const usize) !void {
+fn expectNulAt(comptime offsets: []const usize, body: []const u8) !void {
     inline for (offsets) |offset| {
         try std.testing.expectEqual(@as(u8, 0), body[offset]);
     }
@@ -383,7 +383,7 @@ test "an address that follows an odd member starts on the next eight-byte bounda
     // the path runs from twenty to fifty-six. The six bytes of struct padding
     // and the two before the path are asserted to be nul and not left as
     // whatever the buffer held.
-    try expectNulAt(body.items, &.{ 2, 3, 4, 5, 6, 7, 18, 19 });
+    try expectNulAt(&.{ 2, 3, 4, 5, 6, 7, 18, 19 }, body.items);
     try std.testing.expectEqual(@as(usize, 56), body.items.len);
     try std.testing.expectEqualStrings(":1.42", readString(body.items, 8));
     try std.testing.expectEqualStrings(
@@ -402,7 +402,7 @@ test "the null address is an empty name and the null path" {
     // The empty bus name is 4 + 0 + 1 = 5 bytes, so the path's four-byte
     // alignment moves it to eight, where 4 + 20 + 1 takes the body to 33. The
     // three bytes of padding between them are nul.
-    try expectNulAt(body.items, &.{ 5, 6, 7 });
+    try expectNulAt(&.{ 5, 6, 7 }, body.items);
     try std.testing.expectEqual(@as(usize, 33), body.items.len);
     try std.testing.expectEqualStrings("", readString(body.items, 0));
     try std.testing.expectEqualStrings("/org/a11y/atspi/null", readString(body.items, 8));
