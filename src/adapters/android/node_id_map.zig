@@ -158,6 +158,15 @@ pub const NodeIdMap = struct {
     /// The allocator must be the one `init` was given. After the call a read of
     /// any field answers the empty map rather than an address that no longer
     /// holds one, so a second call is harmless.
+    ///
+    /// The last line is the reset: `self.*` is one whole `NodeIdMap` with every
+    /// field at the value `init` gives it, `next_virtual_id` back to
+    /// `first_virtual_id`. That is the Z030 shape, and the rule reads an
+    /// assignment to `self.*` as a plain write rather than as a reset, so this
+    /// comment says why the assignment is there. The test `deinit twice
+    /// releases nothing the second time` is what holds the promise: it reads
+    /// `gpa` and both maps after each call, and under `undefined` the second
+    /// call would read an allocator handle out of undefined memory.
     pub fn deinit(self: *NodeIdMap, gpa: Allocator) void {
         self.by_virtual_id.deinit(gpa);
         self.by_node_id.deinit(gpa);

@@ -669,7 +669,10 @@ test "the tree index map stays consistent across a random sequence of reads and 
             cases += 1;
             // A repeat must not burn a number, and a first sighting must take
             // exactly the next one.
-            const already = map.getIndex(id) != null and map.getIndex(id).?.value() < next_before;
+            const already = if (map.getIndex(id)) |number|
+                number.value() < next_before
+            else
+                false;
             if (already) {
                 try testing.expectEqual(next_before, map.next);
             } else {
@@ -704,8 +707,9 @@ test "the tree index map stays consistent across a random sequence of reads and 
     var seen: u32 = 0;
     var number: u32 = 0;
     while (number < map.next) : (number += 1) {
-        const id = map.getId(TreeIndex.init(number)).?;
-        const back = map.getIndex(id).?;
+        const id = map.getId(TreeIndex.init(number)) orelse
+            return error.IndexNotReverseRegistered;
+        const back = map.getIndex(id) orelse return error.IdNotForwardRegistered;
         try testing.expectEqual(number, back.value());
         seen |= @as(u32, 1) << @intCast(number % 32);
     }

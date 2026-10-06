@@ -254,6 +254,14 @@ pub const AndroidQueuedEvents = struct {
     ///
     /// This does not release the block the value was allocated in; the raise
     /// does that, because the raise is the only call the C surface offers.
+    ///
+    /// The last line is the reset: `self.*` is one whole `AndroidQueuedEvents`
+    /// with every field at the value `init` gives it. That is the Z030 shape,
+    /// and the rule reads an assignment to `self.*` as a plain write rather
+    /// than as a reset, so this comment says why the assignment is there. The
+    /// test `deinit leaves the queue empty and a second deinit releases
+    /// nothing` is what holds the promise, and it fails under `undefined`,
+    /// because the second call reads `self.gpa` out of undefined memory.
     pub fn deinit(self: *AndroidQueuedEvents) void {
         const gpa = self.gpa;
         const adapter = self.adapter;
@@ -746,6 +754,11 @@ const OneNodeTree = struct {
         return .{ .state = state };
     }
 
+    /// Releases the state and leaves the fixture empty.
+    ///
+    /// `self.*` is one whole `OneNodeTree` with `state` at `.{}`, which is the
+    /// Z030 shape: the rule reads an assignment to `self.*` as a plain write
+    /// rather than as the reset it is.
     fn deinit(self: *OneNodeTree, gpa: Allocator) void {
         self.state.deinit(gpa);
         // SAFETY: the line above released every buffer the state owned, and the

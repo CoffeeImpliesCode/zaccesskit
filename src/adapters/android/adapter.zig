@@ -248,6 +248,14 @@ pub const AndroidAdapter = struct {
     /// A queued-events handle borrows this value, so the caller must have
     /// released every handle first. After the call a read of any field answers
     /// the empty adapter rather than an address that no longer holds one.
+    ///
+    /// The last line is the reset: `self.*` is one whole `AndroidAdapter` with
+    /// `tree` at `null` and `activation_asked` and `last_error` back to the
+    /// values `init` gives them. That is the Z030 shape, and the rule reads an
+    /// assignment to `self.*` as a plain write rather than as a reset, so this
+    /// comment says why the assignment is there. `free` depends on it: it reads
+    /// `gpa` after this call to release the block, and `undefined` would make
+    /// that a read of undefined memory.
     pub fn deinit(self: *AndroidAdapter) void {
         if (self.tree) |*tree| tree.deinit();
         self.id_map.deinit(self.gpa);

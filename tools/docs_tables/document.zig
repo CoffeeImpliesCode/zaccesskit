@@ -71,10 +71,19 @@ pub const Report = struct {
     pub fn deinit(self: *Report) void {
         const gpa = self.gpa;
         self.problems.deinit(gpa);
-        // SAFETY: the line above released the only list this report owns, and
-        // the reset is what a stale read sees. `regions` is a slice the caller
-        // owns, so the reset drops the borrow rather than releasing anything.
-        self.* = .{ .gpa = gpa };
+        // SAFETY: the line above released the only list this report owns. The
+        // three assignments below are the reset: `problems` is back to the
+        // empty list its declaration gives it and `regions` is an empty slice,
+        // so a second `deinit` releases nothing rather than freeing twice, and
+        // a read of any field afterwards answers the empty report rather than
+        // an address that no longer holds one. `regions` is a slice the caller
+        // owns, so emptying it drops the borrow rather than releasing
+        // anything. `gpa` is copied out first and written back because an
+        // allocator handle owns no memory and so has nothing to invalidate,
+        // and the next `deinit` needs a live handle to release nothing with.
+        self.regions = self.regions[0..0];
+        self.problems = .empty;
+        self.gpa = gpa;
     }
 
     /// The region for `key`, or null when the document has no marker pair for
