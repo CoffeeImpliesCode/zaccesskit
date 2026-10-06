@@ -609,6 +609,14 @@ pub const QueuedEventsHolder = struct {
     /// than reaching freed storage. The adapter is borrowed and is left alone:
     /// the box never owned it, and clearing the field would drop the only
     /// pointer the box has without releasing anything.
+    ///
+    /// The second line is that reset, and Z030 cannot see it. The rule counts
+    /// a terminal state from a whole-receiver assign of the literal
+    /// `undefined`, or from a field assign whose name is a lifecycle name or
+    /// whose type is a slice. `queue` is neither, and `adapter` is a borrowed
+    /// pointer this box must keep. `self.* = undefined` would clear it, and
+    /// the second call above would then read a platform out of undefined
+    /// memory.
     pub fn deinit(self: *QueuedEventsHolder) void {
         self.queue.deinit(self.adapter.platform);
         self.queue = queued_events.QueuedEvents.init(self.adapter.gpa);

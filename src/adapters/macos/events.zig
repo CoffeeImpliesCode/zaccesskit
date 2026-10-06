@@ -173,6 +173,15 @@ pub fn slotsOf(generator: *EventGenerator) consumer.tree.TreeChangeHandler {
     };
 }
 
+/// Everything a slot can fail with.
+///
+/// It is the allocator's `error.OutOfMemory` plus the consumer half's
+/// `QueryError` and the writer tags `strings.label` forwards, and it is
+/// written down here so the four slots and `record` agree on one set instead
+/// of each widening it by inference. `QueryError` carries `OutOfMemory` of
+/// its own, so the allocator needs no arm of its own.
+pub const SlotError = QueryError || std.Io.Writer.Error;
+
 /// Turns a committed tree change into the events the platform is told about.
 ///
 /// **Ownership.** The generator owns `events` and the two sets, and releases all
@@ -192,14 +201,21 @@ pub const EventGenerator = struct {
     text_changed: std.AutoHashMapUnmanaged(FullNodeId, void) = .empty,
     /// The same for selected rows. Upstream `event.rs:143`.
     selected_rows_changed: std.AutoHashMapUnmanaged(FullNodeId, void) = .empty,
-    /// Whether a slot ran out of memory and stopped.
+    /// The first failure a slot recorded, or `null` when every slot finished.
     ///
     /// `consumer.tree.TreeChangeHandler` slots return `void`, so a slot cannot
-    /// report `error.OutOfMemory` to the update that called it. It records the
-    /// failure here instead, and the caller checks this after the update
-    /// returns. A generator with `failed` set produced a partial event list, so
+    /// report `SlotError` to the update that called it. It records the tag
+    /// here instead, and the caller reads this after the update returns. A
+    /// generator with a failure recorded produced a partial event list, so
     /// the caller must not raise it as if it were complete.
-    failed: bool = false,
+    ///
+    /// **The tag is kept and not reduced to a bit.** The two macOS entry
+    /// points that drive this generator answer `null` for every failure, so
+    /// nothing at the seam can act on the difference today. The tag is kept
+    /// because an allocation failure and a query failure are different
+    /// events, and a record that can only say that something failed reads as
+    /// the wrong one of the two.
+    failure: ?SlotError = null,
 
     /// An empty generator over `gpa`.
     pub fn init(gpa: Allocator) EventGenerator {
@@ -229,6 +245,16 @@ pub const EventGenerator = struct {
         const taken = self.events;
         self.events = .empty;
         return taken;
+    }
+
+    /// Records `err` and keeps the first failure a slot reported.
+    ///
+    /// A second failure never clears the first. The caller reads this once
+    /// after the update commits, when the tree is consistent and a caller may
+    /// retry, and it wants the tag that stopped the walk rather than the last
+    /// one to arrive.
+    fn record(self: *EventGenerator, err: SlotError) void {
+        if (self.failure == null) self.failure = err;
     }
 
     /// Enqueues one generic event against `node_id`.
@@ -340,8 +366,8 @@ pub const EventGenerator = struct {
     /// queues its container's selected-rows change, and an included node whose
     /// `live` is not off announces its label.
     ///
-    /// **Returns.** `error.OutOfMemory`.
-    pub fn slotNodeAdded(self: *EventGenerator, node: NodeRef) !void {
+    /// **Returns.** `SlotError`, which the slot records in `failure`.
+    pub fn slotNodeAdded(self: *EventGenerator, node: NodeRef) SlotError!void {
         try self.insertTextChangeIfNeeded(node);
         if (try consumer.filter.commonFilter(node) != .include) return;
         if (consumer.node_ref.properties.isSelected(node) == true) {
@@ -368,8 +394,8 @@ pub const EventGenerator = struct {
     /// property comparisons run, in upstream's order: title, value, text
     /// selection, then the announcement and the selection.
     ///
-    /// **Returns.** `error.OutOfMemory`.
-    pub fn slotNodeUpdated(self: *EventGenerator, old: NodeRef, new: NodeRef) !void {
+    /// **Returns.** `SlotError`, which the slot records in `failure`.
+    pub fn slotNodeUpdated(self: *EventGenerator, old: NodeRef, new: NodeRef) SlotError!void {
         const properties = consumer.node_ref.properties;
         const strings = consumer.node_ref.strings;
         const set_state = consumer.node_ref.set_state;
@@ -442,8 +468,8 @@ pub const EventGenerator = struct {
     /// Only a node that gains the focus produces an event, and only when the
     /// filter includes it.
     ///
-    /// **Returns.** `error.OutOfMemory`.
-    pub fn slotFocusMoved(self: *EventGenerator, old: ?NodeRef, new: ?NodeRef) !void {
+    /// **Returns.** `SlotError`, which the slot records in `failure`.
+    pub fn slotFocusMoved(self: *EventGenerator, old: ?NodeRef, new: ?NodeRef) SlotError!void {
         _ = old;
         const gained = new orelse return;
         if (try consumer.filter.commonFilter(gained) != .include) return;
@@ -452,8 +478,8 @@ pub const EventGenerator = struct {
 
     /// The body of `node_removed`, upstream `AK/macos/src/event.rs:317-325`.
     ///
-    /// **Returns.** `error.OutOfMemory`.
-    pub fn slotNodeRemoved(self: *EventGenerator, node: NodeRef) !void {
+    /// **Returns.** `SlotError`, which the slot records in `failure`.
+    pub fn slotNodeRemoved(self: *EventGenerator, node: NodeRef) SlotError!void {
         try self.insertTextChangeIfNeeded(node);
         if (consumer.node_ref.properties.isSelected(node) == true) {
             try self.enqueueSelectedRowsChangeIfNeeded(node);
@@ -476,43 +502,35 @@ pub fn releaseEvents(gpa: Allocator, events: *ArrayList(QueuedEvent)) void {
 /// included node that is selected queues its container's selected-rows change,
 /// and an included node whose `live` is not off announces its label.
 ///
-/// **Errors.** `error.OutOfMemory`. The handler signature cannot report one, so
-/// this slot records it in `failed` and the caller checks that after the update.
+/// **Errors.** `SlotError`. The handler signature cannot report one, so this
+/// slot records it in `failure` and the caller checks that after the update.
 fn nodeAdded(context: *anyopaque, node: NodeRef) void {
     const generator: *EventGenerator = @ptrCast(@alignCast(context));
-    generator.slotNodeAdded(node) catch {
-        generator.failed = true;
-    };
+    generator.slotNodeAdded(node) catch |err| generator.record(err);
 }
 
 /// `TreeChangeHandler.node_updated`, upstream `AK/macos/src/event.rs:249-305`.
 ///
-/// **Errors.** `error.OutOfMemory`, recorded in `failed` as above.
+/// **Errors.** `SlotError`, recorded in `failure` as above.
 fn nodeUpdated(context: *anyopaque, old: NodeRef, new: NodeRef) void {
     const generator: *EventGenerator = @ptrCast(@alignCast(context));
-    generator.slotNodeUpdated(old, new) catch {
-        generator.failed = true;
-    };
+    generator.slotNodeUpdated(old, new) catch |err| generator.record(err);
 }
 
 /// `TreeChangeHandler.focus_moved`, upstream `AK/macos/src/event.rs:307-315`.
 ///
-/// **Errors.** `error.OutOfMemory`, recorded in `failed` as above.
+/// **Errors.** `SlotError`, recorded in `failure` as above.
 fn focusMoved(context: *anyopaque, old: ?NodeRef, new: ?NodeRef) void {
     const generator: *EventGenerator = @ptrCast(@alignCast(context));
-    generator.slotFocusMoved(old, new) catch {
-        generator.failed = true;
-    };
+    generator.slotFocusMoved(old, new) catch |err| generator.record(err);
 }
 
 /// `TreeChangeHandler.node_removed`, upstream `AK/macos/src/event.rs:317-325`.
 ///
-/// **Errors.** `error.OutOfMemory`, recorded in `failed` as above.
+/// **Errors.** `SlotError`, recorded in `failure` as above.
 fn nodeRemoved(context: *anyopaque, node: NodeRef) void {
     const generator: *EventGenerator = @ptrCast(@alignCast(context));
-    generator.slotNodeRemoved(node) catch {
-        generator.failed = true;
-    };
+    generator.slotNodeRemoved(node) catch |err| generator.record(err);
 }
 
 /// Whether the two nodes carry different raw values, upstream `:251`.
@@ -703,6 +721,25 @@ test "the four handler slots are the ones the tree calls" {
     try testing.expect(handler.node_removed != null);
     const fields = @typeInfo(consumer.tree.TreeChangeHandler).@"struct".fields;
     try testing.expectEqual(@as(usize, 4), fields.len - 1);
+}
+
+test "a slot records the tag it failed with, and keeps the first one" {
+    // A `TreeChangeHandler` slot returns `void`, so a failure has nowhere to
+    // go but this field. The tag is what a caller reads to tell an exhausted
+    // allocator from a query that hit a bound, so recording one bit for both
+    // would lose the difference and answer the wrong one of the two. A second
+    // failure must not overwrite the first either: the caller reads the field
+    // once, after the commit, and the tag that stopped the walk is the one it
+    // wants.
+    var generator = EventGenerator.init(std.testing.allocator);
+    defer generator.deinit();
+    try testing.expectEqual(@as(?SlotError, null), generator.failure);
+
+    generator.record(error.TreeCycle);
+    try testing.expectEqual(@as(?SlotError, error.TreeCycle), generator.failure);
+
+    generator.record(error.OutOfMemory);
+    try testing.expectEqual(@as(?SlotError, error.TreeCycle), generator.failure);
 }
 
 /// One node of the fixture tree the arms tests below drive.

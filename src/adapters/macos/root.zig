@@ -520,9 +520,9 @@ pub const MacosAdapter = struct {
                 const handler = events_mod.slotsOf(&generator);
                 const update = treeUpdateFromFactory(factory, factory_userdata);
                 context.tree.updateAndProcessChanges(update, &handler) catch return null;
-                // A slot that ran out of memory leaves a partial list, so the
-                // handle is withheld rather than raised short.
-                if (generator.failed) return null;
+                // A slot that failed leaves a partial list, so the handle is
+                // withheld rather than raised short.
+                if (generator.failure != null) return null;
                 return self.newQueuedEvents(context, generator.takeEvents());
             },
         }
@@ -554,7 +554,7 @@ pub const MacosAdapter = struct {
                 context.tree.updateHostFocusStateAndProcessChanges(is_focused, &handler) catch {
                     return null;
                 };
-                if (generator.failed) return null;
+                if (generator.failure != null) return null;
                 return self.newQueuedEvents(context, generator.takeEvents());
             },
         }
@@ -820,9 +820,16 @@ fn treeUpdateFromFactory(
 /// `boundary.CTreeUpdate` is `schema.TreeUpdate`, so the conversion across the
 /// seam is the identity and neither side writes one.
 fn takeUpdate(owned: *CTreeUpdate) schema.TreeUpdate {
-    const copy = owned.*;
+    // The value is taken out field by field rather than as one struct copy, so
+    // that every field the caller keeps is a copy it owns and not a read of
+    // the box that is about to go. `nodes` carries its own allocation and the
+    // three scalars are values, so nothing below names freed storage.
+    const nodes = owned.nodes;
+    const tree = owned.tree;
+    const tree_id = owned.tree_id;
+    const focus = owned.focus;
     heap().destroy(owned);
-    return copy;
+    return .{ .nodes = nodes, .tree = tree, .tree_id = tree_id, .focus = focus };
 }
 
 /// One posted notification, as `RecordingHost` sees it.
@@ -909,9 +916,7 @@ pub const RecordingHost = struct {
             .node = node,
             .window = null,
             .notification = notification,
-        }) catch {
-            self.failed = true;
-        };
+        }) catch |err| self.record(err);
     }
 
     fn postWithUserInfo(
@@ -928,9 +933,20 @@ pub const RecordingHost = struct {
             .notification = notification,
             .text = text,
             .priority = priority,
-        }) catch {
-            self.failed = true;
-        };
+        }) catch |err| self.record(err);
+    }
+
+    /// Records that a post could not be recorded.
+    ///
+    /// `ArrayList.append` has `error.OutOfMemory` as its only tag, so the flag
+    /// says everything the payload could. The switch is written out anyway:
+    /// it is the compiler-checked statement of that, so a second tag reaching a
+    /// post becomes a build failure here rather than a failure the recorder
+    /// files under the allocator.
+    fn record(self: *RecordingHost, err: std.mem.Allocator.Error) void {
+        switch (err) {
+            error.OutOfMemory => self.failed = true,
+        }
     }
 
     fn viewOf(context: ?*anyopaque) ?*anyopaque {

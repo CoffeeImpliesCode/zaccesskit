@@ -96,6 +96,15 @@ const SelectionChanges = struct {
     /// Releases both sets and leaves the value in its empty form, so a second
     /// call releases nothing and a read after the call answers the empty sets
     /// rather than freed storage.
+    ///
+    /// The last line is that reset, and it is the whole of this teardown:
+    /// `self.* = .{}` puts both sets back to the value their declarations
+    /// give them. Z030 wants `self.* = undefined` and cannot read this line.
+    /// The rule counts a terminal state from a whole-receiver assign only on
+    /// the literal `undefined`, and from a field assign only on a lifecycle
+    /// name or a slice field. Neither set is either, so the reset is invisible
+    /// to the rule and correct here. `undefined` would break the promise
+    /// above rather than the rule, because the second call reads both fields.
     fn deinit(self: *SelectionChanges, gpa: std.mem.Allocator) void {
         self.added.deinit(gpa);
         self.removed.deinit(gpa);
@@ -154,6 +163,15 @@ pub const Handler = struct {
     /// the failure is cleared, so a second call releases nothing. The two
     /// borrowed pointers are left as they are: they were never this value's to
     /// release, and resetting them would name storage the caller still holds.
+    ///
+    /// The last three lines are that reset, and Z030 cannot see it. The rule
+    /// counts a terminal state from a whole-receiver assign of the literal
+    /// `undefined`, or from a field assign whose name is a lifecycle name or
+    /// whose type is a slice. `selection_changed`, `text_changed` and
+    /// `failure` are none of those, and no other field is.
+    /// `self.* = undefined` would take `gpa` and the two borrowed pointers
+    /// with it, so the second call this function promises would read an
+    /// allocator out of undefined memory.
     pub fn deinit(self: *Handler) void {
         const gpa = self.gpa;
         var containers = self.selection_changed.iterator();
