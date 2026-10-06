@@ -69,10 +69,16 @@ pub const Value = union(enum) {
     string: ArrayList(u8),
 
     /// Releases the string payload and owns nothing for the other two.
+    ///
+    /// The list is copied into a mutable binding because a capture of a `const`
+    /// operand is a `*const` and `ArrayList.deinit` takes `*Self`.
     pub fn deinit(self: Value, gpa: Allocator) void {
         switch (self) {
             .boolean, .number => {},
-            .string => |text| text.deinit(gpa),
+            .string => |text| {
+                var owned = text;
+                owned.deinit(gpa);
+            },
         }
     }
 
@@ -193,8 +199,12 @@ pub fn textEql(a: ?ArrayList(u8), b: ?ArrayList(u8)) bool {
 }
 
 /// Releases an answer that owns a buffer. A `null` answer owns nothing.
+///
+/// The list is copied into a mutable binding because the parameter is `const`,
+/// so a capture from it is a `*const` and `ArrayList.deinit` takes `*Self`.
 pub fn releaseText(gpa: Allocator, text: ?ArrayList(u8)) void {
-    if (text) |owned| owned.deinit(gpa);
+    var answer = text orelse return;
+    answer.deinit(gpa);
 }
 
 /// Releases an answer that may own a buffer. A `null` answer owns nothing.
@@ -335,7 +345,11 @@ fn buildTree(gpa: Allocator, root_local: u64, specs: []const Spec) !consumer.tre
     }
     update.tree = schema.TreeInfo.init(.{ .value = root_local });
     update.focus = .{ .value = root_local };
-    return consumer.tree.Tree.init(gpa, update, true) catch |err| switch (err) {
+    const built = consumer.tree.Tree.init(gpa, update, true);
+    // `Tree.init` released the update on every path, so the binding is emptied
+    // before the `errdefer` above can run a second release over freed memory.
+    update = .{};
+    return built catch |err| switch (err) {
         error.OutOfMemory => error.OutOfMemory,
         else => error.TreeRejectedTheUpdate,
     };
@@ -346,6 +360,18 @@ fn nodeOf(tree: *const consumer.tree.Tree, local: u64) !NodeRef {
     const state = tree.stateOf();
     return state.nodeById(state.rootId().withSameTree(.{ .value = local })) orelse
         error.MissingNode;
+}
+
+/// An `ArrayList(u8)` that owns a copy of `text`.
+///
+/// `ArrayList.fromOwnedSlice` is the 0.16 member that takes over a slice the
+/// caller already owns, and a string literal is not one, so the buffer is
+/// allocated and filled. The caller releases the answer with `releaseText`.
+fn ownedText(gpa: Allocator, text: []const u8) !ArrayList(u8) {
+    var owned = try ArrayList(u8).initCapacity(gpa, text.len);
+    errdefer owned.deinit(gpa);
+    try owned.appendSlice(gpa, text);
+    return owned;
 }
 
 test "the window the adapter exposes for the tree reports no title" {
@@ -360,13 +386,13 @@ test "the window the adapter exposes for the tree reports no title" {
     var tree = try buildTree(gpa, 1, &specs);
     defer tree.deinit();
 
-    const root = try NodeWrapper.init(gpa, try nodeOf(&tree, 1));
+    const root = NodeWrapper.init(gpa, try nodeOf(&tree, 1));
     try testing.expect(root.isRoot());
     try testing.expectEqual(@as(?ArrayList(u8), null), try root.title());
 
     // The same label on a node that is not the root answers, so the test above
     // reached the root test and not the label read.
-    const child = try NodeWrapper.init(gpa, try nodeOf(&tree, 2));
+    const child = NodeWrapper.init(gpa, try nodeOf(&tree, 2));
     try testing.expect(!child.isRoot());
 }
 
@@ -397,7 +423,7 @@ test "a node whose label comes from its value answers the value as its label" {
     // the role that carries the label in its value is `label`.
     const gpa = testing.allocator;
     const specs = [_]Spec{
-        .{ .local = 1, .role = .window, .children = &.{2, 3} },
+        .{ .local = 1, .role = .window, .children = &.{ 2, 3 } },
         .{ .local = 2, .role = .label, .label = "text", .value = "typed" },
         .{ .local = 3, .role = .generic_container, .label = "name", .value = "typed" },
     };
@@ -419,7 +445,7 @@ test "a toggled state wins over every other value shape" {
     // `value` property at all.
     const gpa = testing.allocator;
     const specs = [_]Spec{
-        .{ .local = 1, .role = .window, .children = &.{2, 3, 4} },
+        .{ .local = 1, .role = .window, .children = &.{ 2, 3, 4 } },
         .{ .local = 2, .role = .switch_, .value = "ignored", .toggled = .true_ },
         .{ .local = 3, .role = .switch_, .value = "ignored", .toggled = .false_ },
         .{ .local = 4, .role = .switch_, .toggled = .mixed },
@@ -443,7 +469,7 @@ test "a tab answers its selection state and a node with no value answers none" {
     // with neither a value nor a numeric value answers `None`.
     const gpa = testing.allocator;
     const specs = [_]Spec{
-        .{ .local = 1, .role = .window, .children = &.{2, 3, 4} },
+        .{ .local = 1, .role = .window, .children = &.{ 2, 3, 4 } },
         .{ .local = 2, .role = .tab, .value = "ignored", .is_selected = true },
         .{ .local = 3, .role = .tab },
         .{ .local = 4, .role = .generic_container, .numeric_value = 2.5 },
@@ -467,7 +493,7 @@ test "a description and a placeholder come from the node itself" {
     // so the fixture gives the node the text input role.
     const gpa = testing.allocator;
     const specs = [_]Spec{
-        .{ .local = 1, .role = .window, .children = &.{2, 3} },
+        .{ .local = 1, .role = .window, .children = &.{ 2, 3 } },
         .{ .local = 2, .role = .generic_container, .description = "hint" },
         .{ .local = 3, .role = .text_input, .placeholder = "search" },
     };
@@ -486,9 +512,12 @@ test "two absent titles are equal and one absent title is a change" {
     // The four arms of `textEql`, which `AK/macos/src/event.rs:264` reaches once
     // per update.
     const gpa = testing.allocator;
-    const text = ArrayList(u8).initSlice(gpa, "text");
-    const same = ArrayList(u8).initSlice(gpa, "text");
-    const other = ArrayList(u8).initSlice(gpa, "other");
+    const text = try ownedText(gpa, "text");
+    defer releaseText(gpa, text);
+    const same = try ownedText(gpa, "text");
+    defer releaseText(gpa, same);
+    const other = try ownedText(gpa, "other");
+    defer releaseText(gpa, other);
     try testing.expect(textEql(null, null));
     try testing.expect(!textEql(null, text));
     try testing.expect(!textEql(text, null));
@@ -502,15 +531,20 @@ test "two values of different shapes are never equal" {
     const gpa = testing.allocator;
     const flag: ?Value = Value{ .boolean = true };
     const number: ?Value = Value{ .number = 1 };
-    const text: ?Value = Value{ .string = ArrayList(u8).initSlice(gpa, "one") };
+    const text: ?Value = Value{ .string = try ownedText(gpa, "one") };
     defer releaseValue(gpa, text);
-    const other: ?Value = Value{ .string = ArrayList(u8).initSlice(gpa, "two") };
+    const same: ?Value = Value{ .string = try ownedText(gpa, "one") };
+    defer releaseValue(gpa, same);
+    const other: ?Value = Value{ .string = try ownedText(gpa, "two") };
     defer releaseValue(gpa, other);
 
     try testing.expect(!Value.eql(flag, number));
     try testing.expect(!Value.eql(flag, text));
     try testing.expect(!Value.eql(text, flag));
-    try testing.expect(Value.eql(text, other));
+    // Same tag and same payload is upstream's `Value::String(_) ==
+    // Value::String(_)`, and a different payload under the same tag is not.
+    try testing.expect(Value.eql(text, same));
+    try testing.expect(!Value.eql(text, other));
     try testing.expect(Value.eql(null, null));
     try testing.expect(!Value.eql(null, flag));
     try testing.expect(!Value.eql(flag, null));
@@ -521,7 +555,7 @@ test "a title that changes names a change and a label that does not does not" {
     // tree carry the same label and two carry different ones, so both arms run.
     const gpa = testing.allocator;
     const specs = [_]Spec{
-        .{ .local = 1, .role = .window, .children = &.{2, 3, 4} },
+        .{ .local = 1, .role = .window, .children = &.{ 2, 3, 4 } },
         .{ .local = 2, .role = .generic_container, .label = "same" },
         .{ .local = 3, .role = .generic_container, .label = "same" },
         .{ .local = 4, .role = .generic_container, .label = "other" },
@@ -543,7 +577,7 @@ test "a toggled state that changes is a value change with no raw value" {
     // raw values are absent and upstream still answers that the value changed.
     const gpa = testing.allocator;
     const specs = [_]Spec{
-        .{ .local = 1, .role = .window, .children = &.{2, 3, 4} },
+        .{ .local = 1, .role = .window, .children = &.{ 2, 3, 4 } },
         .{ .local = 2, .role = .switch_, .toggled = .false_ },
         .{ .local = 3, .role = .switch_, .toggled = .true_ },
         .{ .local = 4, .role = .switch_, .toggled = .true_ },
@@ -576,7 +610,7 @@ test "a tab whose selection state changes is a bool value change" {
     // at the front.
     const gpa = testing.allocator;
     const specs = [_]Spec{
-        .{ .local = 1, .role = .window, .children = &.{2, 3, 4} },
+        .{ .local = 1, .role = .window, .children = &.{ 2, 3, 4 } },
         .{ .local = 2, .role = .tab, .is_selected = false },
         .{ .local = 3, .role = .tab, .is_selected = true },
         .{ .local = 4, .role = .list_box_option, .value = "same" },
@@ -603,4 +637,3 @@ test "a tab whose selection state changes is a bool value change" {
     // half of `:272`.
     try testing.expect(!isBoolean(null));
 }
-

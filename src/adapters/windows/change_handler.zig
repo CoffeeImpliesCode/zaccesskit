@@ -351,9 +351,8 @@ pub const Handler = struct {
             const slot = try self.registry.slotFor(self.platform, node.id());
             try self.pushSimple(slot, .live_region_changed);
         }
-        if (supportsSelectionItemPattern(node)) {
-            const selected = consumer.node_ref.properties.isSelected(node) orelse false;
-            if (selected) try self.handleSelectionStateChange(node, true);
+        if (supportsSelectionItemPattern(node) and nodeIsSelected(node)) {
+            try self.handleSelectionStateChange(node, true);
         }
     }
 
@@ -369,15 +368,14 @@ pub const Handler = struct {
                     const slot = try self.registry.slotFor(self.platform, old.id());
                     try self.pushSimple(slot, .window_window_closed);
                 }
-                if (supportsSelectionItemPattern(old)) {
-                    const selected = consumer.node_ref.properties.isSelected(old) orelse false;
-                    if (selected) try self.handleSelectionStateChange(old, false);
+                if (supportsSelectionItemPattern(old) and nodeIsSelected(old)) {
+                    try self.handleSelectionStateChange(old, false);
                 }
             }
             return;
         }
 
-        if (try isLiveRegion(new)) {
+        if (try liveRegionChanged(self.gpa, old, new, old_filtered != .include)) {
             const slot = try self.registry.slotFor(self.platform, new.id());
             try self.pushSimple(slot, .live_region_changed);
         }
@@ -386,8 +384,8 @@ pub const Handler = struct {
             try self.pushSimple(slot, .window_window_opened);
         }
         if (supportsSelectionItemPattern(new)) {
-            const new_selected = consumer.node_ref.properties.isSelected(new) orelse false;
-            const old_selected = consumer.node_ref.properties.isSelected(old) orelse false;
+            const new_selected = nodeIsSelected(new);
+            const old_selected = nodeIsSelected(old);
             if (new_selected != old_selected or (old_filtered != .include and new_selected)) {
                 try self.handleSelectionStateChange(new, new_selected);
             }
@@ -513,16 +511,131 @@ pub const Handler = struct {
     }
 };
 
+/// Whether `node` announces a name at all.
+///
+/// Upstream `NodeWrapper::name` at `adapters/windows/src/node.rs:404-413`
+/// answers `Some` exactly when the write it performed wrote something, and the
+/// write is `write_value` for a node whose label comes from its value and
+/// `write_label` for every other node. The port asks the same question through
+/// the two consumer predicates those writes bottom out in, so it agrees with
+/// upstream on the two cases a bare stored label gets wrong: a node whose name
+/// comes from a `labelled_by` contributor, and a `label`-role node whose text
+/// is its `value`.
+///
+/// **Errors.** `QueryError`, from the `labelled_by` walk and the value walk.
+fn nodeHasName(node: NodeRef) QueryError!bool {
+    if (consumer.node_ref.strings.labelComesFromValue(node))
+        return consumer.node_ref.set_state.hasValue(node);
+    return consumer.node_ref.strings.hasLabel(node);
+}
+
+/// The name `node` presents, as a UTF-8 buffer the caller releases.
+///
+/// This is the same question `nodeHasName` asks, with the text the caller
+/// needs to compare two of them. Upstream builds a `WideString`; the port's
+/// strings are UTF-8 from `schema` down and the only caller that needs the
+/// text compares two names, so the encoding is not observable here.
+///
+/// Allocates, so it takes `gpa` first. A `null` answer means there is nothing
+/// to release, and `error.OutOfMemory` leaves nothing behind.
+fn nodeName(
+    gpa: std.mem.Allocator,
+    node: NodeRef,
+) (QueryError || std.mem.Allocator.Error)!?std.ArrayList(u8) {
+    const name = if (consumer.node_ref.strings.labelComesFromValue(node))
+        consumer.node_ref.set_state.value(gpa, node)
+    else
+        consumer.node_ref.strings.label(gpa, node);
+    // Both `label` and `value` collect through `std.Io.Writer.Allocating`, which
+    // carries one error tag, so a failed growth arrives as `WriteFailed` and
+    // means exactly `error.OutOfMemory`. `strings.zig:355-358` maps the same tag.
+    return name catch |err| switch (err) {
+        error.WriteFailed => error.OutOfMemory,
+        else => |other| other,
+    };
+}
+
+/// Whether the two nodes present different names.
+///
+/// Upstream compares the two `Option<WideString>` values `name` built at
+/// `adapter.rs:313-318`, so a name against no name is a difference and two
+/// names differ when their code units differ.
+fn namesDiffer(
+    gpa: std.mem.Allocator,
+    old: NodeRef,
+    new: NodeRef,
+) (QueryError || std.mem.Allocator.Error)!bool {
+    const before = try nodeName(gpa, old);
+    defer releaseName(gpa, before);
+    const after = try nodeName(gpa, new);
+    defer releaseName(gpa, after);
+    const old_text = before orelse return true;
+    const new_text = after orelse return true;
+    return !std.mem.eql(u8, old_text.items, new_text.items);
+}
+
+/// Releases what `nodeName` answered. A `null` answer owns nothing, so this
+/// releases nothing.
+///
+/// The parameter is `const` because both call sites hold a `const` binding and
+/// `ArrayList.deinit` takes `*Self`, so the mutable copy is local to this
+/// function and the caller's binding is never touched.
+fn releaseName(gpa: std.mem.Allocator, name: ?std.ArrayList(u8)) void {
+    var held = name;
+    if (held) |*text| text.deinit(gpa);
+}
+
+/// Whether `node` is the selected item.
+///
+/// Upstream `NodeWrapper::is_selected` at
+/// `adapters/windows/src/node.rs:669-680`. A radio role answers through
+/// `toggled`, so a radio button that states `aria-checked` and no
+/// `aria-selected` is selected here, and the consumer half's `is_selected`
+/// refuses to answer for that role at all.
+fn nodeIsSelected(node: NodeRef) bool {
+    const properties = consumer.node_ref.properties;
+    return switch (properties.role(node)) {
+        // `node.rs:672-674`: `toggled == Some(Toggled::True)`, so neither of the
+        // tags `accesskit_consumer/src/node.rs:482` adds nor an absent state
+        // counts as selected.
+        .radio_button, .menu_item_radio => (properties.toggled(node) orelse return false) == .true_,
+        // `node.rs:677-678`: `is_selected().unwrap_or(false)`.
+        else => properties.isSelected(node) orelse false,
+    };
+}
+
 /// Whether `node` announces itself as a live region.
 ///
-/// A node with no label announces nothing, and a node whose inherited `live`
+/// A node with no name announces nothing, and a node whose inherited `live`
 /// setting is `off` announces nothing.
 ///
-/// **Errors.** `QueryError` from the inherited `live` walk.
-fn isLiveRegion(node: NodeRef) !bool {
-    if (consumer.node_ref.strings.rawLabel(node) == null) return false;
+/// **Errors.** `QueryError` from the name walks and the inherited `live` walk.
+fn isLiveRegion(node: NodeRef) QueryError!bool {
+    if (!try nodeHasName(node)) return false;
     const live = try consumer.node_ref.set_state.live(node);
     return live != .off;
+}
+
+/// Whether an update to `new` must raise `UIA_LiveRegionChangedEventId`.
+///
+/// Upstream `adapter.rs:313-318`. A live region announces itself when it has a
+/// name, when its inherited `live` setting is not `off`, and when the update
+/// changed that setting, or brought the node into the tree, or changed the
+/// name. A name alone is not enough: an update that touches an unrelated
+/// property of a live region announces nothing upstream, and raising the event
+/// there makes a screen reader repeat itself on every update.
+fn liveRegionChanged(
+    gpa: std.mem.Allocator,
+    old: NodeRef,
+    new: NodeRef,
+    old_was_filtered_out: bool,
+) (QueryError || std.mem.Allocator.Error)!bool {
+    if (!try nodeHasName(new)) return false;
+    const live = try consumer.node_ref.set_state.live(new);
+    if (live == .off) return false;
+    if (old_was_filtered_out) return true;
+    if (live != try consumer.node_ref.set_state.live(old)) return true;
+    return try namesDiffer(gpa, old, new);
 }
 
 /// Whether `node` supports the selection item pattern.
@@ -605,6 +718,11 @@ const NodeSpec = struct {
     toggled: ?schema.Toggled = null,
     /// Whether the node carries the disabled flag.
     disabled: bool = false,
+    /// The value the node carries, or none. A `label`-role node names itself
+    /// through this rather than through its label.
+    value: ?[]const u8 = null,
+    /// The local identifiers whose labels name this node, in order.
+    labelled_by: []const u64 = &.{},
 };
 
 /// Builds the tree one fixture describes.
@@ -619,6 +737,13 @@ fn buildTree(gpa: std.mem.Allocator, root_local: u64, specs: []const NodeSpec) !
         if (spec.live) |value| try schema.enums.setLive(&node.properties, value);
         if (spec.is_selected) |value| try schema.enums.setSelected(&node.properties, value);
         if (spec.toggled) |value| try schema.enums.setToggled(&node.properties, value);
+        if (spec.value) |text| try schema.strings.setValue(&node.properties, text);
+        var labelled_by_ids: std.ArrayList(schema.NodeId) = .empty;
+        defer labelled_by_ids.deinit(gpa);
+        for (spec.labelled_by) |local| {
+            try labelled_by_ids.append(gpa, .{ .value = local });
+        }
+        try schema.ids_props.setLabelledBy(&node.properties, labelled_by_ids.items);
         schema.flags.setDisabled(&node.flags, spec.disabled);
         var child_ids: std.ArrayList(schema.NodeId) = .empty;
         defer child_ids.deinit(gpa);
@@ -1263,4 +1388,174 @@ test "no role outside the upstream match supports the selection item pattern" {
         const expected: PatternAnswer = .{ .role = role, .supported = wanted };
         try testing.expectEqual(expected, answeredFor(node));
     }
+}
+
+test "a radio button reads its selection from the pressed state" {
+    // The defect this pins. `nodeAdded` read
+    // `properties.isSelected(node) orelse false`, which is
+    // `accesskit_consumer/src/node.rs:912-914`, and that method never reads
+    // `toggled`. Upstream `node.rs:669-680` reads `toggled` for a radio role, so
+    // a radio button that states `aria-checked=true` and no `aria-selected` is
+    // selected upstream and was not selected in the port.
+    const gpa = testing.allocator;
+    const platform = syscalls.unavailablePlatform();
+    const specs = [_]NodeSpec{
+        .{ .local = 1, .role = .window, .children = &.{ 2, 3, 4 } },
+        .{ .local = 2, .role = .radio_button, .toggled = .true_ },
+        .{ .local = 3, .role = .radio_button, .toggled = .false_ },
+        .{ .local = 4, .role = .radio_button },
+    };
+    var tree = try buildTree(gpa, 1, &specs);
+    defer tree.deinit();
+
+    var registry = elements.Registry.init(gpa);
+    defer registry.deinit(platform);
+    var queue = queued_events.QueuedEvents.init(gpa);
+    defer queue.deinit(platform);
+    var handler = Handler.init(gpa, platform, &registry, &queue);
+    defer handler.deinit();
+
+    const state = tree.stateOf();
+    // Every one of the three carries the pattern, so the answer comes from the
+    // pressed state alone: the first is selected, the second is not, and the
+    // third states nothing.
+    inline for (.{ 2, 3, 4 }) |local| {
+        const node = state.nodeById(state.rootId().withSameTree(.{ .value = local })) orelse
+            return error.MissingNode;
+        const wanted = local == 2;
+        try testing.expectEqual(wanted, nodeIsSelected(node));
+    }
+
+    // The selected radio button queues its selection change, and the other two
+    // queue nothing. Only the first radio role reaches the pattern answer, so
+    // this pins the call site and not only the predicate.
+    const chosen = state.nodeById(state.rootId().withSameTree(.{ .value = 2 })) orelse
+        return error.MissingNode;
+    try handler.nodeAdded(chosen);
+    try handler.enqueueSelectionChanges(state);
+    try testing.expectEqual(@as(usize, 2), queue.len());
+    const event = queue.at(0) orelse return error.NoQueuedEvent;
+    try testing.expectEqual(EventId.selection_item_element_selected, event.simple.event_id);
+    const change = queue.at(1) orelse return error.NoQueuedEvent;
+    try testing.expectEqual(false, change.property_changed.old.bool_);
+    try testing.expectEqual(true, change.property_changed.new.bool_);
+}
+
+test "a node names itself through a labelled by contributor and through its value" {
+    // The defect this pins. `isLiveRegion` read
+    // `strings.rawLabel(node) == null`, which is the node's own stored label and
+    // nothing else. Upstream `name()` at `node.rs:404-413` writes the value for
+    // a node whose label comes from its value and `write_label` for every other
+    // node, and `write_label` follows `labelled_by`. So a node named by a
+    // contributor and a `label`-role node carrying a value were both nameless
+    // in the port, and neither announced itself as a live region.
+    const gpa = testing.allocator;
+    const platform = syscalls.unavailablePlatform();
+    const specs = [_]NodeSpec{
+        .{ .local = 1, .role = .window, .children = &.{ 2, 3, 4, 5 } },
+        // Named by node 5's label, with no label of its own.
+        .{ .local = 2, .role = .button, .live = .polite, .labelled_by = &.{5} },
+        // A label role names itself through its value, with no label of its own.
+        .{ .local = 3, .role = .label, .live = .polite, .value = "Save" },
+        // Neither a label nor a value and no contributor, so it has no name.
+        .{ .local = 4, .role = .button, .live = .polite },
+        // The contributor. Its role is not `label`, because
+        // `labelNamesThrough` at `strings.zig:285-288` reads a label-role
+        // contributor through its value, which is what makes node 3 above name
+        // itself. A contributor with a stored label needs a role outside that
+        // set.
+        .{ .local = 5, .role = .image, .label = "Named by" },
+    };
+    var tree = try buildTree(gpa, 1, &specs);
+    defer tree.deinit();
+
+    var registry = elements.Registry.init(gpa);
+    defer registry.deinit(platform);
+    var queue = queued_events.QueuedEvents.init(gpa);
+    defer queue.deinit(platform);
+    var handler = Handler.init(gpa, platform, &registry, &queue);
+    defer handler.deinit();
+
+    const state = tree.stateOf();
+    // Node 2 is named by node 5, node 3 by its own value, and node 4 by nothing.
+    for ([_]u64{ 2, 3, 4 }) |local| {
+        const node = state.nodeById(state.rootId().withSameTree(.{ .value = local })) orelse
+            return error.MissingNode;
+        const wanted = local != 4;
+        try testing.expectEqual(wanted, try nodeHasName(node));
+
+        const before = queue.len();
+        try handler.nodeAdded(node);
+        const announced = queue.len() > before;
+        try testing.expectEqual(wanted, announced);
+    }
+}
+
+test "an update announces a live region only when the live setting or the name changed" {
+    // The defect this pins. `nodeUpdated` raised `UIA_LiveRegionChangedEventId`
+    // for every update to a node that named itself and inherited a `live`
+    // setting. Upstream `adapter.rs:313-318` raises it when the name is there,
+    // the live setting is not `off`, and one of three things changed: the live
+    // setting, whether the node was in the tree before, or the name. So an
+    // update that touches an unrelated property of a live region announced
+    // nothing upstream and announced itself in the port, and a screen reader
+    // repeated itself on every update.
+    const gpa = testing.allocator;
+    const platform = syscalls.unavailablePlatform();
+    // Two trees with the same shape: one named "Save" and polite, the other
+    // named "Saved" and polite. Node 2 is the live region in both.
+    const before_specs = [_]NodeSpec{
+        .{ .local = 1, .role = .window, .children = &.{2} },
+        .{ .local = 2, .role = .button, .label = "Save", .live = .polite },
+    };
+    const after_specs = [_]NodeSpec{
+        .{ .local = 1, .role = .window, .children = &.{2} },
+        .{ .local = 2, .role = .button, .label = "Saved", .live = .polite },
+    };
+    var old_tree = try buildTree(gpa, 1, &before_specs);
+    defer old_tree.deinit();
+    var new_tree = try buildTree(gpa, 1, &after_specs);
+    defer new_tree.deinit();
+
+    var registry = elements.Registry.init(gpa);
+    defer registry.deinit(platform);
+    var queue = queued_events.QueuedEvents.init(gpa);
+    defer queue.deinit(platform);
+    var handler = Handler.init(gpa, platform, &registry, &queue);
+    defer handler.deinit();
+
+    const old_state = old_tree.stateOf();
+    const new_state = new_tree.stateOf();
+    const old_node = old_state.nodeById(old_state.rootId().withSameTree(.{ .value = 2 })) orelse
+        return error.MissingNode;
+    const new_node = new_state.nodeById(new_state.rootId().withSameTree(.{ .value = 2 })) orelse
+        return error.MissingNode;
+
+    // The name changed, so the update announces.
+    try testing.expect(try liveRegionChanged(gpa, old_node, new_node, false));
+    try handler.nodeUpdated(old_node, new_node);
+    try testing.expectEqual(@as(usize, 1), queue.len());
+    const event = queue.at(0) orelse return error.NoQueuedEvent;
+    try testing.expectEqual(EventId.live_region_changed, event.simple.event_id);
+
+    // The same name on both sides and the same live setting, so an update to an
+    // unrelated property announces nothing.
+    const unchanged = new_node;
+    try testing.expect(!try liveRegionChanged(gpa, unchanged, unchanged, false));
+
+    // A node that was not in the tree before announces itself, because it is
+    // new to the client whatever its name says.
+    try testing.expect(try liveRegionChanged(gpa, old_node, new_node, true));
+
+    // A node with no name announces nothing whatever else changed.
+    const bare_specs = [_]NodeSpec{
+        .{ .local = 1, .role = .window, .children = &.{2} },
+        .{ .local = 2, .role = .button, .live = .polite },
+    };
+    var bare_tree = try buildTree(gpa, 1, &bare_specs);
+    defer bare_tree.deinit();
+    const bare_state = bare_tree.stateOf();
+    const bare_node = bare_state.nodeById(bare_state.rootId().withSameTree(.{ .value = 2 })) orelse
+        return error.MissingNode;
+    try testing.expect(!try liveRegionChanged(gpa, old_node, bare_node, false));
 }

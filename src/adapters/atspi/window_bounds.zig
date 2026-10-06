@@ -36,9 +36,9 @@
 //! of its arguments, so a test drives all of them without a runtime.
 
 const std = @import("std");
-
+const consumer = @import("../../consumer/root.zig");
 const schema = @import("../../schema/root.zig");
-
+const wire = @import("wire.zig");
 const Point = schema.Point;
 const Rect = schema.Rect;
 const Size = schema.Size;
@@ -146,6 +146,76 @@ pub const WindowBounds = struct {
     /// **Errors.** This function does not fail.
     pub fn set(self: *WindowBounds, outer: Rect, inner: Rect) void {
         self.* = init(outer, inner);
+    }
+
+    /// The corner the coordinate space `coord_type` counts from.
+    ///
+    /// Upstream `util.rs:43-56`. The three spaces answer three different
+    /// corners, which is why a caller has to say which one it holds a point in:
+    /// the screen space starts at the drawn box's own corner, the window space
+    /// starts at the origin, and the parent space starts at the parent's own
+    /// corner with the sign reversed so that adding it moves a child point into
+    /// the space its parent is measured in.
+    ///
+    /// A `parent` of `null` under `.parent` answers the drawn box's corner, which
+    /// is what the window root has: it has no parent to be measured against.
+    ///
+    /// **Errors.** `error.TreeCycle` from the walk that reads the parent's box.
+    pub fn origin(
+        self: WindowBounds,
+        parent: ?consumer.node_id.NodeRef,
+        coord_type: wire.CoordType,
+    ) consumer.tree.QueryError!Point {
+        return switch (coord_type) {
+            .screen => self.inner.topLeft(),
+            .window => .{ .x = 0, .y = 0 },
+            .parent => {
+                const node = parent orelse return self.inner.topLeft();
+                // Upstream `unwrap_or_default()` at `util.rs:49` reads a box
+                // with no extent as the origin, and a `f64` default is zero, so
+                // a parent with no box has the origin as its corner too.
+                const parent_box = try consumer.node_ref.geometry.boundingBox(node) orelse
+                    return .{ .x = 0, .y = 0 };
+                return .{ .x = -parent_box.x0, .y = -parent_box.y0 };
+            },
+        };
+    }
+
+    /// Moves a point from the tree's own space into the space `coord_type`
+    /// counts from.
+    ///
+    /// Upstream `util.rs:23-31`. This is the direction every geometry answer
+    /// travels, because the tree measures in its own space and a client asks in
+    /// one of the three others.
+    ///
+    /// **Errors.** `error.TreeCycle` from the walk that reads the parent's box.
+    pub fn accesskitPointToAtspiPoint(
+        self: WindowBounds,
+        point: Point,
+        parent: ?consumer.node_id.NodeRef,
+        coord_type: wire.CoordType,
+    ) consumer.tree.QueryError!Point {
+        const corner = try self.origin(parent, coord_type);
+        return .{ .x = corner.x + point.x, .y = corner.y + point.y };
+    }
+
+    /// Moves a point from the space `coord_type` counts from into the tree's own
+    /// space.
+    ///
+    /// Upstream `util.rs:33-41`. It is the inverse of
+    /// `accesskitPointToAtspiPoint` on the same origin, which is what
+    /// `Component.GetAccessibleAtPoint` and `Text.GetOffsetAtPoint` need before
+    /// they ask the tree a question in the tree's own coordinates.
+    ///
+    /// **Errors.** `error.TreeCycle` from the walk that reads the parent's box.
+    pub fn atspiPointToAccesskitPoint(
+        self: WindowBounds,
+        point: Point,
+        parent: ?consumer.node_id.NodeRef,
+        coord_type: wire.CoordType,
+    ) consumer.tree.QueryError!Point {
+        const corner = try self.origin(parent, coord_type);
+        return .{ .x = point.x - corner.x, .y = point.y - corner.y };
     }
 };
 
@@ -368,4 +438,88 @@ test "fromWire rebuilds the box the four members name" {
     try testing.expectEqual(@as(f64, 20), recovered.y0);
     try testing.expectEqual(@as(f64, 30), recovered.width());
     try testing.expectEqual(@as(f64, 50), recovered.height());
+}
+
+test "the three coordinate spaces answer three different corners" {
+    // `util.rs:43-56`. The screen space starts at the drawn box, the window
+    // space at the origin and the parent space nowhere, because there is no
+    // parent in this call.
+    const bounds = WindowBounds.init(
+        schema.rectInit(10, 20, 810, 620),
+        schema.rectInit(12, 64, 812, 624),
+    );
+
+    const screen = try bounds.origin(null, .screen);
+    try testing.expectEqual(@as(f64, 12), screen.x);
+    try testing.expectEqual(@as(f64, 64), screen.y);
+
+    const window_space = try bounds.origin(null, .window);
+    try testing.expectEqual(@as(f64, 0), window_space.x);
+    try testing.expectEqual(@as(f64, 0), window_space.y);
+
+    const without_parent = try bounds.origin(null, .parent);
+    try testing.expectEqual(screen.x, without_parent.x);
+    try testing.expectEqual(screen.y, without_parent.y);
+}
+
+test "a point moves by the corner and comes back unchanged" {
+    // `util.rs:23-41`. The two conversions are inverses on one origin, and the
+    // round trip is the property a hit test depends on.
+    const bounds = WindowBounds.init(
+        schema.rectInit(10, 20, 810, 620),
+        schema.rectInit(12, 64, 812, 624),
+    );
+    const start: Point = .{ .x = 30, .y = 40 };
+
+    const on_screen = try bounds.accesskitPointToAtspiPoint(start, null, .screen);
+    try testing.expectEqual(@as(f64, 42), on_screen.x);
+    try testing.expectEqual(@as(f64, 104), on_screen.y);
+
+    const back = try bounds.atspiPointToAccesskitPoint(on_screen, null, .screen);
+    try testing.expectEqual(start.x, back.x);
+    try testing.expectEqual(start.y, back.y);
+
+    // The window space has the origin at zero, so the point does not move.
+    const in_window = try bounds.accesskitPointToAtspiPoint(start, null, .window);
+    try testing.expectEqual(start.x, in_window.x);
+    try testing.expectEqual(start.y, in_window.y);
+}
+
+test "the parent space reverses the parent's own corner" {
+    // `util.rs:47-53`. A child point is negative in the space its parent is
+    // measured in, which is the half of the conversion a `GetAccessibleAtPoint`
+    // on a child needs.
+    const gpa = testing.allocator;
+    var state: consumer.tree_state.TreeState = .{};
+    defer state.deinit(gpa);
+    // The map owns the node once `put` returns: `put` copies the value, and the
+    // copy shares the one property buffer, so the local must not also release
+    // it. `state.deinit` above walks the map and frees the store once, which is
+    // the whole teardown. `consumer/tree_state.zig:234` names this trap.
+    //
+    // The box is written through the map's own entry for the same reason: a
+    // local node and the map's entry would share one buffer. `setBounds` at
+    // `schema/props/option.zig:140` takes `*Properties`, so the entry is taken
+    // by pointer rather than by value.
+    const parent_id = consumer.tree_index.FullNodeId.init(.{ .value = 0 }, .init(0));
+    try state.nodes.put(gpa, parent_id, .{
+        .parent_and_index = null,
+        .data = schema.Node.init(gpa, .group),
+    });
+    const parent = state.nodes.getPtr(parent_id).?;
+    try schema.option.setBounds(&parent.data.properties, schema.rectInit(100, 200, 300, 400));
+    state.root_id = parent_id;
+    state.focus_id = parent_id;
+    state.is_host_focused = false;
+    const parent_ref = consumer.node_id.NodeRef.init(&state, parent_id).?;
+
+    const bounds = WindowBounds.empty;
+    const corner = try bounds.origin(parent_ref, .parent);
+    try testing.expectEqual(@as(f64, -100), corner.x);
+    try testing.expectEqual(@as(f64, -200), corner.y);
+
+    const child_point: Point = .{ .x = 20, .y = 30 };
+    const moved = try bounds.accesskitPointToAtspiPoint(child_point, parent_ref, .parent);
+    try testing.expectEqual(@as(f64, -80), moved.x);
+    try testing.expectEqual(@as(f64, -170), moved.y);
 }

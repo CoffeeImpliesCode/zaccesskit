@@ -51,20 +51,25 @@
 //! because UIKit would then receive no announcement at all.
 //!
 //! The fourth `runtime.weak_constants` row, `UIAccessibilityTraitToggleButton`,
-//! carries the `.no_trait` fallback and this directory does not resolve it,
-//! because no trait value is written anywhere in it until the node layer lands.
-//! `objc.zig:1984-1992` names that gap in a test rather than hiding it.
+//! carries the `.no_trait` fallback, and `objc.zig` reads it once through the
+//! address its lookup answers, which is the route `AK/ios/src/util.rs:78-86`
+//! takes. **Nothing reads the value yet**, because the only reader is the
+//! `traits` method of `AK/ios/src/node.rs:124-165` and the node layer is not
+//! ported. `objc.zig:2071-2089` is the test that pins the zero bit an absent name
+//! answers.
 //!
 //! **What is blocked, and why.** `blocked` below is the machine-readable
 //! record. Two functions and one half of a third are not complete, and none of
 //! the three is complete because `AK/ios/src/node.rs`, 1076 lines that this
 //! directory has never held, is what produces the objects they must return. The
 //! node needs four `UIAccessibility` enumeration values no document under
-//! `docs/` records, which is the same reason `uikit.zig:193-206` declares
-//! `Notifications`, `Traits`, `ContainerType` and `ExpandedStatus` as
-//! non-exhaustive enums and no document records a case. Every part of all three
-//! that does not need a platform node is written, is reached by a test, and is
-//! named in the record, so the work left is one line in each.
+//! `docs/` records, which is the same reason `uikit.zig:216-284` declares
+//! `Notifications`, `Traits`, `ContainerType` and `ScrollDirection` as
+//! non-exhaustive enums and no document records a case. `ExpandedStatus` is the
+//! fifth and is not among them: `AK/ios/src/util.rs:24-26` writes its three
+//! numbers, so `uikit.zig:243-278` holds all three. Every part of the three
+//! blocked functions that does not need a platform node is written, is reached by
+//! a test, and is named in the record, so the work left is one line in each.
 //!
 //! **The allocator.** Every allocation goes through `capi/allocation.zig`, the
 //! declared allocator of the C ABI, read once when the adapter is created. The
@@ -110,6 +115,12 @@ pub const runtime = @import("runtime.zig");
 pub const selectors = @import("selectors.zig");
 /// The 43 `UIAccessibility` identifier spellings.
 pub const uikit = @import("uikit.zig");
+/// The node wrapper of `AK/ios/src/node.rs:61-122` and the iOS-only element
+/// filter of `AK/ios/src/filters.rs:27-52`. The `PlatformNode` class is not
+/// here, so this module holds the half of the node layer that reads no
+/// Objective-C object. It is `node_layer` and not `node` because every function
+/// below names its node parameter `node`.
+pub const node_layer = @import("node.zig");
 
 const testing = std.testing;
 
@@ -128,8 +139,8 @@ const FilterOutcome = consumer.tree.QueryError!consumer.filter.FilterResult;
 /// `filter`, and every walk in this module uses that one. The iOS-only
 /// refinement, `filter_for_is_accessibility_element` at
 /// `AK/ios/src/filters.rs:27-52`, decides whether one node is an element rather
-/// than which nodes are visible, so it belongs to `AK/ios/src/node.rs:232-236`
-/// and not to this module.
+/// than which nodes are visible, so it belongs to the node layer and not to this
+/// module, and `node.zig` is where it is, reached as `node_layer`.
 ///
 /// The port wraps it because `FilterFn.filter` takes the context first and the
 /// consumer's takes only the node, and the wrapper asserts the context is
@@ -1041,6 +1052,37 @@ fn treePoint(
     const scaled: schema.Point = .{ .x = local.x * factor, .y = local.y * factor };
     const transform = try consumer.node_ref.geometry.transform(root);
     return affine.mulPoint(affine.inverse(transform), scaled);
+}
+
+/// The screen rect `rect` names, at `AK/ios/src/util.rs:50-63`.
+///
+/// This is the reverse of `treePoint` above and the two are the two halves of
+/// `AK/ios/src/util.rs`: the tree stores physical pixels and UIKit measures in
+/// the view's own points, so each direction divides by the content scale. The
+/// order is upstream's: read the factor, divide the origin and the size, then
+/// hand the result to `to_screen_rect`, which is `AK/ios/src/util.rs:46-48` and
+/// is the only caller of `UIAccessibilityConvertFrameToScreenCoordinates`.
+///
+/// **The factor is never zero for a view on a screen.** UIKit defines
+/// `contentScaleFactor` as a positive scale, and upstream divides by it without
+/// a test, so this divides without one too. A caller that hands in a view whose
+/// scale is zero gets an infinite rect, which is what the same division gives
+/// upstream, and the node layer that calls this never has such a view.
+///
+/// **Nothing calls this yet.** The one caller upstream is the
+/// `accessibilityFrame` of `AK/ios/src/node.rs`, and that class is not ported.
+fn toCgRect(
+    adapter: *const IosAdapter,
+    view: *runtime.AnyObject,
+    rect: schema.Rect,
+) foundation.CGRect {
+    const ctx = adapter.platform.context;
+    const factor = adapter.platform.view_content_scale_factor(ctx, view);
+    const local: foundation.CGRect = .{
+        .origin = .{ .x = rect.x0 / factor, .y = rect.y0 / factor },
+        .size = .{ .width = rect.width() / factor, .height = rect.height() / factor },
+    };
+    return adapter.platform.to_screen_rect(ctx, view, local);
 }
 
 /// The object UIKit holds for `id`, or `null`.
@@ -1991,6 +2033,18 @@ const Fake = struct {
     last_point: foundation.CGPoint = .{ .x = 0, .y = 0 },
     /// How many times `view_convert_point` ran.
     conversions: usize = 0,
+    /// The rect `to_screen_rect` was last asked about.
+    screen_rect_input: foundation.CGRect = .{
+        .origin = .{ .x = 0, .y = 0 },
+        .size = .{ .width = 0, .height = 0 },
+    },
+    /// What `to_screen_rect` answers, which is the input plus this offset, so a
+    /// test can see that the conversion ran.
+    screen_rect_offset: foundation.CGPoint = .{ .x = 0, .y = 0 },
+    /// How many times `to_screen_rect` ran.
+    screen_rect_conversions: usize = 0,
+    /// What `toggle_button_trait` answers, which is `0` unless a test sets it.
+    toggle_trait: u64 = 0,
     /// What `class_name` answers, which is what the subclass name is built from.
     class_name_value: [:0]const u8 = "AKFakeView",
     /// What `class_superclass` answers.
@@ -2226,6 +2280,27 @@ fn fakeEmptyArray(ctx: ?*anyopaque) ?*runtime.AnyObject {
     return self.array_value orelse fakePointerFrom(0x3000);
 }
 
+fn fakeToScreenRect(
+    ctx: ?*anyopaque,
+    _: *runtime.AnyObject,
+    rect: foundation.CGRect,
+) foundation.CGRect {
+    const self = fakeFrom(ctx) orelse return rect;
+    self.screen_rect_input = rect;
+    self.screen_rect_conversions += 1;
+    return .{
+        .origin = .{
+            .x = rect.origin.x + self.screen_rect_offset.x,
+            .y = rect.origin.y + self.screen_rect_offset.y,
+        },
+        .size = rect.size,
+    };
+}
+
+fn fakeToggleButtonTrait(ctx: ?*anyopaque) u64 {
+    return (fakeFrom(ctx) orelse return 0).toggle_trait;
+}
+
 /// The release a fake table carries, which closes nothing and counts once.
 ///
 /// The fake owns no image and no bindings, so there is nothing to close. The
@@ -2269,6 +2344,8 @@ fn fakePlatform(state: *Fake) objc.Platform {
         .post_notification = fakePostNotification,
         .raise_announcement = fakeRaiseAnnouncement,
         .empty_array = fakeEmptyArray,
+        .to_screen_rect = fakeToScreenRect,
+        .toggle_button_trait = fakeToggleButtonTrait,
         .release = fakeReleasePlatform,
     };
 }
@@ -2500,12 +2577,13 @@ test "a slot records the tag it failed with, and keeps the first one" {
     try testing.expectEqual(@as(?WalkError, error.TreeCycle), generator.failure);
 }
 
-test "the five modules of the iOS binding layer are reachable and analysed" {
+test "the five binding modules and the node layer are reachable and analysed" {
     testing.refAllDecls(foundation);
     testing.refAllDecls(runtime);
     testing.refAllDecls(selectors);
     testing.refAllDecls(uikit);
     testing.refAllDecls(objc);
+    testing.refAllDecls(node_layer);
 }
 
 test "the census holds the figures the map measured" {
@@ -2989,6 +3067,41 @@ test "the point conversion scales by the content scale and inverts the tree tran
     try testing.expectEqual(@as(f64, 0), point.y);
 }
 
+test "the rect conversion divides by the content scale and converts to the screen" {
+    // The reverse of the test above, at `AK/ios/src/util.rs:50-63`. The fake
+    // adds `screen_rect_offset` to the rect it is given, so the test can see
+    // that the division ran before the conversion and that the conversion ran
+    // at all.
+    const gpa = testing.allocator;
+    var state: Fake = .{
+        .gpa = gpa,
+        .assistive_tech_running = true,
+        .content_scale = 2,
+        .screen_rect_offset = .{ .x = 100, .y = 200 },
+    };
+    defer state.deinit();
+    var activation: ActivationFixture = .{ .gpa = gpa };
+    var deactivation: DeactivationFixture = .{};
+    const adapter = adapterFor(&state, gpa, &activation, &deactivation) orelse
+        return error.NoAdapter;
+    defer teardown(adapter);
+
+    const rect: schema.Rect = .{ .x0 = 4, .y0 = 6, .x1 = 12, .y1 = 18 };
+    const screen = toCgRect(adapter, fakePointerFrom(0x10), rect);
+
+    // The tree's `(4, 6)` with a width of `8` and a height of `12` divide by the
+    // scale of `2`, and the conversion moves the origin by the offset.
+    try testing.expectEqual(@as(foundation.CGFloat, 2), state.screen_rect_input.origin.x);
+    try testing.expectEqual(@as(foundation.CGFloat, 3), state.screen_rect_input.origin.y);
+    try testing.expectEqual(@as(foundation.CGFloat, 4), state.screen_rect_input.size.width);
+    try testing.expectEqual(@as(foundation.CGFloat, 6), state.screen_rect_input.size.height);
+    try testing.expectEqual(@as(usize, 1), state.screen_rect_conversions);
+    try testing.expectEqual(@as(foundation.CGFloat, 102), screen.origin.x);
+    try testing.expectEqual(@as(foundation.CGFloat, 203), screen.origin.y);
+    try testing.expectEqual(@as(foundation.CGFloat, 4), screen.size.width);
+    try testing.expectEqual(@as(foundation.CGFloat, 6), screen.size.height);
+}
+
 test "a view with no window answers the hit test with no window" {
     const gpa = testing.allocator;
     var state: Fake = .{ .gpa = gpa, .assistive_tech_running = true, .window = null };
@@ -3155,6 +3268,8 @@ test "every platform entry point answers its absent form with no context" {
         .post_notification = fakePostNotification,
         .raise_announcement = fakeRaiseAnnouncement,
         .empty_array = fakeEmptyArray,
+        .to_screen_rect = fakeToScreenRect,
+        .toggle_button_trait = fakeToggleButtonTrait,
         .release = fakeReleasePlatform,
     };
     const ctx = table.context;

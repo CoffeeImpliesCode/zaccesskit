@@ -178,6 +178,24 @@ export fn accesskit_string_free(value: [*:0]u8) callconv(.c) void {
     marshal.string_free(allocation.allocator(), value);
 }
 
+/// The all-zero tree identifier every adapter uses for the root tree.
+///
+/// `include/zaccesskit.h:1791` declares this as
+/// `extern const struct accesskit_tree_id ACCESSKIT_TREE_ID_ROOT;`, so a C
+/// caller reads a linked data symbol, not a function call. Upstream emits it
+/// as a `pub static` at `accesskit-c/src/common.rs:226-227`.
+///
+/// A Zig `pub const` emits nothing, so `schema.tree_id_root` on its own left
+/// the declaration in the header with no definition behind it: the symbol was
+/// missing from every object file, and `test/c_consumer/consumer.c:2052` and
+/// `:2308` both read it. `export const` does emit the read-only bytes, and
+/// `zig build capi-parity` now walks `doc.objects` as well as `doc.functions`
+/// so a second missing object cannot pass the gate the same way.
+///
+/// The value is sixteen zero bytes. It cannot fail and releases nothing.
+const schema_root = @import("../schema/root.zig");
+export const ACCESSKIT_TREE_ID_ROOT: schema_root.TreeId = schema_root.tree_id_root;
+
 // --- tests ---------------------------------------------------------------------
 
 /// How many blocks `Pair` can hold outstanding at once.

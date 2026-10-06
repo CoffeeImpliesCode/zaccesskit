@@ -1,7 +1,7 @@
 //! The C ABI parity sweep: how much of `include/zaccesskit.h` is implemented.
 //!
 //! **The question.** The header declares 498 functions. A build for
-//! `x86_64-linux` has to produce 446 of them, because 52 sit behind a
+//! `x86_64-linux` has to produce 447 of them, because 52 sit behind a
 //! preprocessor guard that is off there. Every number quoted about this port
 //! until now came from a shell one-liner that either concatenated a return type
 //! onto the function name across a line break or ignored the guards entirely,
@@ -123,7 +123,11 @@ const GuardClass = enum {
 /// whole file rather than for one target. The six guard counts sum to the 498
 /// the header states at line 1757.
 const Measured = struct {
-    const portable = 440;
+    // 440 functions plus `ACCESSKIT_TREE_ID_ROOT`, the one data object. It is
+    // declared at `include/zaccesskit.h:1791` and exported from
+    // `src/capi/root.zig`, on every target, so it belongs in the portable class
+    // on both sides of the census.
+    const portable = 441;
     const unix = 6;
     const macos = 16;
     const apple_mobile = 13;
@@ -161,11 +165,11 @@ const TargetMeasurement = struct { target: header.Target, total: usize };
 /// gated the way the header is; without a figure, the 52 guarded declarations
 /// read as coverage on every platform.
 const target_measurements = [_]TargetMeasurement{
-    .{ .target = .linux, .total = 446 },
-    .{ .target = .macos, .total = 456 },
-    .{ .target = .ios, .total = 453 },
-    .{ .target = .android, .total = 453 },
-    .{ .target = .windows, .total = 450 },
+    .{ .target = .linux, .total = 447 },
+    .{ .target = .macos, .total = 457 },
+    .{ .target = .ios, .total = 454 },
+    .{ .target = .android, .total = 454 },
+    .{ .target = .windows, .total = 451 },
 };
 
 /// The `platform.Platform` the header side and the Zig side agree on for each
@@ -611,6 +615,10 @@ fn reportTarget(w: *Io.Writer, sweep: *Sweep, t: header.Target, doc: *const head
             if (GuardClass.of(f.guard.platform) != c) continue;
             declared += 1;
         }
+        // A header data object belongs to the portable class, the same as the
+        // site that exports it. Without this the declared side stays at 446
+        // while the exported side reaches 447.
+        if (c.toZig() == null) declared += doc.objects.len;
         var exported: usize = 0;
         for (sweep.scan.sites) |s| {
             if (!siteOn(s, zp)) continue;
@@ -619,7 +627,7 @@ fn reportTarget(w: *Io.Writer, sweep: *Sweep, t: header.Target, doc: *const head
         }
         const in_target: bool = if (c.toZig()) |g| g.declaresOn(zp) else true;
         // `docs/40` counts a guarded class on the target it gates, and zero on
-        // every other; the portable class is 440 everywhere.
+        // every other; the portable class is 441 everywhere.
         const documented: usize = if (in_target) Measured.of(c) else 0;
         const table: usize = if (c.toZig()) |g|
             platform.declaredCountFor(zp, g)
@@ -760,6 +768,21 @@ fn compareTarget(
         }
         try declared.put(sweep.arena, f.name, f.line);
     }
+    // A data object belongs in the declared set too, or a correctly exported
+    // one reads as "exported, not declared" and the sweep cannot reach a
+    // verdict.
+    for (doc.objects) |o| {
+        if (declared.get(o.name)) |first_line| {
+            try sweep.add(.{
+                .kind = .count_disagreement,
+                .symbol = o.name,
+                .header_line = first_line,
+                .detail = "the header declares this object more than once",
+            });
+            continue;
+        }
+        try declared.put(sweep.arena, o.name, o.line);
+    }
     for (sweep.scan.sites) |s| {
         if (!siteOn(s, zp)) continue;
         try exported.put(sweep.arena, s.symbol, s);
@@ -779,6 +802,29 @@ fn compareTarget(
             .kind = .declared_not_exported,
             .symbol = f.name,
             .header_line = f.line,
+        });
+    }
+
+    // A header can declare a data object the library never defines, and a
+    // consumer that links it fails where a consumer that only compiles it does
+    // not. `ACCESSKIT_TREE_ID_ROOT` was declared at `include/zaccesskit.h:1791`
+    // and read by `test/c_consumer/consumer.c:2052`, while the port held it as a
+    // Zig `pub const`, which emits nothing. The loop above walks
+    // `doc.functions` only, so the object passed parity for as long as the
+    // header held the declaration.
+    var missing_object: usize = 0;
+    for (doc.objects) |o| {
+        if (exported.contains(o.name)) continue;
+        missing_object += 1;
+        try w.print("  data object declared, not exported: {s} at {s}:{d}\n", .{
+            o.name,
+            sweep.options.header_path,
+            o.line,
+        });
+        try sweep.add(.{
+            .kind = .declared_not_exported,
+            .symbol = o.name,
+            .header_line = o.line,
         });
     }
 

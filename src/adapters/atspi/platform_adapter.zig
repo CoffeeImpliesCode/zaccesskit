@@ -26,19 +26,19 @@
 //! **The gaps, written down rather than hidden.** Three, and a reader of this
 //! file must not have to guess at them.
 //!
-//! 1. **No `StateChanged`.** A `StateChanged` needs the forty-three-value
-//!    `wire.StateSet` the AT-SPI reference numbers, which is the role and state
-//!    mapping at `node.rs:87-443` upstream. That mapping is **not ported**;
-//!    `node.zig` is the module that owns it upstream and it does not exist here.
-//!    A node that gains focus therefore raises `Focus` and not the
-//!    `StateChanged` a client would use to learn `STATE_FOCUSABLE`.
-//! 2. **No `ChildrenChanged`, `Announcement` or `TextChanged`.** The same
-//!    mapping is what tells the adapter that a node has children worth
-//!    announcing and that a live region became polite or assertive.
+//! 1. **No `StateChanged`.** The role and state map is ported, at
+//!    `node_role.roleOf` and `node_state.stateOf`, so both sets exist. Missing
+//!    is `notify_state_changes` at `node.rs:606-620`, which compares the old
+//!    set with the new one and raises one signal per member that differs. It
+//!    needs the old node as well as the new one, and `node_updated` carries both.
+//! 2. **No `ChildrenChanged`, `Announcement` or `TextChanged`.** The map those
+//!    need is ported, at `node_role.roleOf` and `node_interfaces.live`; the
+//!    comparison is not, at `node.rs:622-671` and `node.rs:692-705`.
 //! 3. **No inbound member dispatch.** `Accessible.GetRole`,
 //!    `Component.GetExtents` and the other answers live in `interfaces/*.zig`
-//!    upstream and are **not ported**. They need the same D-Bus connection the
-//!    events need, so both are blocked on the same missing dependency.
+//!    upstream and are **not ported**. The values they would answer from are
+//!    ported and tested, so the dispatch is the only half left, and it needs
+//!    the same D-Bus connection the events need.
 //!
 //! **Why the events are collected rather than raised.** Upstream raises each
 //! event the moment it produces it. This module has no connection to raise it

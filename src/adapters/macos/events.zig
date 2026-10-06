@@ -384,12 +384,14 @@ pub const EventGenerator = struct {
             // `AK/macos/src/event.rs:236` reads the label through
             // `NodeWrapper::label`, so a node whose label comes from its value
             // announces the value and not the label. The buffer answers a list
-            // whose capacity exceeds its length, so the release must go through
-            // `deinit`: a `gpa.free` of `items` would hand the allocator a
-            // slice shorter than the block it took.
+            // whose capacity exceeds its length, so the release goes through
+            // `node_wrapper.releaseText`, which calls `deinit`: a `gpa.free` of
+            // `items` would hand the allocator a slice shorter than the block it
+            // took. The capture is by value, because a capture of a temporary is
+            // a `*const` and `deinit` takes `*Self`.
             const wrapper = node_wrapper.NodeWrapper.init(self.gpa, node);
             if (try wrapper.label()) |list| {
-                defer list.deinit(self.gpa);
+                defer node_wrapper.releaseText(self.gpa, list);
                 try self.pushAnnouncement(list.items, live);
             }
         }
@@ -451,13 +453,13 @@ pub const EventGenerator = struct {
         // `AK/macos/src/event.rs:300-302` reads both labels through
         // `NodeWrapper::label`, so a node whose label comes from its value
         // announces the value and not the label. Both releases go through
-        // `deinit`: the answer is a list whose capacity exceeds its length, so a
-        // `gpa.free` of `items` hands the allocator a slice shorter than the
-        // block it took.
+        // `node_wrapper.releaseText`, which calls `deinit`: the answer is a list
+        // whose capacity exceeds its length, so a `gpa.free` of `items` hands the
+        // allocator a slice shorter than the block it took.
         const old_wrapper = node_wrapper.NodeWrapper.init(self.gpa, old);
         const new_wrapper = node_wrapper.NodeWrapper.init(self.gpa, new);
         if (try new_wrapper.label()) |new_list| {
-            defer new_list.deinit(self.gpa);
+            defer node_wrapper.releaseText(self.gpa, new_list);
             const live = try set_state.live(new);
             const old_live = try set_state.live(old);
             const old_label = try old_wrapper.label();
@@ -1091,12 +1093,17 @@ test "a node already outside the filter queues no container change" {
 test "a node whose live region is off announces nothing" {
     // `slotNodeAdded` at `:351` guards the announcement on `live != .off`, and
     // `priorityFor` maps `off` to the medium arm. A node that carries no live
-    // setting at all is the half-absent case for that guard.
+    // setting at all is the half-absent case for that guard, because `live`
+    // inherits from the parent and a window carries none.
+    //
+    // Both nodes are a `document` and not a `label`, because
+    // `strings.labelComesFromValue` holds for a `label` role and the read would
+    // then answer the value, which neither node carries.
     const gpa = testing.allocator;
     const specs = [_]ArmSpec{
         .{ .local = 1, .role = .window, .children = &.{ 2, 3 } },
-        .{ .local = 2, .role = .label, .label = "plain" },
-        .{ .local = 3, .role = .label, .label = "loud", .live = .assertive },
+        .{ .local = 2, .role = .document, .label = "plain" },
+        .{ .local = 3, .role = .document, .label = "loud", .live = .assertive },
     };
     var tree = try buildArmTree(gpa, 1, &specs);
     defer tree.deinit();

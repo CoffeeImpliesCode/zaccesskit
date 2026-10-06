@@ -146,6 +146,22 @@ const Spec = struct {
     text: ?[]const u8 = null,
 };
 
+/// The UTF-8 byte length of every character in `body`, one entry per character.
+///
+/// `character_lengths` counts characters and carries each one's byte length, so
+/// a four-byte astral character is a four and not a one. A fixture that fills
+/// the list with ones would model every astral character as four characters.
+fn utf8Lengths(gpa: Allocator, body: []const u8) ![]u8 {
+    var view = std.unicode.Utf8View.init(body) catch |err| return err;
+    var lengths: std.ArrayList(u8) = .empty;
+    errdefer lengths.deinit(gpa);
+    var iterator = view.iterator();
+    while (iterator.nextCodepointSlice()) |slice| {
+        try lengths.append(gpa, @intCast(slice.len));
+    }
+    return lengths.toOwnedSlice(gpa);
+}
+
 /// Builds the document `specs` describes, rooted at `root_local`.
 ///
 /// `Tree.init` takes the update by value and releases it whatever it answers, so
@@ -157,9 +173,8 @@ fn buildTree(gpa: Allocator, root_local: u64, specs: []const Spec) !consumer.tre
         var node = schema.Node.init(gpa, spec.role);
         if (spec.text) |body| {
             try schema.strings.setValue(&node.properties, body);
-            const lengths = try gpa.alloc(u8, body.len);
+            const lengths = try utf8Lengths(gpa, body);
             defer gpa.free(lengths);
-            @memset(lengths, 1);
             try schema.vectors.setCharacterLengths(&node.properties, lengths);
         }
         const child_ids = try gpa.alloc(schema.NodeId, spec.children.len);
@@ -170,7 +185,11 @@ fn buildTree(gpa: Allocator, root_local: u64, specs: []const Spec) !consumer.tre
     }
     update.tree = schema.TreeInfo.init(.{ .value = root_local });
     update.focus = .{ .value = root_local };
-    return consumer.tree.Tree.init(gpa, update, true) catch |err| switch (err) {
+    const built = consumer.tree.Tree.init(gpa, update, true);
+    // `Tree.init` released the update on every path, so the binding is emptied
+    // before the `errdefer` above can run a second release over freed memory.
+    update = .{};
+    return built catch |err| switch (err) {
         error.OutOfMemory => error.OutOfMemory,
         else => error.TreeRejectedTheUpdate,
     };
@@ -188,7 +207,7 @@ fn documentWithBody(gpa: Allocator, body: []const u8) !consumer.tree.Tree {
     const specs = [_]Spec{
         .{ .local = 1, .role = .window, .children = &.{2} },
         .{ .local = 2, .role = .text_input, .children = &.{3}, .text = "" },
-        .{ .local = 3, .role = .text_run, .children = &.{4}, .text = body },
+        .{ .local = 3, .role = .text_run, .text = body },
     };
     return buildTree(gpa, 1, &specs);
 }
@@ -283,9 +302,9 @@ test "a range over two runs names its own two ends" {
     const gpa = testing.allocator;
     const specs = [_]Spec{
         .{ .local = 1, .role = .window, .children = &.{2} },
-        .{ .local = 2, .role = .text_input, .children = &.{3} },
-        .{ .local = 3, .role = .text_run, .children = &.{4}, .text = "hello" },
-        .{ .local = 4, .role = .text_run, .children = &.{5}, .text = "world" },
+        .{ .local = 2, .role = .text_input, .children = &.{ 3, 4 } },
+        .{ .local = 3, .role = .text_run, .text = "hello" },
+        .{ .local = 4, .role = .text_run, .text = "world" },
     };
     var tree = try buildTree(gpa, 1, &specs);
     defer tree.deinit();

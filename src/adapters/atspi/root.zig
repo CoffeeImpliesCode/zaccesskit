@@ -54,12 +54,12 @@
 //!    time is the point: a caller reading this file knows before it calls
 //!    `accesskit_unix_adapter_new` that no handshake will happen.
 //!
-//! 3. **No role and state mapping, and so no `StateChanged`.** The mapping from
-//!    the consumer layer's flags onto the forty-three-value `wire.StateSet` is
-//!    `node.rs:87-443` upstream. It is not ported, so an update raises
-//!    `AddAccessible`, `RemoveAccessible`, `BoundsChanged` and `Focus` and
-//!    nothing else. `platform_adapter.zig` lists this gap and `node.zig` is the
-//!    module that would close it.
+//! 3. **The state mapping is ported and no signal carries it.** `node.rs:87-443`
+//!    is `node_state.stateOf` and `node_role.roleOf` here. An update still
+//!    raises `AddAccessible`, `RemoveAccessible`, `BoundsChanged` and `Focus`
+//!    and nothing else, because the half that diffs two sets and raises one
+//!    `StateChanged` per member is `notify_state_changes` at `node.rs:606-620`,
+//!    it is not ported, and `platform_adapter.zig` records that as its first gap.
 //!
 //! ## The action handler, and why this file does not call it
 //!
@@ -656,12 +656,15 @@ test "every module in this adapter is reachable and analysed" {
     // three times already. The four modules below were the fourth instance: they
     // imported a D-Bus library this project does not depend on, so nothing
     // reached them and the gate analysed them at no point.
+    // The five node-side modules are bound inline rather than at file scope,
+    // because a file-scope import would move every line the closed ledger cites
+    // below this file's first hundred lines.
     std.testing.refAllDecls(adapter_errors);
-    std.testing.refAllDecls(object_address);
-    std.testing.refAllDecls(platform_adapter);
-    std.testing.refAllDecls(wire);
-    std.testing.refAllDecls(wire_action);
-    std.testing.refAllDecls(wire_rect);
+    std.testing.refAllDecls(@import("node_interfaces.zig"));
+    std.testing.refAllDecls(@import("node_role.zig"));
+    std.testing.refAllDecls(@import("node_state.zig"));
+    std.testing.refAllDecls(@import("text_attributes.zig"));
+    std.testing.refAllDecls(@import("util.zig"));
     std.testing.refAllDecls(object_id);
 }
 

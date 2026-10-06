@@ -419,7 +419,14 @@ fn scanSource(
                 const name = tok.text;
                 if (std.mem.eql(u8, name, "export")) {
                     if (peekIdent(toks, i + 1)) |next| {
-                        if (std.mem.eql(u8, next.text, "fn")) {
+                        // `export fn NAME` and `export const NAME` both name the
+                        // symbol directly. `ACCESSKIT_TREE_ID_ROOT` is a
+                        // `const`, and the header declares it as a data object,
+                        // so reading only `fn` left it invisible here while the
+                        // header loop still demanded it.
+                        if (std.mem.eql(u8, next.text, "fn") or
+                            std.mem.eql(u8, next.text, "const"))
+                        {
                             try readExportFn(
                                 arena,
                                 file,

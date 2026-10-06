@@ -65,9 +65,9 @@
 //! does not resolve yields the `Fallback` that `runtime.weak_constants`
 //! records for it, so `UIAccessibilityPriorityHigh` and
 //! `UIAccessibilityPriorityLow` downgrade the announcement and the two
-//! attribute keys post a plain string. The fourth fallback, `.no_trait`,
-//! belongs to `UIAccessibilityTraitToggleButton`, and this module resolves no
-//! trait, because no trait value is written anywhere in it.
+//! attribute keys post a plain string, and `UIAccessibilityTraitToggleButton`
+//! reads as the zero bit through `readTraitConstant`. The node layer that would
+//! set that bit is not ported, so no caller reads it yet.
 //!
 //! **The three notification tags.** The eight required UIKit symbols include
 //! `UIAccessibilityScreenChangedNotification`,
@@ -78,9 +78,11 @@
 //!
 //! **What `UIAccessibilityConvertFrameToScreenCoordinates` is for.** The module
 //! resolves it because the port must reach the symbol and it is one of the eight
-//! required. No `Platform` entry point calls it, because the adapter body
-//! converts points itself through `view_convert_point`, and the sent-selector
-//! table spells no selector for it because the module sends none.
+//! required. `Platform.to_screen_rect` is the entry point that calls it, and
+//! `root.zig`'s `toCgRect` is the only caller of that, which is the direction
+//! `AK/ios/src/util.rs:50-63` converts. The point direction at `:37-44` goes
+//! through `view_convert_point` instead, and the sent-selector table spells no
+//! selector for this one because the module sends none.
 //!
 //! **Message sends, and why the table is larger than `selectors.zig`'s 12.**
 //! `selectors.zig` counts the 12 selectors `AK/ios/src/*` calls on a
@@ -405,6 +407,15 @@ const Bindings = struct {
     /// `UIAccessibilitySpeechAttributeQueueAnnouncement`, or `null`. The
     /// fallback is `runtime.Fallback.plain_string_announcement`.
     queue_announcement_key: ?*runtime.AnyObject,
+
+    /// `UIAccessibilityTraitToggleButton`, read through its address, or `0` when
+    /// the image does not export it.
+    ///
+    /// `AK/ios/src/util.rs:77-87` resolves it once with `dlsym` and caches the
+    /// value in a `OnceLock`, and a null symbol answers `0` there. This module
+    /// reads it once when the image opens, which is the same read at the same
+    /// moment in the process. The fallback is `runtime.Fallback.no_trait`.
+    toggle_button_trait: u64,
 };
 
 /// Every platform call the iOS adapter makes.
@@ -580,6 +591,25 @@ pub const Platform = struct {
 
     /// `+[NSArray array]`: an empty array the caller does not own.
     empty_array: *const fn (ctx: ?*anyopaque) ?*runtime.AnyObject,
+
+    /// `UIAccessibilityConvertFrameToScreenCoordinates(rect, view)`, at
+    /// `AK/ios/src/util.rs:46-48`.
+    ///
+    /// This is the only entry point that calls `convert_frame_to_screen`, and
+    /// `root.zig`'s `toCgRect` is the only caller of this one.
+    to_screen_rect: *const fn (
+        ctx: ?*anyopaque,
+        view: *runtime.AnyObject,
+        rect: foundation.CGRect,
+    ) foundation.CGRect,
+
+    /// The toggle-button trait bit, at `AK/ios/src/util.rs:77-87`.
+    ///
+    /// Answers `0` on an image that does not export
+    /// `UIAccessibilityTraitToggleButton`, which is upstream's `if symbol.is_null()
+    /// { 0 }`. The node layer that reads this is not ported, so nothing in the
+    /// adapter calls it yet.
+    toggle_button_trait: *const fn (ctx: ?*anyopaque) u64,
 
     /// Closes both images and frees the bindings, which is the only release a
     /// `Platform` has.
@@ -1296,6 +1326,40 @@ fn viewContentScaleFactor(ctx: ?*anyopaque, view: *runtime.AnyObject) foundation
     return scale(view, command);
 }
 
+/// `UIAccessibilityConvertFrameToScreenCoordinates(rect, view)`, at
+/// `AK/ios/src/util.rs:46-48`.
+///
+/// This is a C function rather than a message send, so the port calls the
+/// resolved symbol and not `objc_msgSend`. The symbol is one of the eight
+/// required, so a `null` context is the only way this answers the zero rect, and
+/// the zero rect is the rect that names no screen position.
+fn toScreenRect(
+    ctx: ?*anyopaque,
+    view: *runtime.AnyObject,
+    rect: foundation.CGRect,
+) foundation.CGRect {
+    const current = bindings(ctx) orelse return .{
+        .origin = .{ .x = 0, .y = 0 },
+        .size = .{ .width = 0, .height = 0 },
+    };
+    // `UIAccessibilityConvertFrameToScreenCoordinates` takes a `UIView *`, and
+    // the entry point hands over the object as a `*runtime.AnyObject` because
+    // that is what every other Objective-C value in the adapter is. Both types
+    // are `opaque {}` handles to the same address, so the cast retypes the
+    // address for the call and writes nothing.
+    return current.convert_frame_to_screen(rect, @ptrCast(view));
+}
+
+/// The toggle-button trait bit, at `AK/ios/src/util.rs:77-87`.
+///
+/// The value was read once when the image opened, which is the read upstream's
+/// `OnceLock` performs on the first call. A `null` context answers `0`, the
+/// value upstream writes when `dlsym` answers a null symbol.
+fn toggleButtonTrait(ctx: ?*anyopaque) u64 {
+    const current = bindings(ctx) orelse return 0;
+    return current.toggle_button_trait;
+}
+
 /// `[window rootViewController]` and then `[- view]`, at
 /// `AK/ios/src/subclass.rs:295-299`.
 fn windowRootView(ctx: ?*anyopaque, window: *runtime.AnyObject) ?*runtime.AnyObject {
@@ -1623,6 +1687,18 @@ fn readStringConstant(image: *std.DynLib, name: [:0]const u8) ?*runtime.AnyObjec
     return address.*;
 }
 
+/// Reads one trait constant through the address its lookup answered, or answers
+/// `0` when the image does not export it.
+///
+/// This is the same route as `readStringConstant` and the same one upstream takes
+/// at `AK/ios/src/util.rs:78-86`, where a null symbol answers `0` and a found
+/// one is dereferenced once. `UIAccessibilityTraits` is a 64-bit mask on every
+/// target this port builds, so the value is a `u64`.
+fn readTraitConstant(image: *std.DynLib, name: [:0]const u8) u64 {
+    const address = image.lookup(*const u64, name) orelse return 0;
+    return address.*;
+}
+
 /// Opens both images, resolves every required symbol and returns the platform.
 ///
 /// The caller must release the answer with `release`, once, and that call frees
@@ -1771,6 +1847,14 @@ pub fn platform(
             &uikit_image,
             optional_uikit_symbols[3].name,
         ),
+        // The fourth weakly linked name, and the only one whose value is a
+        // number rather than a pointer. It is not in `optional_uikit_symbols`
+        // because that table records the four fallbacks of the announcement
+        // path, and this one is a trait bit.
+        .toggle_button_trait = readTraitConstant(
+            &uikit_image,
+            runtime.weak_constants[0].name,
+        ),
     };
 
     installed = resolved;
@@ -1820,6 +1904,8 @@ fn platformValue(resolved: ?*Bindings) Platform {
         .post_notification = postNotification,
         .raise_announcement = raiseAnnouncement,
         .empty_array = emptyArray,
+        .to_screen_rect = toScreenRect,
+        .toggle_button_trait = toggleButtonTrait,
         .release = release,
     };
 }
@@ -1987,14 +2073,24 @@ test "the optional UIKit table records the fallbacks runtime.weak_constants hold
     try testing.expectEqual(@as(usize, 3), shared);
 }
 
-test "the module resolves no trait, so the no_trait fallback is not one of its rows" {
+test "the toggle trait is resolved and its absent case reads as the zero bit" {
+    // `optional_uikit_symbols` holds the four names of the announcement path, so
+    // the toggle trait is not one of its rows and its fallback cannot be one of
+    // theirs. The trait is read through `readTraitConstant` in `platform`, and
+    // that function answers `0` when the image does not export the name, which
+    // is upstream's `if symbol.is_null() { 0 }` at `AK/ios/src/util.rs:81-83`.
     for (optional_uikit_symbols) |row| {
         try testing.expect(row.fallback != .no_trait);
     }
-    // The fourth row of `runtime.weak_constants` is the toggle trait.
     const toggle = runtime.weakConstant("UIAccessibilityTraitToggleButton") orelse
         return error.NoSuchSymbol;
     try testing.expectEqual(runtime.Fallback.no_trait, toggle.fallback);
+    // The name the trait is resolved under is the row's own name, so the two
+    // tables cannot disagree about the spelling.
+    try testing.expectEqualStrings(toggle.name, runtime.weak_constants[0].name);
+    // A `null` context answers the zero bit, which is the value the fallback
+    // names and the only value a caller can observe on this host.
+    try testing.expectEqual(@as(u64, 0), toggleButtonTrait(null));
 }
 
 test "the sent selector table pins every spelling the port sends" {
@@ -2203,6 +2299,8 @@ test "Platform carries the frozen field names in the frozen order" {
         "post_notification",
         "raise_announcement",
         "empty_array",
+        "to_screen_rect",
+        "toggle_button_trait",
         "release",
     });
 }
@@ -2224,12 +2322,12 @@ test "every Platform entry point takes the context as its first parameter" {
             else => {},
         }
     }
-    // 24 entry points, and the release is one of them, so it reaches the
+    // 26 entry points, and the release is one of them, so it reaches the
     // bindings the same way every other entry point does.
     // `context` and `notification_tags` are the other two fields, and neither
     // is a pointer to a function.
-    try testing.expectEqual(@as(usize, 24), entry_points);
-    try testing.expectEqual(@as(usize, 26), @typeInfo(Platform).@"struct".fields.len);
+    try testing.expectEqual(@as(usize, 26), entry_points);
+    try testing.expectEqual(@as(usize, 28), @typeInfo(Platform).@"struct".fields.len);
 }
 
 test "Owner carries the two fields the installed implementations read" {

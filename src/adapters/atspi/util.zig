@@ -119,7 +119,11 @@ pub fn textRangeFromOffset(
         .char => if (try consumer.text.position.isDocumentEnd(start_offset))
             start_offset
         else
-            try consumer.text.position_motion.forwardToCharacterEnd(start),
+            // The three character movements live in `text/position.zig`, not in
+            // `text/position_motion.zig`: `position.zig:316` is
+            // `forwardToCharacterEnd`, ported from `text.rs:320-329`. The
+            // movement module holds the other thirty.
+            try consumer.text.position.forwardToCharacterEnd(start),
         .line => try consumer.text.position_motion.forwardToLineEnd(start),
         .paragraph => try consumer.text.position_motion.forwardToParagraphEnd(start),
         // The `.char` arm above already refused a sentence, so this arm never
@@ -377,8 +381,12 @@ test "an end offset of minus one is the end of the document" {
     // Two runs of five characters each, so the document ends at index ten in the
     // last run.
     try testing.expectEqual(@as(usize, 5), to_the_end.end.character_index);
+    // `Range.end` is an `InnerPosition`, which names a run and a character
+    // index but not the document. `range.end` at `text/range.zig:204` is the
+    // lift that pairs it with the range's own node, so a whole `Position`
+    // reaches the index conversion.
     try testing.expectEqual(@as(usize, 10), try consumer.text.position.toGlobalUsvIndex(
-        to_the_end.end,
+        consumer.text.range.end(to_the_end),
     ));
 }
 
@@ -438,10 +446,23 @@ test "the six named scroll edges map to a hint and the seventh names none" {
     try testing.expectEqual(@as(?ScrollHint, null), atspiScrollTypeToScrollHint(.anywhere));
 }
 
-test "every scroll edge is covered by the map" {
+test "the six named scroll edges have six distinct hints" {
     // The sweep is the coverage argument: a seventh member added to
-    // `wire.ScrollType` is a compile error here rather than a silent omission.
+    // `wire.ScrollType` reaches this loop, and a target two edges share would
+    // mean two edges scroll the same way, which is what upstream's six distinct
+    // arms at `util.rs:126-132` avoid.
+    var seen: u8 = 0;
     inline for (comptime std.enums.values(wire.ScrollType)) |edge| {
-        _ = atspiScrollTypeToScrollHint(edge);
+        if (atspiScrollTypeToScrollHint(edge)) |hint| {
+            // `ScrollHint` is `enum(u8)`, so `@intFromEnum` answers `u8`.
+            // The shift amount of a `u8` shift is `u3`, and the enum has six
+            // members with tags zero through five, so the narrowing is in
+            // range for every member the sweep reaches.
+            const bit = @as(u8, 1) << @as(u3, @intCast(@intFromEnum(hint)));
+            try testing.expectEqual(@as(u8, 0), seen & bit);
+            seen |= bit;
+        }
     }
+    // Six hints set, which is the six arms that answer one.
+    try testing.expectEqual(@as(u8, 0b111111), seen);
 }
