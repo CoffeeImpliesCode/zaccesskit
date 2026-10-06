@@ -14,9 +14,13 @@
 //! belongs to the node layer, and this module is the node layer.
 //!
 //! **What is not here.** The other eight methods of the wrapper need a
-//! `PlatformNode`, so they are the node class, which is not ported. `label` is
-//! already answered by `consumer.node_ref.strings.label`, which
-//! `root.zig:1560` is the caller of. `traits` and `containerType` need the
+//! `PlatformNode`, so they are the node class. The class and its two ivars are in
+//! `root.zig`, beside the map that owns them, because they need the adapter and
+//! importing `root.zig` here would close a cycle. What is still missing is the
+//! instance: `PlatformNode.object` reads `null` until the class pair and the
+//! `initWithAccessibilityContainer:` send at `AK/ios/src/node.rs:466-472` are
+//! ported. `label` is already answered by `consumer.node_ref.strings.label`,
+//! which `root.zig:1560` is the caller of. `traits` and `containerType` need the
 //! `UIAccessibilityTraits` and `UIAccessibilityContainerType` values that
 //! `uikit.zig` declares non-exhaustive.
 //!

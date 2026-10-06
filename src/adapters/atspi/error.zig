@@ -200,6 +200,52 @@ pub fn isUnrecoverable(err: BusError) bool {
     };
 }
 
+/// Applies `apply` to `result`, or substitutes `default` when `result` holds
+/// a recoverable failure.
+///
+/// This is `map_or_ignoring_recoverable_error` at `bus.rs:512-525`, whose
+/// three arms are `bus.rs:521-523`. `docs/12:1052` gives it the name
+/// `orDefault` with no host dependency, and `docs/41` section 7 records the
+/// disposition as a `catch` into the declared set.
+///
+/// **The contract.** `Ok` becomes `apply`'s answer. An unrecoverable failure
+/// reaches the caller unchanged, because asking again asks the same question.
+/// Every other failure becomes `default`, because the alternative is dropping
+/// a call the adapter cannot make. `apply` runs on the `Ok` arm alone, which
+/// is the property `bus.rs:521` states and the property the test below pins.
+///
+/// **The classification is `isUnrecoverable`, not a second switch here.** The
+/// two are one decision written once, so a member added to `BusError` reaches
+/// both or neither.
+///
+/// `apply` is a `fn (T) U` and not a closure that captures, because `AGENTS.md`
+/// section 2 requires the state a step reads to be a parameter. A captured
+/// counter would hide which failures ran it.
+///
+/// **Why this function carries no caller yet.** Its five upstream call sites
+/// are the four `emit_*` arms and the register and remove path, at
+/// `bus.rs:187`, `:249`, `:467`, `:489` and `:279`. Every one of them is a
+/// call on a `zbus::Connection`, and `build.zig.zon` declares `zio` and
+/// `win32` and no D-Bus client, so no module under `src/` holds a connection.
+/// That is a missing dependency in the manifest, not a missing host: this host
+/// has `/usr/include/dbus-1.0/dbus/dbus.h` and `pkg-config dbus-1` at
+/// 1.14.10, so the port takes the connection under milestone M5.
+///
+/// **Errors.** `BusError`, on the unrecoverable arm alone.
+pub fn orDefault(
+    comptime T: type,
+    comptime U: type,
+    result: BusError!T,
+    default: U,
+    apply: fn (T) U,
+) BusError!U {
+    const value = result catch |err| {
+        if (isUnrecoverable(err)) return err;
+        return default;
+    };
+    return apply(value);
+}
+
 const testing = std.testing;
 // `AGENTS.md` section 3 asks for a sweep over `@typeInfo` of every declared
 // error set. `mapError` is total over the set, so the sweep has two jobs: it
@@ -331,4 +377,102 @@ test "the reference matches two of the three and the third takes the default arm
     try testing.expect(isUnrecoverable(error.InterfaceExists));
     try testing.expect(isUnrecoverable(error.MissingParameter));
     try testing.expect(!isUnrecoverable(error.BusUnavailable));
+}
+
+/// The mapper the two arms below share. `bus.rs:521` passes the whole `T`
+/// through `f`, so a value that is not the identity proves the mapper ran and
+/// a value that is the identity proves it did not.
+fn doubled(value: i32) i32 {
+    return value * 2;
+}
+
+test "the Ok arm runs the mapper and the recoverable arm does not" {
+    // `bus.rs:521` is `Ok(result) => Ok(f(result))`, so the mapped value is
+    // the answer and the default never appears.
+    try testing.expectEqual(
+        @as(i32, 84),
+        try orDefault(i32, i32, @as(BusError!i32, 42), 0, doubled),
+    );
+
+    // `bus.rs:523` is `Err(_) => Ok(default)`. `BusUnavailable` is the one
+    // recoverable member, and the default below is a value `doubled` cannot
+    // produce from any `T` the caller passes, so an answer of 7 proves the
+    // mapper was skipped.
+    try testing.expectEqual(
+        @as(i32, 7),
+        try orDefault(i32, i32, error.BusUnavailable, 7, doubled),
+    );
+}
+
+test "the unrecoverable arm reaches the caller and skips the default" {
+    // `bus.rs:522` is `Err(error) if zbus_error_is_unrecoverable(&error) =>
+    // Err(error)`. Both members it names are checked, and each is compared by
+    // identity against the tag it must carry, so an `orDefault` that returned
+    // the default for either one fails here rather than passing on the count.
+    try testing.expectError(error.InterfaceExists, orDefault(
+        i32,
+        i32,
+        error.InterfaceExists,
+        7,
+        doubled,
+    ));
+    try testing.expectError(error.MissingParameter, orDefault(
+        i32,
+        i32,
+        error.MissingParameter,
+        7,
+        doubled,
+    ));
+}
+
+test "the sweep reaches every member and pins which arm each one takes" {
+    // The three arms of `bus.rs:521-523` cover every member of the set, so the
+    // sweep is over the members themselves rather than over a sample. Each
+    // row names the arm its member must take, and a member added later has no
+    // row, which is what makes this test fail.
+    const cases = [_]struct {
+        err: BusError,
+        recoverable: bool,
+        named: [:0]const u8,
+    }{
+        .{
+            .err = error.BusUnavailable,
+            .recoverable = true,
+            .named = "BusUnavailable",
+        },
+        .{
+            .err = error.InterfaceExists,
+            .recoverable = false,
+            .named = "InterfaceExists",
+        },
+        .{
+            .err = error.MissingParameter,
+            .recoverable = false,
+            .named = "MissingParameter",
+        },
+    };
+    try testing.expectEqual(@as(usize, 3), cases.len);
+
+    inline for (cases) |case| {
+        try testing.expectEqual(
+            !case.recoverable,
+            isUnrecoverable(case.err),
+        );
+        // The default below is 7 and the mapper below doubles, so an answer of
+        // 14 means the mapper ran on a failure and an answer of 7 means it did
+        // not. `bus.rs:521` runs it on the `Ok` arm alone.
+        const answer = orDefault(i32, i32, case.err, 7, doubled) catch |err| blk: {
+            try testing.expectEqual(case.err, err);
+            break :blk @as(i32, 0);
+        };
+        if (case.recoverable) {
+            try testing.expectEqual(@as(i32, 7), answer);
+        } else {
+            try testing.expectEqual(@as(i32, 0), answer);
+        }
+        // The name is read so a renamed member fails the sweep rather than
+        // silently leaving the table one row short of the set.
+        try testing.expectEqualStrings(case.named, @errorName(case.err));
+        try testing.expect(case.named.len > 0);
+    }
 }

@@ -178,6 +178,12 @@ pub const AnyData = union(enum) {
     /// four-member struct.
     extent: window_bounds.Extent,
 
+    /// A 64-bit floating point value, `d`. `PropertyChange` puts a node's
+    /// numeric value here, under the property key `accessible-value`, because
+    /// upstream writes `Value::F64(value)` into the variant at `bus.rs:353`
+    /// and the variant is the only body argument that can hold a `d`.
+    number: f64,
+
     /// The signature this value puts inside the variant.
     ///
     /// **Errors.** This function does not fail.
@@ -189,6 +195,7 @@ pub const AnyData = union(enum) {
             .boolean => "b",
             .text => "s",
             .extent => "(iiii)",
+            .number => "d",
         };
     }
 
@@ -208,6 +215,7 @@ pub const AnyData = union(enum) {
             .boolean => |mine| other == .boolean and mine == other.boolean,
             .text => |mine| other == .text and std.mem.eql(u8, mine, other.text),
             .extent => |mine| other == .extent and std.meta.eql(mine, other.extent),
+            .number => |mine| other == .number and mine == other.number,
         };
     }
 };
@@ -541,6 +549,7 @@ test "every variant reports the signature it puts in the fourth argument" {
     const boolean: AnyData = .{ .boolean = false };
     const text: AnyData = .{ .text = "" };
     const box: AnyData = .{ .extent = .{ 1, 2, 3, 4 } };
+    const number: AnyData = .{ .number = 0.0 };
 
     try testing.expectEqualStrings("", nothing.signature());
     try testing.expectEqualStrings("(so)", address.signature());
@@ -550,10 +559,13 @@ test "every variant reports the signature it puts in the fourth argument" {
     // `BoundsChanged` has nowhere else to put a box: the body is a string, two
     // integers, a variant and a dictionary.
     try testing.expectEqualStrings("(iiii)", box.signature());
+    // `PropertyChange` puts a node's numeric value here, because `bus.rs:353`
+    // writes `Value::F64` and the variant is the only argument that holds a `d`.
+    try testing.expectEqualStrings("d", number.signature());
 
     // The sweep is the coverage argument, so a variant added without a
     // signature is a compile error rather than a silent omission.
-    try testing.expectEqual(@as(usize, 6), @typeInfo(AnyData).@"union".fields.len);
+    try testing.expectEqual(@as(usize, 7), @typeInfo(AnyData).@"union".fields.len);
 }
 
 test "an object reference is the only way a siiva{sv} body can carry an address" {
@@ -576,6 +588,8 @@ test "two any-data values compare by their content, not by their tag alone" {
     const shown: AnyData = .{ .text = "show" };
     const shown_too: AnyData = .{ .text = "shown" };
     const nothing: AnyData = .none;
+    const a_double: AnyData = .{ .number = 3.5 };
+    const another_double: AnyData = .{ .number = 4.5 };
 
     try testing.expect(an_address.eql(.{ .address = node }));
     try testing.expect(!an_address.eql(.{ .integer = 0 }));
@@ -584,6 +598,9 @@ test "two any-data values compare by their content, not by their tag alone" {
     try testing.expect(shown.eql(.{ .text = "show" }));
     try testing.expect(!shown.eql(shown_too));
     try testing.expect(nothing.eql(.none));
+    try testing.expect(a_double.eql(.{ .number = 3.5 }));
+    try testing.expect(!a_double.eql(another_double));
+    try testing.expect(!a_double.eql(.{ .integer = 3 }));
 }
 
 test "two identifiers of different nodes are different addresses" {

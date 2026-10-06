@@ -12,6 +12,12 @@
 //! This file owns the body and could carry the methods, but the rest of the
 //! layer is written against free functions, so it does.
 //!
+//! **One operation takes a value as its receiver, and that is a house decision
+//! rather than a language limit.** `map` below receives a `RangePropertyValue`
+//! value. A `union(enum)` returned by a generic function can carry a method, and
+//! a probe against Zig 0.16.0 confirms it, but the port uses a free function
+//! because every other operation in this module is one.
+//!
 //! **`WeakRange` is split across two modules.** `upgradeNode` and `upgrade`
 //! need `supportsTextRanges`, which is `text/query.zig`'s, and this file may
 //! not import `text/query.zig` because `text/query.zig` needs `Range`. Those
@@ -76,6 +82,37 @@ pub fn RangePropertyValue(comptime T: type) type {
     return union(enum) {
         single: ?T,
         mixed,
+    };
+}
+
+/// `value` with `map_value_callback` applied to the value inside `single`, or
+/// `mixed` unchanged.
+///
+/// This is upstream `RangePropertyValue::map` at `text.rs:601-609`. Upstream
+/// declares it on `RangePropertyValue<Option<T>>`, and the port's
+/// `RangePropertyValue(T)` is that type, because the port holds the `Option` in
+/// the tag where upstream holds it in the type parameter. The answer is
+/// therefore `RangePropertyValue(U)`, which is upstream's
+/// `RangePropertyValue<Option<U>>`.
+///
+/// A `single` that holds no value stays `single` and stays empty, because
+/// upstream's `Option::map` skips the call on `None`. `mixed` is the only
+/// answer that changes tag, and the callback never sees it.
+///
+/// `map_value_callback` is a plain function pointer. Upstream takes an
+/// `impl FnOnce` over one value, and a Zig closure would carry state that
+/// upstream's parameter does not.
+pub fn map(
+    comptime T: type,
+    comptime U: type,
+    value: RangePropertyValue(T),
+    map_value_callback: *const fn (T) U,
+) RangePropertyValue(U) {
+    return switch (value) {
+        .mixed => .mixed,
+        .single => |payload| .{
+            .single = if (payload) |item| map_value_callback(item) else null,
+        },
     };
 }
 
@@ -1285,4 +1322,29 @@ test "downgrade keeps the node id, the weak positions and both ordering keys" {
     // The end comes after the start, which is what the precomputed keys are
     // for once the tree is gone.
     try testing.expect(weak.startComparable().order(weak.endComparable()) == .lt);
+}
+
+/// How many half-points one point of font size is. The Android fill writes
+/// `setFontSize` in half-points.
+const half_points_per_point: f32 = 2.0;
+
+/// A font size in points becomes half-points.
+fn toHalfPoints(points: f32) u16 {
+    return @intFromFloat(points * half_points_per_point);
+}
+
+test "map applies the callback to the value inside a single" {
+    const mapped = map(f32, u16, .{ .single = 12.0 }, toHalfPoints);
+    try testing.expect(mapped == .single);
+    try testing.expectEqual(@as(?u16, 24), mapped.single);
+}
+
+test "map leaves mixed alone and does not call the callback on it" {
+    try testing.expect(map(f32, u16, .mixed, toHalfPoints) == .mixed);
+}
+
+test "map keeps a single that holds no value single and empty" {
+    const mapped = map(f32, u16, .{ .single = null }, toHalfPoints);
+    try testing.expect(mapped == .single);
+    try testing.expectEqual(@as(?u16, null), mapped.single);
 }

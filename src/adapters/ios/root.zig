@@ -60,16 +60,25 @@
 //!
 //! **What is blocked, and why.** `blocked` below is the machine-readable
 //! record. Two functions and one half of a third are not complete, and none of
-//! the three is complete because `AK/ios/src/node.rs`, 1076 lines that this
-//! directory has never held, is what produces the objects they must return. The
-//! node needs four `UIAccessibility` enumeration values no document under
-//! `docs/` records, which is the same reason `uikit.zig:216-284` declares
+//! the three is complete because the instance they must return needs one
+//! message send: `AK/ios/src/node.rs:466-472` allocates the node and then sends
+//! `initWithAccessibilityContainer:` to `super`, which needs the registered
+//! `AccessKitNode` class pair. Everything around that send is here.
+//! `PlatformNodeIvars` and `PlatformNode` sit in this file beside the map that
+//! owns them, `getOrCreatePlatformNode` fills the map, and `intoNsObject` and
+//! `intoAnyObject` name the three-level upcast. `PlatformNode.object` reads
+//! `null` because nothing can fill it here, and `platformObjectFor` refuses to
+//! hand a Zig struct to the Objective-C runtime, which is why the three blocked
+//! functions still answer `null`.
+//!
+//! The node also needs four `UIAccessibility` enumeration values no document
+//! under `docs/` records, which is the same reason `uikit.zig:216-284` declares
 //! `Notifications`, `Traits`, `ContainerType` and `ScrollDirection` as
 //! non-exhaustive enums and no document records a case. `ExpandedStatus` is the
 //! fifth and is not among them: `AK/ios/src/util.rs:24-26` writes its three
 //! numbers, so `uikit.zig:243-278` holds all three. Every part of the three
 //! blocked functions that does not need a platform node is written, is reached by
-//! a test, and is named in the record, so the work left is one line in each.
+//! a test, and is named in the record, so the work left is one send in each.
 //!
 //! **The allocator.** Every allocation goes through `capi/allocation.zig`, the
 //! declared allocator of the C ABI, read once when the adapter is created. The
@@ -99,6 +108,7 @@
 const std = @import("std");
 
 const boundary = @import("../../capi/boundary.zig");
+const action_request = @import("../../capi/action_request.zig");
 const allocation = @import("../../capi/allocation.zig");
 const consumer = @import("../../consumer/root.zig");
 const schema = @import("../../schema/root.zig");
@@ -116,10 +126,11 @@ pub const selectors = @import("selectors.zig");
 /// The 43 `UIAccessibility` identifier spellings.
 pub const uikit = @import("uikit.zig");
 /// The node wrapper of `AK/ios/src/node.rs:61-122` and the iOS-only element
-/// filter of `AK/ios/src/filters.rs:27-52`. The `PlatformNode` class is not
-/// here, so this module holds the half of the node layer that reads no
-/// Objective-C object. It is `node_layer` and not `node` because every function
-/// below names its node parameter `node`.
+/// filter of `AK/ios/src/filters.rs:27-52`. It holds the half of the node layer
+/// that reads no Objective-C object, and the `PlatformNode` class is here in
+/// `root.zig` beside the map that owns it, the shape
+/// `adapters/macos/root.zig:147` gives the macOS node. It is `node_layer` and
+/// not `node` because every function below names its node parameter `node`.
 pub const node_layer = @import("node.zig");
 
 const testing = std.testing;
@@ -190,12 +201,14 @@ pub const blocked = [blocked_count]Blocked{
     .{
         .symbol = "iosAdapterAccessibilityElements",
         .today = "It walks the filtered tree and returns an empty NSArray.",
-        .unblocked_by = "AK/ios/src/node.rs:393-394, the PlatformNode objects",
+        .unblocked_by = "AK/ios/src/node.rs:466-472, objc_msgSend to super with " ++
+            "initWithAccessibilityContainer: on a registered AccessKitNode class pair",
     },
     .{
         .symbol = "iosAdapterHitTest",
         .today = "It converts the point and finds the node at it, then returns null.",
-        .unblocked_by = "AK/ios/src/node.rs:487-503, the PlatformNode object",
+        .unblocked_by = "AK/ios/src/node.rs:487-503, the same objc_msgSend " ++
+            "initWithAccessibilityContainer: the map entry still has no instance",
     },
     .{
         .symbol = "iosQueuedEventsRaise",
@@ -348,10 +361,9 @@ pub const IosAdapter = struct {
     /// `AK/ios/src/adapter.rs:322`: the action channel. **The callback owns
     /// every request it receives and releases it with
     /// `accesskit_action_request_free` before returning**, which
-    /// `src/capi/boundary.zig:63-71` states. This module never calls it, because
-    /// the actions arrive through `AK/ios/src/node.rs`, which is one of the
-    /// blocked rows above; the pointer is stored so the tree is complete the
-    /// moment the node layer lands.
+    /// `src/capi/boundary.zig:63-71` states. `doAction` below is what calls it,
+    /// and nothing in this directory calls `doAction` yet, because the actions
+    /// arrive through the node class at `AK/ios/src/node.rs`.
     action_handler: boundary.ActionHandler,
     /// The `userdata` the action handler reaches.
     action_userdata: ?*anyopaque,
@@ -370,9 +382,10 @@ pub const IosAdapter = struct {
     /// what a removal of the focused node sets.
     platform_focus: ?FullNodeId,
 
-    /// The objects UIKit holds for the nodes of this tree, at
-    /// `AK/ios/src/context.rs:56-92`. Nothing writes to it yet, which is the
-    /// blocked row one of `blocked` names.
+    /// The nodes UIKit asks for, at `AK/ios/src/context.rs:56-92`.
+    /// `getOrCreatePlatformNode` writes to it and the entry points read from it.
+    /// The instance each node carries is `null` on this host, which is what row
+    /// two of `blocked` names.
     platform_nodes: PlatformNodes,
 };
 
@@ -868,66 +881,253 @@ pub fn iosSubclassingAdapterUpdateIfActive(
     return iosAdapterUpdateIfActive(adapter.adapter, update_factory, update_factory_userdata);
 }
 
+// --- the platform-node class ----------------------------------------------------
+
+/// The two fields an Objective-C instance of a node carries, upstream
+/// `PlatformNodeIvars` at `AK/ios/src/node.rs:195-198`.
+///
+/// Upstream needs this struct because the runtime allocated the instance and
+/// `set_ivars` at `:468` copies two values into it. The port keeps the pair and
+/// names both fields, because the node that holds it needs the same two values
+/// and `AK/ios/src/node.rs:481` and `:485` read them out of the ivars.
+pub const PlatformNodeIvars = struct {
+    /// Upstream's `Weak<Context>`, the pair's first field.
+    ///
+    /// Upstream holds a `Weak` because the Objective-C runtime owns the node,
+    /// so an `Rc` in an ivar would keep the context alive for as long as UIKit
+    /// held the object. The port's node is owned by `IosAdapter.platform_nodes`
+    /// instead, so it cannot outlive the adapter that owns it and the borrow
+    /// needs no runtime support. `iosAdapterFree` releases the map before the
+    /// adapter block goes back to the allocator, which is what makes the
+    /// statement here true.
+    context: *const IosAdapter,
+    /// Upstream's `node_id`, the pair's second field: the node of the tree this
+    /// object stands for.
+    node_id: FullNodeId,
+};
+
+/// `PlatformNode`, upstream `AK/ios/src/node.rs:200-446` and `:448-516`.
+///
+/// Upstream this is a `declare_class!` subclass of `UIAccessibilityElement`
+/// named `AccessKitNode`, with 19 method bodies at `:219-444`. The port carries
+/// no Objective-C behaviour: `object` is the instance UIKit would message and
+/// `new` below is the only thing that fills it, so the class pair and the 19
+/// bodies both wait for a host with a UIKit. It is the same shape
+/// `adapters/macos/root.zig:147` gives the macOS node, and the 19 selector
+/// spellings are already pinned at `selectors.zig:66`.
+pub const PlatformNode = struct {
+    /// The two fields `AK/ios/src/node.rs:195-198` names.
+    ivars: PlatformNodeIvars,
+    /// The Objective-C instance, or `null` when this host cannot allocate one.
+    ///
+    /// **What would fill it.** `AK/ios/src/node.rs:466-472` allocates through
+    /// `MainThreadMarker::alloc` and then sends `initWithAccessibilityContainer:`
+    /// to `super`, which needs the registered `AccessKitNode` class pair. That
+    /// send is row two of `blocked`, and this field reads `null` until it is
+    /// ported. `platformObjectFor` below refuses to answer a node with no
+    /// instance, because a Zig struct is not something `objc_msgSend` can be
+    /// handed.
+    object: ?*runtime.AnyObject,
+
+    /// Builds the node for `node_id`, upstream `AK/ios/src/node.rs:459-473`.
+    ///
+    /// **Returns.** `null` for a node with no container, which is upstream's
+    /// `context.view.load()?` at `:466`, and `error.OutOfMemory` when the
+    /// allocator cannot supply the node. On `null` nothing was allocated, and on
+    /// `error.OutOfMemory` nothing was allocated either, so a caller that
+    /// records the result records nothing on either path.
+    ///
+    /// **The steps that are ported.** Upstream writes `alloc`, then
+    /// `set_ivars`, then the init send. The port writes one `create` and one
+    /// `set_ivars`, which is the same two values in the same place, and it does
+    /// not write the send. A caller must not treat the answer as an object.
+    pub fn new(adapter: *const IosAdapter, node_id: FullNodeId) Allocator.Error!?*PlatformNode {
+        if (adapter.view == null) return null;
+        const node = try adapter.gpa.create(PlatformNode);
+        node.* = .{
+            .ivars = .{ .context = adapter, .node_id = node_id },
+            .object = null,
+        };
+        return node;
+    }
+
+    /// The node as a `UIAccessibilityElement`, upstream `into_ns_object` at
+    /// `AK/ios/src/node.rs:449-453`.
+    ///
+    /// The three `Retained::into_super` calls at `:450-452` walk
+    /// `PlatformNode` to `UIAccessibilityElement` to `UIResponder` to `NSObject`.
+    /// Each one changes only the static type of the pointer, so the port's answer
+    /// is the one field read and the three levels are named here instead of
+    /// written as three casts of the same address.
+    pub fn intoNsObject(this: *const PlatformNode) ?*runtime.AnyObject {
+        return this.object;
+    }
+
+    /// The node as an `AnyObject`, upstream `into_any_object` at
+    /// `AK/ios/src/node.rs:455-457`.
+    ///
+    /// This is `intoNsObject` and then the one more `into_super` at `:456` into
+    /// `AnyObject`. The port keeps both names because upstream has two functions,
+    /// and a reader comparing the two rows of the ledger needs to see that the
+    /// second adds nothing to the type.
+    pub fn intoAnyObject(this: *const PlatformNode) ?*runtime.AnyObject {
+        return this.intoNsObject();
+    }
+};
+
 // --- the platform-node map ---------------------------------------------------
 
-/// The map from a node identifier to the object UIKit asks for, at
+/// The map from a node identifier to the node UIKit asks for, at
 /// `AK/ios/src/context.rs:56-92`.
 ///
-/// **Nothing writes to it yet.** Upstream fills it from `get_or_create_platform_node`
-/// at `AK/ios/src/context.rs:88-92`, and that function calls
-/// `AK/ios/src/node.rs`, which this directory has never held. So the map, the
-/// lookup and the removal are real and the producer is the blocked row one of
-/// `blocked` names. A lookup answers `null` for every identifier today, which is
-/// why `accessibility_elements` returns an empty array and why a
-/// `node_destroyed` event changes nothing.
+/// **The map is filled and the objects are not.** `getOrCreatePlatformNode`
+/// writes an entry for every identifier it is asked about, and
+/// `PlatformNode.object` is `null` on this host, so a lookup finds the node and
+/// `platformObjectFor` still answers `null`. The three rows of `blocked` are
+/// about that second half and not about the map.
 const PlatformNodes = struct {
-    /// What each identifier is called, by the object UIKit holds.
-    objects: std.AutoHashMapUnmanaged(FullNodeId, ?*runtime.AnyObject) = .empty,
-    /// The allocator the map grew with.
+    /// What each identifier is called, by the node the map owns.
+    nodes: std.AutoHashMapUnmanaged(FullNodeId, *PlatformNode) = .empty,
+    /// The allocator the map grew with, and the one every node came from.
     gpa: Allocator,
 
-    /// The object UIKit holds for `id`, or `null` when the map holds none.
+    /// The node UIKit holds for `id`, or `null` when the map holds none.
     ///
     /// `null` is upstream's answer for an identifier no platform object was
     /// built for, at `AK/ios/src/event.rs:47-51`, so the branch it guards is
     /// upstream's own and not a port invention.
-    fn lookup(self: *const PlatformNodes, id: FullNodeId) ?*runtime.AnyObject {
-        return self.objects.get(id) orelse null;
+    fn lookup(self: *const PlatformNodes, id: FullNodeId) ?*PlatformNode {
+        return self.nodes.get(id);
     }
 
-    /// Records the object UIKit holds for `id`.
+    /// Records the node UIKit holds for `id`.
     ///
-    /// This is `AK/ios/src/context.rs:88-92` without the part that builds the
-    /// object, so it exists for the tests and for the node layer. On
-    /// `error.OutOfMemory` nothing is written.
+    /// On `error.OutOfMemory` nothing is written and the caller still owns
+    /// `node`. Upstream's `HashMap::insert` cannot fail, so the port is the one
+    /// that has to say what the caller keeps when it does.
     fn insert(
         self: *PlatformNodes,
         id: FullNodeId,
-        object: *runtime.AnyObject,
+        node: *PlatformNode,
     ) Allocator.Error!void {
-        try self.objects.put(self.gpa, id, object);
+        try self.nodes.put(self.gpa, id, node);
     }
 
-    /// Drops the object UIKit held for `id`, which is what
-    /// `AK/ios/src/event.rs:176` does.
+    /// Drops the node UIKit held for `id`, which is what
+    /// `AK/ios/src/event.rs:176` does, and releases it.
     ///
     /// The node must leave this map before the notification is posted, or the
     /// system caches an object for a node that no longer exists.
     fn remove(self: *PlatformNodes, id: FullNodeId) void {
-        _ = self.objects.remove(id);
+        const removed = self.nodes.fetchRemove(id) orelse return;
+        self.gpa.destroy(removed.value);
     }
 
-    /// Releases the map. Nothing else survives.
+    /// Releases every node and then the map. Nothing else survives.
     ///
-    /// The last line is the reset: `self.*` is one whole `PlatformNodes` with
-    /// every field at the value `init` gives it. That is the Z030 shape, and the
-    /// rule does not read an assignment to `self.*` as a reset, so this comment
-    /// says why the assignment is there.
+    /// The walk is over `nodes`, whose length is the number of nodes this map
+    /// holds, and the map does not change while it is walked. The last line is
+    /// the reset: `self.*` is one whole `PlatformNodes` with every field at the
+    /// value `init` gives it. That is the Z030 shape, and the rule does not read
+    /// an assignment to `self.*` as a reset, so this comment says why the
+    /// assignment is there.
     fn deinit(self: *PlatformNodes) void {
-        self.objects.deinit(self.gpa);
+        var iterator = self.nodes.iterator();
+        while (iterator.next()) |entry| self.gpa.destroy(entry.value_ptr.*);
+        self.nodes.deinit(self.gpa);
         self.* = .{ .gpa = self.gpa };
     }
 };
+
+/// The node for `id`, building it the first time, at
+/// `AK/ios/src/context.rs:74-85`.
+///
+/// **The three steps are upstream's and the order is upstream's.** Read the map,
+/// and answer with what it holds; otherwise build the node and record it under
+/// the same identifier, and answer with the node that was recorded. Two calls
+/// with the same identifier therefore answer the same pointer, which is what
+/// upstream's `result.clone()` at `:79` guarantees.
+///
+/// **Returns.** `null` for an identifier with no container, which is upstream's
+/// `PlatformNode::new(self, id)?` at `:82`, and `error.OutOfMemory` from
+/// `PlatformNode.new` or from the map. On `error.OutOfMemory` the node the map
+/// could not take is released here, because a caller that gets an error must
+/// not also have to release a node nobody recorded.
+pub fn getOrCreatePlatformNode(
+    adapter: *IosAdapter,
+    id: FullNodeId,
+) Allocator.Error!?*PlatformNode {
+    if (adapter.platform_nodes.lookup(id)) |existing| return existing;
+    const created = try PlatformNode.new(adapter, id) orelse return null;
+    adapter.platform_nodes.insert(id, created) catch |err| switch (err) {
+        error.OutOfMemory => {
+            adapter.gpa.destroy(created);
+            return error.OutOfMemory;
+        },
+    };
+    return created;
+}
+
+/// What `doAction` can report.
+///
+/// The two members are the two `schema.actionDataToC` can raise plus the one
+/// `allocation.create` can. The set is named here rather than inferred at the
+/// call, so a caller can tell an exhausted allocator from a text no C string
+/// can spell.
+pub const DoActionError = error{
+    /// The declared allocator could not supply the request block or the buffer
+    /// a `value` payload owns. The handler was not called.
+    OutOfMemory,
+    /// The `value` bytes hold a 0 byte, so no `char *` spells the rest of the
+    /// text. The handler was not called.
+    InteriorNul,
+};
+
+/// Hands one platform action to the handler the caller registered, upstream
+/// `Context::do_action` at `AK/ios/src/context.rs:92-94`.
+///
+/// **The request crosses the C ABI by transfer.** `boundary.ActionHandler` takes
+/// a `*CActionRequest` it owns from the moment it is called, and it must release
+/// it with `accesskit_action_request_free`, which is `schema.cActionRequestDeinit`
+/// followed by `allocation.release`. So the block comes from `allocation.create`,
+/// the payload from `adapter.gpa`, and nothing after the call releases either.
+/// A callback that keeps the pointer has a use-after-free and one that releases
+/// it twice has a double free.
+///
+/// **Who calls it.** Upstream reaches this from the activate action at
+/// `AK/ios/src/node.rs:375-391` and from the scroll action at `:388`. Both are
+/// bodies of the class at `:200`, which this host cannot declare, so nothing in
+/// this directory calls it yet. This function is the half that owns the
+/// request, so it is here and the callers arrive with the class.
+///
+/// **Errors.** `error.OutOfMemory` and `error.InteriorNul`, from
+/// `schema.actionDataToC` and from `allocation.create`. On either one the
+/// handler is not called, so no request exists to free.
+pub fn doAction(adapter: *const IosAdapter, request: schema.ActionRequest) DoActionError!void {
+    const gpa = adapter.gpa;
+    var payload: ?schema.CActionData = null;
+    if (request.data) |data| payload = try schema.actionDataToC(gpa, data);
+    // The conversion above is the only allocation before the block exists, so a
+    // block that cannot be made must hand the payload back.
+    const built = allocation.create(schema.CActionRequest) catch |err| switch (err) {
+        error.OutOfMemory => {
+            if (payload) |*owned| schema.cActionDataDeinit(gpa, owned);
+            return error.OutOfMemory;
+        },
+    };
+    built.* = .{
+        .action = request.action,
+        .target_tree = request.target_tree,
+        .target_node = request.target_node,
+        .data = .{
+            .has_value = payload != null,
+            .value = payload orelse std.mem.zeroes(schema.CActionData),
+        },
+    };
+    // Ownership moves to the callback here. Nothing after this line releases the
+    // request.
+    action_request.callActionHandler(adapter.action_handler, built, adapter.action_userdata);
+}
 
 // --- the walks that build an answer -------------------------------------------
 
@@ -1087,13 +1287,22 @@ fn toCgRect(
 
 /// The object UIKit holds for `id`, or `null`.
 ///
-/// **Blocked, and this is row one of `blocked` read from the other side.** The
-/// lookup is a real lookup in a real map and it is the last line of the two
-/// functions that need it. What the map has no entry for is any identifier,
-/// because `AK/ios/src/context.rs:88-92` gets its entries by building a
-/// `PlatformNode` and `AK/ios/src/node.rs` is not ported.
+/// **Blocked, and this is row two of `blocked` read from the other side.** The
+/// lookup is a real lookup in a real map, `getOrCreatePlatformNode` fills that
+/// map, and this call is the last line of the two entry points that need it. The
+/// one thing missing is the instance: `PlatformNode.object` is `null` until
+/// `AK/ios/src/node.rs:466-472` can allocate one and send
+/// `initWithAccessibilityContainer:` to it.
+///
+/// **Why this answers `null` rather than the node's own address.** Upstream
+/// hands a `Retained<PlatformNode>` to the Objective-C runtime here, so the
+/// address is an object. The port's node is a Zig struct, and a message sent to
+/// a struct address is a message sent to nothing. `intoNsObject` and
+/// `intoAnyObject` are the two upcasts that name the chain, and they answer
+/// `null` here for the same reason.
 fn platformObjectFor(adapter: *const IosAdapter, id: FullNodeId) ?*anyopaque {
-    const object = adapter.platform_nodes.lookup(id) orelse return null;
+    const node = adapter.platform_nodes.lookup(id) orelse return null;
+    const object = node.intoAnyObject() orelse return null;
     return @ptrCast(object);
 }
 
@@ -2396,17 +2605,58 @@ fn deactivationHandler() boundary.DeactivationHandler {
     }.call;
 }
 
-/// The action handler a test installs.
+/// The action handler most tests install.
 ///
-/// **This slice never calls it.** The iOS actions arrive through the installed
-/// node selectors at `AK/ios/src/node.rs:340-391`, and that layer is the blocked
-/// row the module doc names, so the pointer is stored and nothing reaches it. A
-/// test asserts the count stays at zero rather than asserting the handler works.
+/// **It does nothing on purpose.** `doAction` is not called by any entry point
+/// in this directory, because the actions arrive through the node class at
+/// `AK/ios/src/node.rs:340-391`, and the test that exercises `doAction` itself
+/// installs `RequestProbe` instead.
 fn actionHandler() boundary.ActionHandler {
     return struct {
         fn call(_: *boundary.CActionRequest, _: ?*anyopaque) callconv(.c) void {}
     }.call;
 }
+
+/// An action handler that reads one request and then releases it the way a C
+/// caller must.
+///
+/// `boundary.ActionHandler` hands the request over, so a handler that recorded a
+/// pointer and not the values would be reading freed memory. This copies the
+/// three scalars out first, then runs the two releases
+/// `accesskit_action_request_free` runs, in that order.
+///
+/// **No payload is read here.** The block comes from `allocation.create`, so it
+/// has to go back through `allocation.release`, and a payload the adapter built
+/// from `testing.allocator` could not go back through
+/// `cActionRequestDeinit(allocation.allocator(), …)`. A test that sends a
+/// payload must build its adapter with the C ABI's declared allocator, and the
+/// one that checks the refusal path sends none because nothing is allocated
+/// there.
+const RequestProbe = struct {
+    /// How many requests arrived.
+    calls: usize = 0,
+    /// The action the last request carried.
+    action: schema.Action = .click,
+    /// The tree the last request carried.
+    target_tree: schema.TreeId = schema.tree_id_root,
+    /// The node the last request carried.
+    target_node: schema.NodeId = .{ .value = 0 },
+    /// Whether the last request carried a payload.
+    has_value: bool = false,
+
+    /// Reads one request and releases it.
+    fn call(request: *boundary.CActionRequest, context: ?*anyopaque) callconv(.c) void {
+        const self: *RequestProbe = @ptrCast(@alignCast(context orelse return));
+        self.calls += 1;
+        self.action = request.action;
+        self.target_tree = request.target_tree;
+        self.target_node = request.target_node;
+        self.has_value = request.data.has_value;
+        // The two halves of `accesskit_action_request_free`, in its order.
+        schema.cActionRequestDeinit(allocation.allocator(), request);
+        allocation.release(request);
+    }
+};
 
 /// What the fixture tree-update factory answers and what it was asked for.
 const FactoryFixture = struct {
@@ -2539,6 +2789,33 @@ fn adapterFor(
         activation,
         actionHandler(),
         null,
+        deactivationHandler(),
+        deactivation,
+    );
+}
+
+/// An adapter over `state` whose action channel is `handler`, which is what the
+/// tests that drive `doAction` need.
+///
+/// `adapterFor` installs a handler that does nothing, because no entry point in
+/// this directory calls `doAction`. A test that calls `doAction` itself has to
+/// register one that reads and releases the request.
+fn adapterWithAction(
+    state: *Fake,
+    gpa: Allocator,
+    activation: *ActivationFixture,
+    deactivation: *DeactivationFixture,
+    handler: boundary.ActionHandler,
+    userdata: ?*anyopaque,
+) ?*IosAdapter {
+    return adapterNew(
+        gpa,
+        fakePlatform(state),
+        fakePointerFrom(0x10),
+        activationHandler(),
+        activation,
+        handler,
+        userdata,
         deactivationHandler(),
         deactivation,
     );
@@ -3016,19 +3293,149 @@ test "the platform node map answers for the identifiers the node layer wrote" {
     // back to the root, which is upstream's `unwrap_or(root)` at
     // `AK/ios/src/adapter.rs:499`. The map entry therefore belongs to the root.
     const id = FullNodeId.init(.{ .value = 0 }, consumer.tree_index.TreeIndex.init(0));
-    // Nothing has written to the map, which is the blocked row, so the hit test
-    // answers null after it has done the conversion.
+    // The map holds no entry for the root yet, so the hit test answers null
+    // after it has done the conversion.
     try testing.expectEqual(@as(?*anyopaque, null), iosAdapterHitTest(adapter, 3, 4));
     try testing.expectEqual(@as(usize, 1), state.conversions);
     try testing.expectEqual(@as(foundation.CGFloat, 3), state.last_point.x);
-    // A written entry answers the object, and a removal takes it away again.
-    try adapter.platform_nodes.insert(id, fakePointerFrom(0x4000));
+
+    // `get_or_create_platform_node` at `AK/ios/src/context.rs:74-85` records the
+    // node under the identifier it was asked about, and the same call twice
+    // answers the same pointer, which is upstream's `result.clone()` at `:79`.
+    const created = (try getOrCreatePlatformNode(adapter, id)).?;
+    try testing.expectEqual(created, (try getOrCreatePlatformNode(adapter, id)).?);
+    try testing.expectEqual(id, created.ivars.node_id);
+    // The node carries no instance on this host, so the hit test still answers
+    // null: `platformObjectFor` refuses to hand a Zig struct to the runtime.
+    try testing.expect(created.object == null);
+    try testing.expect(created.intoNsObject() == null);
+    try testing.expect(created.intoAnyObject() == null);
+    try testing.expectEqual(@as(?*anyopaque, null), iosAdapterHitTest(adapter, 3, 4));
+    try testing.expectEqual(@as(usize, 2), state.conversions);
+
+    // A node with an instance answers it, and a removal takes the entry away
+    // again. The instance is written here rather than built, because the send
+    // that builds one is row two of `blocked`.
+    created.object = fakePointerFrom(0x4000);
     try testing.expectEqual(
         @as(?*anyopaque, @ptrCast(fakePointerFrom(0x4000))),
         iosAdapterHitTest(adapter, 3, 4),
     );
     adapter.platform_nodes.remove(id);
     try testing.expectEqual(@as(?*anyopaque, null), iosAdapterHitTest(adapter, 3, 4));
+}
+
+test "a node with no container is created for nobody and recorded nowhere" {
+    // `AK/ios/src/node.rs:466` reads `context.view.load()?` first, so a view that
+    // is gone answers `None` before anything is allocated. The port's null arm
+    // is the same read on `IosAdapter.view`, and the map must stay empty because
+    // `AK/ios/src/context.rs:82` returns before the insert at `:83`.
+    const gpa = testing.allocator;
+    var state: Fake = .{ .gpa = gpa };
+    defer state.deinit();
+    var activation: ActivationFixture = .{ .gpa = gpa };
+    var deactivation: DeactivationFixture = .{};
+    const adapter = adapterNew(
+        gpa,
+        fakePlatform(&state),
+        null,
+        activationHandler(),
+        &activation,
+        actionHandler(),
+        null,
+        deactivationHandler(),
+        &deactivation,
+    ) orelse return error.NoAdapter;
+    defer teardown(adapter);
+
+    const id = FullNodeId.init(.{ .value = 0 }, consumer.tree_index.TreeIndex.init(0));
+    try testing.expectEqual(@as(?*PlatformNode, null), try getOrCreatePlatformNode(adapter, id));
+    try testing.expect(adapter.platform_nodes.lookup(id) == null);
+}
+
+test "a node carries its own identifier and its own context" {
+    // `AK/ios/src/node.rs:195-198` is the pair, and `:481` and `:485` read both
+    // members out of the ivars. The pair is the whole of what an instance
+    // carries, so a node that lost either field could not resolve itself.
+    const gpa = testing.allocator;
+    var state: Fake = .{ .gpa = gpa };
+    defer state.deinit();
+    var activation: ActivationFixture = .{ .gpa = gpa };
+    var deactivation: DeactivationFixture = .{};
+    const adapter = adapterFor(&state, gpa, &activation, &deactivation) orelse
+        return error.NoAdapter;
+    defer teardown(adapter);
+
+    const id = FullNodeId.init(.{ .value = 7 }, consumer.tree_index.TreeIndex.init(3));
+    const node = (try getOrCreatePlatformNode(adapter, id)).?;
+    try testing.expectEqual(id, node.ivars.node_id);
+    try testing.expectEqual(@as(*const IosAdapter, adapter), node.ivars.context);
+}
+
+test "an action reaches the handler with the request it was given" {
+    // `AK/ios/src/context.rs:92-94` is one call, and the whole of it is the
+    // transfer: the handler receives the action, the tree and the node, and owns
+    // the block until it releases it. The probe releases it the way
+    // `accesskit_action_request_free` does, so a leak here fails the run.
+    const gpa = testing.allocator;
+    var state: Fake = .{ .gpa = gpa };
+    defer state.deinit();
+    var activation: ActivationFixture = .{ .gpa = gpa };
+    var deactivation: DeactivationFixture = .{};
+    var probe: RequestProbe = .{};
+    const adapter = adapterWithAction(
+        &state,
+        gpa,
+        &activation,
+        &deactivation,
+        RequestProbe.call,
+        &probe,
+    ) orelse return error.NoAdapter;
+    defer teardown(adapter);
+
+    try doAction(adapter, .{
+        .action = .focus,
+        .target_tree = schema.tree_id_root,
+        .target_node = .{ .value = 1 },
+        .data = null,
+    });
+
+    try testing.expectEqual(@as(usize, 1), probe.calls);
+    try testing.expectEqual(schema.Action.focus, probe.action);
+    try testing.expectEqual(schema.tree_id_root, probe.target_tree);
+    try testing.expectEqual(schema.NodeId{ .value = 1 }, probe.target_node);
+    try testing.expect(!probe.has_value);
+}
+
+test "a text with an interior zero reports InteriorNul and sends nothing" {
+    // `schema.actionDataToC` refuses the bytes at `accesskit-c/src/common.rs:1098`
+    // because a C string ends at the first 0 byte. The handler must not be
+    // called at all on that path, or the application receives a request whose
+    // text is truncated without being told.
+    const gpa = testing.allocator;
+    var state: Fake = .{ .gpa = gpa };
+    defer state.deinit();
+    var activation: ActivationFixture = .{ .gpa = gpa };
+    var deactivation: DeactivationFixture = .{};
+    var probe: RequestProbe = .{};
+    const adapter = adapterWithAction(
+        &state,
+        gpa,
+        &activation,
+        &deactivation,
+        RequestProbe.call,
+        &probe,
+    ) orelse return error.NoAdapter;
+    defer teardown(adapter);
+
+    var text: [5]u8 = "ty\x00ed".*;
+    try testing.expectError(error.InteriorNul, doAction(adapter, .{
+        .action = .set_value,
+        .target_tree = schema.tree_id_root,
+        .target_node = .{ .value = 1 },
+        .data = .{ .value = &text },
+    }));
+    try testing.expectEqual(@as(usize, 0), probe.calls);
 }
 
 test "the point conversion scales by the content scale and inverts the tree transform" {

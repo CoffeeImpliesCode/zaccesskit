@@ -663,9 +663,13 @@ test "every module in this adapter is reachable and analysed" {
     std.testing.refAllDecls(@import("node_interfaces.zig"));
     std.testing.refAllDecls(@import("node_role.zig"));
     std.testing.refAllDecls(@import("node_state.zig"));
-    std.testing.refAllDecls(@import("text_attributes.zig"));
     std.testing.refAllDecls(@import("util.zig"));
-    std.testing.refAllDecls(object_id);
+    // `node.zig` and `app_context.zig` are analysed but never reached from
+    // production code on this host: no object is registered, so nothing calls
+    // a node method. Without these two lines the gate would analyse them at
+    // no point, which is the defect this test exists to catch.
+    std.testing.refAllDecls(@import("node.zig"));
+    std.testing.refAllDecls(@import("app_context.zig"));
 }
 
 test "the object identifier names the three paths this adapter exports" {

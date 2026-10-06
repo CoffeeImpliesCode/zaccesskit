@@ -67,6 +67,7 @@
 const std = @import("std");
 
 const boundary = @import("../../capi/boundary.zig");
+const action_request = @import("../../capi/action_request.zig");
 const allocation = @import("../../capi/allocation.zig");
 const consumer = @import("../../consumer/root.zig");
 const schema = @import("../../schema/root.zig");
@@ -157,6 +158,21 @@ pub const PlatformNode = struct {
 pub const NodeList = struct {
     /// The nodes, in the order the filtered walk produced them.
     nodes: []const *PlatformNode,
+};
+
+/// What `Context.doAction` can report.
+///
+/// The two members are the two `schema.actionDataToC` can raise plus the one
+/// `allocation.create` can. The set is named here rather than inferred at the
+/// call, so a caller can tell an exhausted allocator from a text no C string
+/// can spell.
+pub const DoActionError = error{
+    /// The declared allocator could not supply the request block or the buffer
+    /// a `value` payload owns. The handler was not called.
+    OutOfMemory,
+    /// The `value` bytes hold a 0 byte, so no `char *` spells the rest of the
+    /// text. The handler was not called.
+    InteriorNul,
 };
 
 /// The tree, the platform nodes and the handler, reference counted.
@@ -295,6 +311,54 @@ const Context = struct {
     fn removePlatformNode(self: *Context, id: FullNodeId) ?*PlatformNode {
         const removed = self.nodes.fetchRemove(id) orelse return null;
         return removed.value;
+    }
+
+    /// Hands one platform action to the handler the caller registered, upstream
+    /// `Context::do_action` at `AK/macos/src/context.rs:86-88`.
+    ///
+    /// **The request crosses the C ABI by transfer.** `boundary.ActionHandler`
+    /// takes a `*CActionRequest` it owns from the moment it is called, and it
+    /// must release it with `accesskit_action_request_free`, which is
+    /// `schema.cActionRequestDeinit` followed by `allocation.release`. So the
+    /// block comes from `allocation.create`, the payload from
+    /// `self.allocator`, and nothing after the call releases either. A callback
+    /// that keeps the pointer has a use-after-free and one that releases it
+    /// twice has a double free.
+    ///
+    /// **Who calls it.** Upstream reaches this from the node class, at
+    /// `AK/macos/src/node.rs:585`, `:693`, `:712`, `:731`, `:1139` and `:1218`.
+    /// The port holds those six selectors as table rows in `attributes.zig` with
+    /// no body, so nothing in this directory calls it yet. This function is the
+    /// half that owns the request, so it is here and the callers arrive with
+    /// the class.
+    ///
+    /// **Errors.** `error.OutOfMemory` and `error.InteriorNul`, from
+    /// `schema.actionDataToC` and from `allocation.create`. On either one the
+    /// handler is not called, so no request exists to free.
+    fn doAction(self: *Context, request: schema.ActionRequest) DoActionError!void {
+        const gpa = self.allocator;
+        var payload: ?schema.CActionData = null;
+        if (request.data) |data| payload = try schema.actionDataToC(gpa, data);
+        // The conversion above is the only allocation before the block exists,
+        // so a block that cannot be made must hand the payload back.
+        const built = allocation.create(schema.CActionRequest) catch |err| switch (err) {
+            error.OutOfMemory => {
+                if (payload) |*owned| schema.cActionDataDeinit(gpa, owned);
+                return error.OutOfMemory;
+            },
+        };
+        built.* = .{
+            .action = request.action,
+            .target_tree = request.target_tree,
+            .target_node = request.target_node,
+            .data = .{
+                .has_value = payload != null,
+                .value = payload orelse std.mem.zeroes(schema.CActionData),
+            },
+        };
+        // Ownership moves to the callback here. Nothing after this line releases
+        // the request.
+        action_request.callActionHandler(self.action_handler, built, self.action_userdata);
     }
 };
 
@@ -1640,11 +1704,16 @@ fn answeringActivation(context: ?*anyopaque) callconv(.c) ?*CTreeUpdate {
     return self.tree;
 }
 
-/// An action handler that records the requests it received.
+/// An action handler that counts the requests it received and reads none of
+/// them.
 ///
 /// It does not release the request, which `boundary.ActionHandler` requires of
-/// every handler, because these tests never send one. The rule is recorded on
-/// the type so a caller that does send one has to change this function.
+/// every handler, so only a test that never sends one may register it. The test
+/// that does send one registers `RequestProbe` instead, which releases.
+///
+/// **The assertion that matters is on `RequestProbe` and not on this type.** The
+/// count here proves that a handler was reached; the values there prove what it
+/// was handed.
 const RecordingAction = struct {
     /// How many requests arrived.
     received: usize = 0,
@@ -1655,6 +1724,69 @@ fn recordingAction(request: *boundary.CActionRequest, context: ?*anyopaque) call
     _ = request;
     self.received += 1;
 }
+
+/// An action handler that reads one request and then releases it the way a C
+/// caller must.
+///
+/// `boundary.ActionHandler` hands the request over, so a handler that recorded a
+/// pointer and not the values would be reading freed memory. This copies the
+/// three scalars and the payload text out first, then runs the two releases
+/// `accesskit_action_request_free` runs, in that order.
+const RequestProbe = struct {
+    /// How many requests arrived.
+    calls: usize = 0,
+    /// The action the last request carried.
+    action: schema.Action = .click,
+    /// The tree the last request carried.
+    target_tree: schema.TreeId = schema.tree_id_root,
+    /// The node the last request carried.
+    target_node: schema.NodeId = .{ .value = 0 },
+    /// Whether the last request carried a payload.
+    has_value: bool = false,
+    /// The payload tag the last request carried.
+    value_tag: c_uint = 0,
+    /// How many bytes of text the last payload held.
+    value_length: usize = 0,
+    /// The first 64 bytes of the last payload's text, which is longer than any
+    /// text these tests send.
+    value_text: [64]u8 = @splat(0),
+
+    /// Reads one request and releases it.
+    fn call(request: *boundary.CActionRequest, context: ?*anyopaque) callconv(.c) void {
+        const self: *RequestProbe = @ptrCast(@alignCast(context orelse return));
+        const gpa = allocation.allocator();
+        self.calls += 1;
+        self.action = request.action;
+        self.target_tree = request.target_tree;
+        self.target_node = request.target_node;
+        self.has_value = request.data.has_value;
+        self.value_tag = request.data.value.tag;
+        if (request.data.has_value) {
+            var copied = schema.actionDataFromC(gpa, request.data.value) catch |err| switch (err) {
+                error.OutOfMemory => return,
+                error.UnknownTag => return,
+                error.NullValuePointer => return,
+            };
+            defer schema.actionDataDeinit(gpa, &copied);
+            switch (copied) {
+                .value => |payload| {
+                    self.value_length = payload.len;
+                    const room = @min(payload.len, self.value_text.len);
+                    @memcpy(self.value_text[0..room], payload[0..room]);
+                },
+                else => {},
+            }
+        }
+        // The two halves of `accesskit_action_request_free`, in its order.
+        schema.cActionRequestDeinit(gpa, request);
+        allocation.release(request);
+    }
+
+    /// The text the last payload carried, as a slice of the fixed buffer.
+    fn text(self: *const RequestProbe) []const u8 {
+        return self.value_text[0..self.value_length];
+    }
+};
 
 /// A tree update holding `root` and one child, which is enough to drive the
 /// three states and the destruction path.
@@ -1886,6 +2018,107 @@ test "dropping a context posts one destroyed notification per live node" {
         events_mod.notificationFor(.node_destroyed) orelse return error.NoSuchNotification,
         recorder.posts.items[recorder.count() - 1].notification,
     );
+}
+
+/// Builds an active adapter over `probe` and answers its context.
+///
+/// `getOrInitContext` is what turns the adapter's inactive state into a
+/// `Context`, and a `focus` call is what makes that happen without an update, so
+/// this asks for the focus of the two-node tree and then reads the context back
+/// out of the state the call left behind.
+fn activeContextWith(
+    probe: *RequestProbe,
+    recorder: *RecordingHost,
+) !struct { adapter: *MacosAdapter, context: *Context } {
+    var activation: AnsweringActivation = .{
+        .tree = try boxTwoNodeTree(allocation.allocator(), child_id),
+        .calls = 0,
+    };
+    const adapter = newAdapter(null, true, RequestProbe.call, probe, recorder.host()) orelse
+        return error.NoAdapter;
+    errdefer macosAdapterFree(adapter);
+    if (macosAdapterFocus(adapter, answeringActivation, &activation) == null) {
+        return error.NoFocus;
+    }
+    const context = switch (adapter.state) {
+        .active => |held| held,
+        else => return error.NotActive,
+    };
+    return .{ .adapter = adapter, .context = context };
+}
+
+test "an action reaches the handler with the request it was given" {
+    // `AK/macos/src/context.rs:86-88` is one call, and the whole of it is the
+    // transfer: the handler receives the action, the tree and the node, and owns
+    // the block until it releases it. The probe releases it the way
+    // `accesskit_action_request_free` does, so a leak here fails the run.
+    var recorder = RecordingHost.init(std.testing.allocator);
+    defer recorder.deinit();
+    var probe: RequestProbe = .{};
+    const built = try activeContextWith(&probe, &recorder);
+    defer macosAdapterFree(built.adapter);
+
+    try built.context.doAction(.{
+        .action = .click,
+        .target_tree = schema.tree_id_root,
+        .target_node = child_id,
+        .data = null,
+    });
+
+    try testing.expectEqual(@as(usize, 1), probe.calls);
+    try testing.expectEqual(schema.Action.click, probe.action);
+    try testing.expectEqual(schema.tree_id_root, probe.target_tree);
+    try testing.expectEqual(child_id, probe.target_node);
+    try testing.expect(!probe.has_value);
+}
+
+test "a payload crosses as the value tag and the text it carries" {
+    // `AK/macos/src/context.rs:86-88` passes the whole request, so the payload
+    // is not dropped on the way to the handler. `SetValue` is the action whose
+    // payload upstream is a string, at `accesskit/src/lib.rs:3300-3321`.
+    var recorder = RecordingHost.init(std.testing.allocator);
+    defer recorder.deinit();
+    var probe: RequestProbe = .{};
+    const built = try activeContextWith(&probe, &recorder);
+    defer macosAdapterFree(built.adapter);
+
+    var typed: [5]u8 = "typed".*;
+    try built.context.doAction(.{
+        .action = .set_value,
+        .target_tree = schema.tree_id_root,
+        .target_node = child_id,
+        .data = .{ .value = typed[0..] },
+    });
+
+    try testing.expectEqual(@as(usize, 1), probe.calls);
+    try testing.expectEqual(schema.Action.set_value, probe.action);
+    try testing.expect(probe.has_value);
+    try testing.expectEqual(
+        @as(c_uint, @intFromEnum(schema.ActionDataTag.value)),
+        probe.value_tag,
+    );
+    try testing.expectEqualStrings("typed", probe.text());
+}
+
+test "a text with an interior zero reports InteriorNul and sends nothing" {
+    // `schema.actionDataToC` refuses the bytes at `accesskit-c/src/common.rs:1098`
+    // because a C string ends at the first 0 byte. The handler must not be
+    // called at all on that path, or the application receives a request whose
+    // text is truncated without being told.
+    var recorder = RecordingHost.init(std.testing.allocator);
+    defer recorder.deinit();
+    var probe: RequestProbe = .{};
+    const built = try activeContextWith(&probe, &recorder);
+    defer macosAdapterFree(built.adapter);
+
+    var text: [5]u8 = "ty\x00ed".*;
+    try testing.expectError(error.InteriorNul, built.context.doAction(.{
+        .action = .set_value,
+        .target_tree = schema.tree_id_root,
+        .target_node = child_id,
+        .data = .{ .value = &text },
+    }));
+    try testing.expectEqual(@as(usize, 0), probe.calls);
 }
 
 test "a view-children call that cannot grow its list releases what it took" {
