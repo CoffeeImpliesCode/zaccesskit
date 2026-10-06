@@ -629,3 +629,32 @@ Every item can fail, and every failure points at a defect.
     the fixture tree.
 15. `zig fmt --check` reports no file, and `jj st` lists only the files this
     change meant to touch.
+
+## 11. What this host cannot run, and how each limit is proved
+
+Three things in this repository cannot be verified on a buildhost host. A claim
+that they work is a claim you have not checked. Do not write one.
+
+|Limit|Evidence it is a limit|
+|---|---|
+|The five platform adapters run on Linux only, through a refusal seam|AppKit, UIKit, Win32, X11 and the AT-SPI bus are all absent. `test -f /usr/include/X11/extensions/XTest.h` and the same for `Xfixes.h`, `XInput2.h` and `xkbcommon.h` return no file, while the runtime libraries are present. Each adapter compiles and its module graph type-checks, and no adapter reaches a real platform object.|
+|`aarch64-linux` and `powerpc64-linux` cannot execute the COM layer|The COM entry points carry `callconv(.winapi)`, which resolves on neither foreign target. `zig build cross-test` runs the Debug shard under `qemu_user` on both and reports `status=pass` for the shard, so the row proves the tree compiles and its pure halves execute, and it proves nothing about the COM surface. The admitted consequence is that a COM defect cannot be caught by any row in the matrix.|
+|AT-SPI may be unable to register on this host|goose v3.3.0 never learns its own unique bus name on this D-Bus, so the adapter cannot complete registration. Every AT-SPI path is exercised through the refusal seam instead. `[OBSERVED]` rather than proved, because the failure is in the bus, not in this tree.|
+
+**What a green gate therefore proves.** `zig build test` passing at 1556 in Debug
+and ReleaseSafe, `zig build fuzz` at 353, `zig fmt --check` clean,
+`zig build capi-parity` in parity on five targets, `zig ast-check` parsing every
+file under `src/`, and `cross-test` at `status=pass` for x86_64-linux,
+aarch64-linux and powerpc64-linux together prove that the tree compiles, that
+its pure halves execute on three architectures, and that the C ABI matches the
+upstream header symbol for symbol. They prove nothing about any adapter
+talking to a real accessibility bus, and no line in a commit message may say
+otherwise.
+
+**Where the translation gap is.** `docs/52-translation-ledger.md` carries one
+row per upstream public item with both `path:line` values. At the last measured
+merge it held 1356 unique rows: 457 ported, 536 adapted, 194 not-applicable and
+169 open. Every open row names what blocks it, and the blockers are these three
+host limits plus a handful of house rules that forbid the shape the port would
+need. The count is a measurement, not an estimate, and it changes when a row is
+re-examined.
