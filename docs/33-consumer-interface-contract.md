@@ -111,6 +111,16 @@ Every declaration below is the one to copy. A module that needs one of these typ
 does not declare a second copy. The prose after the block is the contract, and section 4 fixes the
 sentences that go in the doc comments.
 
+**Correction, 2026-10-06, on the two `cloneInto` signatures.** This block first spelled both as
+`cloneInto(source, gpa, out)`, and the built code followed it. Section 4 rule 1 below says `gpa` is
+the first parameter, so that spelling put the allocator third and contradicted the rule in the same
+document. The tree now spells both as `cloneInto(self, gpa, source)`, which keeps the destination as
+the receiver, so the method call reads `destination.cloneInto(gpa, &source)`, and puts the allocator
+immediately after it. ziglint rule Z023 is what settles it: it reports an `Allocator` parameter that
+follows an `other` parameter, and it reported `tree_index.zig:262` and `tree_state.zig:378` for
+exactly this. The rule is `ParamKind.order` at `tools/ziglint/src/Linter.zig:1110`, where `allocator`
+is 2 and `other` is 4, so an allocator after any other parameter is out of order.
+
 ```zig
 // src/consumer/tree_index.zig — L1. Upstream: tree.rs:13-57, node.rs:29-55.
 /// The index this process assigned to one tree id. Upstream `struct TreeIndex(u32)`.
@@ -148,7 +158,7 @@ pub const TreeIndexMap = struct {
     pub fn getIndex(self: *const TreeIndexMap, id: TreeId) ?TreeIndex {}
     pub fn getId(self: *const TreeIndexMap, index: TreeIndex) ?TreeId {}
     pub fn deinit(self: *TreeIndexMap, gpa: std.mem.Allocator) void {}
-    pub fn cloneInto(source: *const TreeIndexMap, gpa: std.mem.Allocator, out: *TreeIndexMap) std.mem.Allocator.Error!void {}
+    pub fn cloneInto(self: *TreeIndexMap, gpa: std.mem.Allocator, source: *const TreeIndexMap) std.mem.Allocator.Error!void {}
 };
 comptime {
     std.debug.assert(@sizeOf(TreeIndex) == 4 and @alignOf(TreeIndex) == 4);
@@ -189,7 +199,7 @@ pub const TreeState = struct {
     tree_index_map: TreeIndexMap = .empty,
     /// `Tree.deinit` is the only caller. See section 4 for both of these.
     pub fn deinit(self: *TreeState, gpa: std.mem.Allocator) void {}
-    pub fn cloneInto(source: *const TreeState, gpa: std.mem.Allocator, out: *TreeState) std.mem.Allocator.Error!void {}
+    pub fn cloneInto(self: *TreeState, gpa: std.mem.Allocator, source: *const TreeState) std.mem.Allocator.Error!void {}
     // The queries. None allocates and none returns an error set: a missing node is null.
     pub fn hasNode(self: *const TreeState, id: FullNodeId) bool {}
     pub fn nodeById(self: *const TreeState, id: FullNodeId) ?NodeRef {}
@@ -599,7 +609,7 @@ The rule, so an agent can apply it to a function this document does not name:
   > syntax only in that order and a method-shaped name with the allocator in
   > front would have to be called qualified. So `applyUpdate(gpa, state, update,
   > changes)` and `label(gpa, node)`, against `map.getOrCreateIndex(gpa, id)` and
-  > `out.cloneInto(&source, gpa)`.
+  > `out.cloneInto(gpa, &source)`.
 - A function that can block takes `io: std.Io`. None in this layer qualifies, so none takes one.
 - A pure query takes neither. A function that allocates and takes a callback takes both.
 

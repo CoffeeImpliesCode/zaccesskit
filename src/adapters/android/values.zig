@@ -30,6 +30,16 @@
 //! **The loop bound.** Every loop over `values.value_rows` or
 //! `values.by_group(group)` walks an array whose length is a comptime constant,
 //! `values.value_count` and `constants.constant_count`.
+//!
+//! **The 46 aliases keep the SDK spelling and Z006 is exempt.** Every alias
+//! below is named for the Android SDK constant it carries, so a reader holding
+//! `AK/android/src/util.rs:14-68` or a `AccessibilityNodeInfo` header matches
+//! the row by name rather than by translating between two spellings of the same
+//! constant. Z006 asks for `snake_case` and cannot tell a vendor mirror from a
+//! declaration this package made, so the finding is recorded here instead.
+//! `ziglint/src/Linter.zig:2362` is the matcher and `:3385` `isTypeAlias` is
+//! the half that misses it. No rename is available: five of these aliases hold
+//! a `Bundle` key that Android compares byte for byte.
 
 const std = @import("std");
 

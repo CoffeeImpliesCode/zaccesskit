@@ -1,4 +1,29 @@
 {
+  "_comment": [
+    "max_states_per_point stays at 200. The cap was considered and priced, not",
+    "missed. One test function exceeds it: 'a setter that cannot copy changes",
+    "nothing and sets the failure tag' at src/capi/node_properties.zig:8598. The",
+    "test drives about forty exports through one allocator that refuses, so each",
+    "call forks the state space and the entry node of the test reaches the",
+    "ceiling. zwanzig then reports three analysis-limit-exceeded lines for it and",
+    "no dataflow finding for that function.",
+    "The number that would clear it is known. Measured with 'zwanzig --config",
+    ".zwanzig.json --max-states-per-point N --threads 8'. Over src/capi as a",
+    "directory: N=200 wall 1.3 s and 66 MB, N=400 1.7 s and 84 MB, N=800 3.4 s and",
+    "118 MB, all reporting the finding. Over src/capi/node_properties.zig alone:",
+    "N=1600 wall 10.3 s, N=2000 13.5 s, N=2400 20.4 s, N=2800 37.8 s, all",
+    "reporting it, and N=3200 34.2 s and N=4096 32.6 s, neither reporting it. So",
+    "the clearing boundary is between 2800 and 3200 and the smallest power of two",
+    "above it is 4096.",
+    "The budget stays at 200 because the price is wrong. Over the gate file list",
+    "of 126 files, N=200 runs the stage in 3.5 s and reports 65 findings, and",
+    "N=4096 runs it in 30.0 s and reports 62. The 3 findings that leave are",
+    "exactly the analysis-limit-exceeded lines for that one test, so the 8.6x",
+    "cost buys the analysis budget of a single test and surfaces no new defect.",
+    "The 3 lines are accepted at 200 rather than bought. Raising the budget to",
+    "close them costs about 27 seconds on every gate run for the internal state",
+    "space of one test, which is a bad trade."
+  ],
   "disabled_rules": [
     "identifier-style"
   ],

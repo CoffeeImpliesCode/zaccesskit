@@ -806,7 +806,7 @@ test "a graft that runs out of memory leaves the tree exactly as it was" {
     while (failures < 32) : (failures += 1) {
         var trial: TreeState = .{};
         defer trial.deinit(gpa);
-        try trial.cloneInto(&before, gpa);
+        try trial.cloneInto(gpa, &before);
 
         var failing = std.testing.FailingAllocator.init(gpa, .{ .fail_index = failures });
         scratch.gpa = failing.allocator();

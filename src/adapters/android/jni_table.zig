@@ -180,6 +180,13 @@ pub const JValue = extern union {
 /// This is the one JNI **data structure** rather than a declaration, and it is
 /// why `docs/29` section 4 says a `translate-c` binding cannot produce the
 /// registration: the five rows are literals in `injecting.zig`.
+///
+/// **The name keeps the header spelling and Z032 is exempt.** `jni.h:180-184`
+/// spells the struct `JNINativeMethod`, and this declaration is the byte layout
+/// `RegisterNatives` reads, so the name is the tie to the header line the
+/// module doc names. Z032 asks for `JniNativeMethod`, which no JDK header
+/// spells. The finding is recorded here instead. `ziglint/src/Linter.zig:3215`
+/// `checkAcronymCasing` is the matcher.
 pub const JNINativeMethod = extern struct {
     /// The Java method name, as a NUL-terminated C string.
     name: [*c]const u8,

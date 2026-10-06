@@ -104,7 +104,7 @@ pub const Random = struct {
     /// `rejection_limit`, and spending that budget is
     /// `error.TooManyRejectedDraws` rather than a hang.
     pub fn below(self: *Random, bound: usize) DrawError!usize {
-        return self.belowWithin(bound, rejection_limit);
+        return self.belowWithin(rejection_limit, bound);
     }
 
     /// A draw in `0..bound` that discards at most `limit` draws.
@@ -114,7 +114,7 @@ pub const Random = struct {
     /// exhaustion names `1`, which a domain of `2^63 + 1` members reaches on
     /// its first discarded draw, so `error.TooManyRejectedDraws` is a value a
     /// test reaches rather than a claim one makes.
-    pub fn belowWithin(self: *Random, bound: usize, comptime limit: usize) DrawError!usize {
+    pub fn belowWithin(self: *Random, comptime limit: usize, bound: usize) DrawError!usize {
         assert(bound > 0);
         // `2^64 mod bound` without a 128-bit division: `(2^64 - 1) mod bound`
         // plus one, folded back when that lands on `bound` itself.
@@ -214,7 +214,7 @@ test "a walk that discards every draw it is given names its exhaustion" {
     var source = Random.init(0);
     try std.testing.expectError(
         error.TooManyRejectedDraws,
-        source.belowWithin((@as(usize, 1) << 63) + 1, 1),
+        source.belowWithin(1, (@as(usize, 1) << 63) + 1),
     );
     // A discarded draw is a draw the state served, so the counter names it
     // even though no member came back.

@@ -171,7 +171,12 @@ fn tableFor(run: *Run, module: *const scan.Module) ![]const u8 {
         std.mem.sort([]const u8, group.names.items, {}, lessThanBytes);
     }
 
+    // The row list is a local: `document.table` copies every row into the
+    // writer it returns, so nothing outlives this call that reads `rows`. The
+    // release is here so the slice has one owner on every path out, and so a
+    // run whose allocator is not an arena does not leak it once per module.
     const rows = try run.gpa.alloc([]const u8, groups.items.len);
+    defer run.gpa.free(rows);
     for (groups.items, rows) |group, *row| {
         row.* = try formatRow(run.gpa, module, group);
     }

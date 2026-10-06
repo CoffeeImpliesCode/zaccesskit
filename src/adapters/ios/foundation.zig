@@ -21,6 +21,16 @@
 //!
 //! **The loop bound.** Every loop over `platform_names` walks the array, whose
 //! length is `platform_name_count` and is a type-level fact.
+//!
+//! **The 12 names keep the SDK spelling and Z032 is exempt.** `CGFloat`,
+//! `CGPoint`, `CGSize`, `CGRect`, `NSInteger`, `NSObject`, `NSString`,
+//! `NSArray`, `NSAttributedStringKey`, `UIView`, `UIWindow` and
+//! `UICoordinateSpace` are the Objective-C, CoreGraphics and UIKit names.
+//! `platform_names` below pins each spelling and a test asserts the two agree,
+//! so the spelling is load bearing rather than decorative. Z032 asks for
+//! `CgFloat` and `UiView`, which match no SDK header. The finding is recorded
+//! here instead. `ziglint/src/Linter.zig:3215` `checkAcronymCasing` is the
+//! matcher, and it cannot tell a vendor type name from a Zig one.
 
 const std = @import("std");
 

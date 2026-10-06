@@ -189,6 +189,8 @@ pub fn toDegenerateRange(
 
 /// The node the range is measured against. Reading `range.node` says the same
 /// thing without a call.
+/// Port obligation: upstream `Range::node` at `text.rs:627-629`. Nothing in this
+/// tree calls it; the declaration stays as a port obligation.
 pub fn node(range: Range) NodeRef {
     return range.node;
 }
@@ -419,6 +421,8 @@ pub fn setEnd(
 
 /// The range as the core `TextSelection`, which holds weak positions and so
 /// borrows nothing.
+/// Port obligation: upstream `Range::to_text_selection` at `text.rs:870-875`.
+/// Nothing in this tree calls it; the declaration stays as a port obligation.
 pub fn toTextSelection(range: Range) TextSelection {
     return .{
         .anchor = position_inner.downgrade(range.start),
@@ -659,6 +663,20 @@ fn FoldFolder(comptime T: type) type {
         /// first run from a later one — see `onNode`.
         visited: bool,
 
+        /// Port obligation, and the reason zwanzig reports it as unused: this is
+        /// upstream's `Range::fetch_property` walk callback at `text.rs:825-834`,
+        /// and `fetchProperty` below reaches it as `FoldFolder(T).onNode`. The
+        /// declaration is live.
+        ///
+        /// The finding is a tool blind spot, not dead code. zwanzig resolves a
+        /// method named through a plain container-level struct, so
+        /// `SliceVisitor.onNode` and `BoxFolder.onNode` above are both seen, and
+        /// it does not resolve one named through a generic function
+        /// instantiation, so `FoldFolder(T).onNode` is not. Settled by running
+        /// zwanzig on both spellings of the same declaration: the plain path is
+        /// not reported and the instantiated path is. The other five visitors in
+        /// this file are the control that makes the difference attributable to
+        /// the instantiation and not to the callback shape.
         fn onNode(context: ?*anyopaque, node_ref: NodeRef) bool {
             const context_ptr = context orelse return false;
             const self: *Self = @ptrCast(@alignCast(context_ptr));

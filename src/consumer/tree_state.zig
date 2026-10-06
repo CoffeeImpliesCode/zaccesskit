@@ -81,7 +81,7 @@
 //! fixes `TreeState` at eight fields, and section 4 lists `Properties`, `Tree`
 //! and `ComparablePath` as the types that *hold* an allocator. `Tree` is the one
 //! that holds it here: `Tree.init` seeds `next_state` with
-//! `next_state.cloneInto(&state, gpa)`, so the allocator reaches this module on
+//! `next_state.cloneInto(gpa, &state)`, so the allocator reaches this module on
 //! every call that grows or releases. A field would be a second copy of the
 //! handle the owner already holds.
 //!
@@ -367,15 +367,17 @@ pub const TreeState = struct {
     /// buffers and holds the copies, so `self` and `source` share nothing and
     /// releasing either releases only its own.
     ///
-    /// The receiver is the destination, not `source`. Zig only builds
-    /// method-call syntax when the receiver is the first parameter, so the
-    /// `docs/33` section 2 spelling `cloneInto(source, gpa, out)` is a function
-    /// with a method's name and no method call. See `tree_index.zig` for the
+    /// The receiver is the destination, not `source`, and `gpa` follows it
+    /// rather than coming last. Zig only builds method-call syntax when the
+    /// receiver is the first parameter, so the receiver stays first and the
+    /// allocator takes the next place. Section 4 rule 1 of `docs/33` asks for
+    /// `gpa` first on an allocating function, and ziglint rule Z023 reports an
+    /// allocator that follows any other parameter. See `tree_index.zig` for the
     /// same ruling on `TreeIndexMap`.
     pub fn cloneInto(
         self: *TreeState,
-        source: *const TreeState,
         gpa: std.mem.Allocator,
+        source: *const TreeState,
     ) std.mem.Allocator.Error!void {
         var scratch: TreeState = .{
             .info = source.info,
@@ -409,7 +411,7 @@ pub const TreeState = struct {
             try scratch.graft_parents.put(gpa, entry.key_ptr.*, entry.value_ptr.*);
         }
 
-        try scratch.tree_index_map.cloneInto(&source.tree_index_map, gpa);
+        try scratch.tree_index_map.cloneInto(gpa, &source.tree_index_map);
 
         self.deinit(gpa);
         self.* = scratch;
@@ -1112,7 +1114,7 @@ test "one state and its deep copy are each released once and a byte copy is no o
     // still passes: each buffer is freed once.
     var copy: TreeState = .{};
     defer copy.deinit(gpa);
-    try copy.cloneInto(&state, gpa);
+    try copy.cloneInto(gpa, &state);
     try testing.expectEqual(state.nodes.count(), copy.nodes.count());
     try testing.expectEqual(state.subtrees.count(), copy.subtrees.count());
     try testing.expectEqual(state.graft_parents.count(), copy.graft_parents.count());
@@ -1160,7 +1162,7 @@ test "cloneInto leaves the destination untouched when an allocation fails" {
         defer destination.deinit(gpa);
         const kept = try putNode(gpa, &destination, 500, .button);
 
-        const outcome = destination.cloneInto(&state, failing.allocator());
+        const outcome = destination.cloneInto(failing.allocator(), &state);
         if (outcome) |_| {
             try testing.expectEqual(state.nodes.count(), destination.nodes.count());
             continue;
@@ -1178,7 +1180,7 @@ test "cloneInto leaves the destination untouched when an allocation fails" {
     // outside the sweep as well.
     var destination: TreeState = .{};
     defer destination.deinit(gpa);
-    try destination.cloneInto(&state, gpa);
+    try destination.cloneInto(gpa, &state);
     try testing.expectEqual(state.nodes.count(), destination.nodes.count());
 }
 

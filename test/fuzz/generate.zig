@@ -291,8 +291,8 @@ pub fn releaseActions(gpa: std.mem.Allocator, list: *std.ArrayList(CustomAction)
 /// or the tag, which no arm reaches before it has allocated, so that arm
 /// returns nothing either.
 pub fn buildValue(
-    source: *Random,
     gpa: std.mem.Allocator,
+    source: *Random,
     tag: PropertyValueTag,
     form: SliceForm,
 ) GenerateError!PropertyValue {

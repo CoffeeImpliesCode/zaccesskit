@@ -400,7 +400,7 @@ test "every tag stores, reads back and releases, in every slice shape" {
             const form: SliceForm = @enumFromInt(form_index);
             cases += 1;
 
-            var built = try generate.buildValue(&source, gpa, tag, form);
+            var built = try generate.buildValue(gpa, &source, tag, form);
             defer built.deinit(gpa);
             try testing.expectEqual(tag, built.getTag());
 
@@ -472,7 +472,7 @@ test "a store answers through a model after a random sequence of writes" {
             // a stale discriminant after a sorted-slice shift shows up as a
             // tag the descriptor does not declare.
             const tag = table.propertyValueTagOf(id);
-            const value = try generate.buildValue(&source, counted, tag, try formFor(&source));
+            const value = try generate.buildValue(counted, &source, tag, try formFor(&source));
             const copy = try table.propertyValueClone(counted, value);
             try store.set(id, value);
             try model.set(id, copy);
@@ -480,7 +480,7 @@ test "a store answers through a model after a random sequence of writes" {
             // A repeated set of the same property, which is the overwrite path
             // that has to release the value it displaces.
             const tag = table.propertyValueTagOf(id);
-            const value = try generate.buildValue(&source, counted, tag, try formFor(&source));
+            const value = try generate.buildValue(counted, &source, tag, try formFor(&source));
             const copy = try table.propertyValueClone(counted, value);
             try store.set(id, value);
             try model.set(id, copy);
@@ -489,7 +489,7 @@ test "a store answers through a model after a random sequence of writes" {
             model.clear(id);
         } else if (roll < 9) {
             const tag = table.propertyValueTagOf(id);
-            var default = try generate.buildValue(&source, counted, tag, .single);
+            var default = try generate.buildValue(counted, &source, tag, .single);
             defer default.deinit(counted);
             var copy = try table.propertyValueClone(counted, default);
             defer copy.deinit(counted);
@@ -581,7 +581,7 @@ test "a repeated set releases the value it displaces and keeps the new one" {
             // across one would mean the displaced value was kept, or released
             // twice.
             var seed_source = Random.init(sweep_seed +% @as(u64, @intCast(tag_index)));
-            const value = try generate.buildValue(&seed_source, counted, tag, .single);
+            const value = try generate.buildValue(counted, &seed_source, tag, .single);
             try store.set(id, value);
             try testing.expectEqual(tag, store.get(id).?.getTag());
             if (live_before) |before| {
@@ -621,7 +621,7 @@ test "every stored property releases once when the store is released" {
     for (tags) |tag| {
         if (tag == .none) continue;
         var seed_source = Random.init(sweep_seed +% case_count);
-        const value = try generate.buildValue(&seed_source, counted, tag, .maximal);
+        const value = try generate.buildValue(counted, &seed_source, tag, .maximal);
         try store.set(try propertyIdForTag(tag), value);
         case_count += 1;
     }
@@ -745,7 +745,7 @@ test "a copy of the map answers as the source did and neither follows the other"
 
     var copy = TreeIndexMap.empty;
     defer copy.deinit(gpa);
-    try map.cloneInto(&copy, gpa);
+    try map.cloneInto(gpa, &copy);
     try checkIndexInvariants(&copy);
     try testing.expectEqual(map.next, copy.next);
 
@@ -888,12 +888,12 @@ pub fn replayOne(context: FuzzContext, input: []const u8, seed: u64) !void {
         const tag = table.propertyValueTagOf(id);
         switch (byte & 3) {
             0 => {
-                const value = try generate.buildValue(&source, context.gpa, tag, .drawn);
+                const value = try generate.buildValue(context.gpa, &source, tag, .drawn);
                 try store.set(id, value);
             },
             1 => store.clear(id),
             2 => {
-                var default = try generate.buildValue(&source, context.gpa, tag, .empty);
+                var default = try generate.buildValue(context.gpa, &source, tag, .empty);
                 defer default.deinit(context.gpa);
                 // `getOrInsert` copies the value it is given, so this scope
                 // still owns the value it built.

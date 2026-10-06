@@ -351,7 +351,7 @@ pub const Handler = struct {
             const slot = try self.registry.slotFor(self.platform, node.id());
             try self.pushSimple(slot, .live_region_changed);
         }
-        if (self.supportsSelectionItemPattern(node)) {
+        if (supportsSelectionItemPattern(node)) {
             const selected = consumer.node_ref.properties.isSelected(node) orelse false;
             if (selected) try self.handleSelectionStateChange(node, true);
         }
@@ -369,7 +369,7 @@ pub const Handler = struct {
                     const slot = try self.registry.slotFor(self.platform, old.id());
                     try self.pushSimple(slot, .window_window_closed);
                 }
-                if (self.supportsSelectionItemPattern(old)) {
+                if (supportsSelectionItemPattern(old)) {
                     const selected = consumer.node_ref.properties.isSelected(old) orelse false;
                     if (selected) try self.handleSelectionStateChange(old, false);
                 }
@@ -385,7 +385,7 @@ pub const Handler = struct {
             const slot = try self.registry.slotFor(self.platform, new.id());
             try self.pushSimple(slot, .window_window_opened);
         }
-        if (self.supportsSelectionItemPattern(new)) {
+        if (supportsSelectionItemPattern(new)) {
             const new_selected = consumer.node_ref.properties.isSelected(new) orelse false;
             const old_selected = consumer.node_ref.properties.isSelected(old) orelse false;
             if (new_selected != old_selected or (old_filtered != .include and new_selected)) {
@@ -418,7 +418,7 @@ pub const Handler = struct {
             const slot = try self.detachedSlotFor(node.id(), node.tree_state);
             try self.pushSimple(slot, .window_window_closed);
         }
-        if (self.supportsSelectionItemPattern(node)) {
+        if (supportsSelectionItemPattern(node)) {
             try self.handleSelectionStateChange(node, false);
         }
     }
@@ -497,23 +497,6 @@ pub const Handler = struct {
         return slot;
     }
 
-    /// Whether `node` supports the selection item pattern.
-    ///
-    /// **This is the port's own predicate and the mapping is not proved.**
-    /// Upstream calls `NodeRef::is_selection_item_pattern_supported`. Neither
-    /// the pinned upstream tree nor `docs/33-consumer-interface-contract.md`
-    /// records that method, so the port reads `predicates.isSelectable`, which
-    /// answers "the node states a selection state and is not disabled".
-    /// **[INFERENCE]** The two agree on every node the adapter sees, because a
-    /// node that answers `SelectionItemPattern` states `is_selected`; a node
-    /// that states `is_selected` and no pattern would differ, and the port
-    /// raises the selection events for it. Re-check when the upstream tree is
-    /// on a host again.
-    fn supportsSelectionItemPattern(self: *Handler, node: NodeRef) bool {
-        _ = self;
-        return consumer.node_ref.predicates.isSelectable(node);
-    }
-
     fn pushSimple(self: *Handler, slot: *const ProviderSlot, event_id: EventId) !void {
         try self.queue.append(.{ .simple = .{ .slot = slot, .event_id = event_id } });
     }
@@ -540,6 +523,41 @@ fn isLiveRegion(node: NodeRef) !bool {
     if (consumer.node_ref.strings.rawLabel(node) == null) return false;
     const live = try consumer.node_ref.set_state.live(node);
     return live != .off;
+}
+
+/// Whether `node` supports the selection item pattern.
+///
+/// Upstream `NodeWrapper::is_selection_item_pattern_supported` at
+/// `adapters/windows/src/node.rs:648-667`, transcribed arm for arm. The match
+/// is on the role, so this is not the consumer half's `is_selectable` at
+/// `accesskit_consumer/src/node.rs:620-623`, which asks a different question:
+/// whether the node states a selection state at all. That method answers for a
+/// role this one refuses and refuses for a role this one accepts.
+fn supportsSelectionItemPattern(node: NodeRef) bool {
+    const properties = consumer.node_ref.properties;
+    // The read is hoisted out of the arm that uses it, because the five role
+    // names and the read do not fit one line under the column limit.
+    const states_aria_selected = properties.isSelected(node) != null;
+    return switch (properties.role(node)) {
+        // `node.rs:650-656`: a radio role exposes `SelectionItem.IsSelected`
+        // when `aria-checked` is true or false, so the arm reads `toggled` and
+        // never reads `is_selected`. `Toggled` carries a third tag at
+        // `accesskit/src/lib.rs:486-490`, and `node.rs:655` names the other
+        // two, so a mixed radio states no selection.
+        .radio_button, .menu_item_radio => switch (properties.toggled(node) orelse return false) {
+            .true_, .false_ => true,
+            .mixed => false,
+        },
+        // `node.rs:657-663`: these five expose it when `aria-selected` is true
+        // or false, so a stored false is the pattern supported.
+        .list_box_option, .list_item, .menu_list_option, .tab, .tree_item => states_aria_selected,
+        // `node.rs:664`, and the `TODO: tables (#29)` at `node.rs:650`. A
+        // table exposes the pattern on every cell, so the arm reads nothing.
+        .grid_cell => true,
+        // `node.rs:665`. No other role supports the pattern, whatever the
+        // node states, and no role in the match reads the disabled flag.
+        else => false,
+    };
 }
 
 // --- The four trampolines `TreeChangeHandler` declares ----------------------
@@ -583,6 +601,10 @@ const NodeSpec = struct {
     live: ?schema.Live = null,
     /// The selection state the node carries, or none.
     is_selected: ?bool = null,
+    /// The pressed state the node carries, or none.
+    toggled: ?schema.Toggled = null,
+    /// Whether the node carries the disabled flag.
+    disabled: bool = false,
 };
 
 /// Builds the tree one fixture describes.
@@ -596,6 +618,8 @@ fn buildTree(gpa: std.mem.Allocator, root_local: u64, specs: []const NodeSpec) !
         if (spec.label) |text| try schema.strings.setLabel(&node.properties, text);
         if (spec.live) |value| try schema.enums.setLive(&node.properties, value);
         if (spec.is_selected) |value| try schema.enums.setSelected(&node.properties, value);
+        if (spec.toggled) |value| try schema.enums.setToggled(&node.properties, value);
+        schema.flags.setDisabled(&node.flags, spec.disabled);
         var child_ids: std.ArrayList(schema.NodeId) = .empty;
         defer child_ids.deinit(gpa);
         for (spec.children) |child| {
@@ -616,6 +640,38 @@ fn buildTree(gpa: std.mem.Allocator, root_local: u64, specs: []const NodeSpec) !
 fn slotForLocal(registry: *elements.Registry, platform: Platform, local: u64) !*const ProviderSlot {
     return registry.slotFor(platform, .init(.{ .value = local }, .init(0)));
 }
+
+/// What `supportsSelectionItemPattern` answered, beside the role it switched
+/// on, so that a failed comparison names the role and not a bare `true` or
+/// `false`.
+const PatternAnswer = struct {
+    /// The role the match switched on.
+    role: schema.Role,
+    /// What the match answered for that role.
+    supported: bool,
+};
+
+/// The role the node declares beside the answer that role gets.
+fn answeredFor(node: NodeRef) PatternAnswer {
+    return .{
+        .role = consumer.node_ref.properties.role(node),
+        .supported = supportsSelectionItemPattern(node),
+    };
+}
+
+/// The roles `adapters/windows/src/node.rs:654-664` names, in the tags the
+/// upstream Rust names map to. Every role outside this list answers `false` at
+/// `node.rs:665`, whatever the node states.
+const upstream_pattern_roles = [_]schema.Role{
+    .radio_button,
+    .menu_item_radio,
+    .list_box_option,
+    .list_item,
+    .menu_list_option,
+    .tab,
+    .tree_item,
+    .grid_cell,
+};
 
 test "a dialog node added queues the window opened event" {
     const gpa = testing.allocator;
@@ -1070,4 +1126,141 @@ test "a failure reports itself as not empty in both arms" {
     try testing.expect(neither.isEmpty());
     try testing.expect(!no_memory.isEmpty());
     try testing.expect(!query.isEmpty());
+}
+
+test "the selection item pattern answer is the match upstream writes" {
+    // The defect this pins. `supportsSelectionItemPattern` read
+    // `predicates.isSelectable`, which answers `accesskit_consumer/src/node.rs:620-623`,
+    // and the two disagree on four groups: a radio role, which upstream reads
+    // `toggled` for and never reads `is_selected` for; a grid cell, which
+    // upstream answers `true` for whatever it carries; a role the match drops,
+    // which upstream answers `false` for whatever it carries; and the disabled
+    // flag, which upstream never reads. Every expected value below is the arm
+    // `adapters/windows/src/node.rs:648-667` names, not the old answer.
+    const cases = [_]struct {
+        role: schema.Role,
+        toggled: ?schema.Toggled = null,
+        is_selected: ?bool = null,
+        disabled: bool = false,
+        supported: bool,
+    }{
+        // `node.rs:654-656`: a radio role reads `toggled` and answers true for
+        // either tag it names.
+        .{ .role = .radio_button, .toggled = .true_, .supported = true },
+        .{ .role = .radio_button, .toggled = .false_, .supported = true },
+        .{ .role = .menu_item_radio, .toggled = .true_, .supported = true },
+        .{ .role = .menu_item_radio, .toggled = .false_, .supported = true },
+        // `Toggled` has a third tag at `accesskit/src/lib.rs:486-490` and
+        // `node.rs:655` names the other two, so a mixed radio answers false.
+        .{ .role = .radio_button, .toggled = .mixed, .supported = false },
+        .{ .role = .menu_item_radio, .toggled = .mixed, .supported = false },
+        // No `toggled` at all answers false, and a selection state changes
+        // nothing because the arm never reads one.
+        .{ .role = .radio_button, .supported = false },
+        .{ .role = .radio_button, .is_selected = true, .supported = false },
+        .{ .role = .menu_item_radio, .is_selected = false, .supported = false },
+        .{ .role = .menu_item_radio, .disabled = true, .is_selected = true, .supported = false },
+        // `node.rs:659-663`: these five read `is_selected`, and a stored false
+        // is the pattern supported.
+        .{ .role = .list_box_option, .is_selected = true, .supported = true },
+        .{ .role = .list_box_option, .is_selected = false, .supported = true },
+        .{ .role = .list_item, .is_selected = true, .supported = true },
+        .{ .role = .list_item, .is_selected = false, .supported = true },
+        .{ .role = .menu_list_option, .is_selected = true, .supported = true },
+        .{ .role = .menu_list_option, .is_selected = false, .supported = true },
+        .{ .role = .tab, .is_selected = true, .supported = true },
+        .{ .role = .tab, .is_selected = false, .supported = true },
+        .{ .role = .tree_item, .is_selected = true, .supported = true },
+        .{ .role = .tree_item, .is_selected = false, .supported = true },
+        // The arm reads `is_selected` and nothing else, so a missing state and
+        // a toggle state both answer false.
+        .{ .role = .list_box_option, .supported = false },
+        .{ .role = .tab, .toggled = .true_, .supported = false },
+        // `node.rs:622` reads `is_disabled` and `node.rs` never does, so a
+        // disabled item of a named role still supports the pattern.
+        .{ .role = .list_box_option, .is_selected = true, .disabled = true, .supported = true },
+        .{ .role = .tab, .is_selected = false, .disabled = true, .supported = true },
+        // `node.rs:664`: a grid cell answers true whatever it carries.
+        .{ .role = .grid_cell, .supported = true },
+        .{ .role = .grid_cell, .disabled = true, .supported = true },
+        .{ .role = .grid_cell, .toggled = .mixed, .supported = true },
+        .{ .role = .grid_cell, .is_selected = true, .supported = true },
+        // `node.rs:665`: every other role answers false whatever it carries,
+        // which is the group the old predicate answered true for.
+        .{ .role = .button, .is_selected = true, .supported = false },
+        .{ .role = .check_box, .is_selected = true, .toggled = .true_, .supported = false },
+        .{ .role = .grid, .is_selected = true, .supported = false },
+        .{ .role = .list_box, .is_selected = true, .supported = false },
+        .{ .role = .menu_item, .is_selected = true, .supported = false },
+    };
+
+    const gpa = testing.allocator;
+    var child_ids: std.ArrayList(u64) = .empty;
+    defer child_ids.deinit(gpa);
+    var specs: std.ArrayList(NodeSpec) = .empty;
+    defer specs.deinit(gpa);
+    for (cases, 0..) |case, index| {
+        // The first child sits at 2, because the root is 1.
+        const local: u64 = @intCast(2 + index);
+        try child_ids.append(gpa, local);
+        try specs.append(gpa, .{
+            .local = local,
+            .role = case.role,
+            .toggled = case.toggled,
+            .is_selected = case.is_selected,
+            .disabled = case.disabled,
+        });
+    }
+    try specs.append(gpa, .{ .local = 1, .role = .window, .children = child_ids.items });
+    var tree = try buildTree(gpa, 1, specs.items);
+    defer tree.deinit();
+
+    const state = tree.stateOf();
+    for (cases, 0..) |case, index| {
+        const local: u64 = @intCast(2 + index);
+        const node = state.nodeById(state.rootId().withSameTree(.{ .value = local })) orelse
+            return error.MissingNode;
+        const expected: PatternAnswer = .{ .role = case.role, .supported = case.supported };
+        try testing.expectEqual(expected, answeredFor(node));
+    }
+}
+
+test "no role outside the upstream match supports the selection item pattern" {
+    // The sweep that covers the arm at `node.rs:665` over the whole role
+    // domain, so a role added to `schema.Role` is named here without an edit.
+    // Every node carries a selection state and a pressed state, because the
+    // old predicate answered true for all of them and this one must not.
+    const fields = @typeInfo(schema.Role).@"enum".fields;
+    const gpa = testing.allocator;
+    var child_ids: std.ArrayList(u64) = .empty;
+    defer child_ids.deinit(gpa);
+    var specs: std.ArrayList(NodeSpec) = .empty;
+    defer specs.deinit(gpa);
+    inline for (fields, 0..) |field, index| {
+        const local: u64 = @intCast(2 + index);
+        try child_ids.append(gpa, local);
+        try specs.append(gpa, .{
+            .local = local,
+            .role = @enumFromInt(field.value),
+            .toggled = .true_,
+            .is_selected = true,
+        });
+    }
+    try specs.append(gpa, .{ .local = 1, .role = .window, .children = child_ids.items });
+    var tree = try buildTree(gpa, 1, specs.items);
+    defer tree.deinit();
+
+    const state = tree.stateOf();
+    inline for (fields, 0..) |field, index| {
+        const local: u64 = @intCast(2 + index);
+        const node = state.nodeById(state.rootId().withSameTree(.{ .value = local })) orelse
+            return error.MissingNode;
+        const role: schema.Role = @enumFromInt(field.value);
+        var wanted = false;
+        for (upstream_pattern_roles) |candidate| {
+            if (candidate == role) wanted = true;
+        }
+        const expected: PatternAnswer = .{ .role = role, .supported = wanted };
+        try testing.expectEqual(expected, answeredFor(node));
+    }
 }

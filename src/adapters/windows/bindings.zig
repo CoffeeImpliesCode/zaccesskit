@@ -33,6 +33,17 @@
 //! value against the header it did not read. What the census tests do check is
 //! that every constant the adapter names is present, that no class repeats a
 //! value, and that each class holds the count the map re-derived.
+//!
+//! **The five `UIA_*` aliases keep the vendor spelling and Z006 is exempt.**
+//! `ControlTypeId`, `EventId`, `PatternId`, `PropertyId` and
+//! `TextAttributeId` are this file's names for `UIA_CONTROLTYPE_ID`,
+//! `UIA_EVENT_ID`, `UIA_PATTERN_ID`, `UIA_PROPERTY_ID` and
+//! `UIA_TEXTATTRIBUTE_ID`. Z006 asks for `snake_case` here because it reads a
+//! vendor spelling that carries underscores as a declaration this package made,
+//! so it cannot tell an alias from a variable. The alias is the only thing that
+//! ties the row to `AK/windows/src/util.rs`, so the spelling is kept and the
+//! finding is recorded here instead. `ziglint/src/Linter.zig:2362` is the
+//! matcher and `:3385` `isTypeAlias` is the half that misses it.
 
 const std = @import("std");
 const builtin = @import("builtin");

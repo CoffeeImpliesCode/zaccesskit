@@ -337,7 +337,7 @@ pub const Tree = struct {
         // second owner rather than a second handle to the same nodes.
         var next_state: TreeState = .{};
         errdefer next_state.deinit(gpa);
-        try next_state.cloneInto(&state, gpa);
+        try next_state.cloneInto(gpa, &state);
 
         return .{ .gpa = gpa, .state = state, .next_state = next_state };
     }
@@ -366,6 +366,28 @@ pub const Tree = struct {
         // tree whose maps own nothing, so the read answers the empty value and
         // a second `deinit` releases nothing. `gpa` is copied out first because
         // an allocator handle owns no memory and so has nothing to invalidate.
+        //
+        // The whole-receiver struct literal is deliberate, and ziglint rule Z030
+        // reports it at this line. The rule accepts three terminal spellings,
+        // read from `tools/ziglint/src/Linter.zig`: `self.* = undefined` at
+        // `isSelfUndefinedAssign:2327`, `self.destroy(self)` at
+        // `isSelfDestroyCall:2312`, and a per-field reset through
+        // `isSafeSelfFieldAssign:2052`. A whole-receiver struct literal is none
+        // of the three, so the matcher cannot read this reset as terminal. That
+        // was settled by running the tool on this exact shape, not by reading
+        // the rule.
+        //
+        // Both spellings that would satisfy the rule change the contract the doc
+        // comment above states. `self.* = undefined` makes a second `deinit`
+        // read an undefined allocator, so the double-release safety is lost, and
+        // delegating to a helper that poisons `self` does the same one frame
+        // down. A per-field reset does not satisfy the rule either:
+        // `isSafeTerminalFieldValue:2093` takes a struct literal only for the
+        // field names `active`, `closed`, `is_active`, `is_closed` and `state`,
+        // and it takes the identifier `empty` rather than `.{}`. `next_state` is
+        // not one of those names, and `gpa` holds an allocator rather than an
+        // empty marker. Closing this finding needs a behaviour change or a
+        // matcher change, and neither belongs to a lint slice.
         self.* = .{ .gpa = gpa, .state = .{}, .next_state = .{} };
     }
 
@@ -616,7 +638,7 @@ pub const Tree = struct {
         self.state.graft_parents.deinit(self.gpa);
         self.state.graft_parents = graft_parents;
 
-        try self.state.tree_index_map.cloneInto(&self.next_state.tree_index_map, self.gpa);
+        try self.state.tree_index_map.cloneInto(self.gpa, &self.next_state.tree_index_map);
     }
 
     /// Whether the committed `info` and the working `info` differ in content.

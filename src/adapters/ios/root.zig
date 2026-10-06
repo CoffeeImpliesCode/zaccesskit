@@ -1612,10 +1612,22 @@ const EventGenerator = struct {
     /// Whether this update owes a layout event, and what it names. `null` owes
     /// none.
     layout_event_focus: ?EventFocus = null,
-    /// Set by the first slot that could not finish. The events it had collected
-    /// are dropped rather than raised half-built, because a raise is the caller's
-    /// only chance to see them.
-    failed: bool = false,
+    /// The first failure a slot recorded, or `null` when every slot finished.
+    ///
+    /// `consumer.tree.TreeChangeHandler` slots return `void`, so a slot cannot
+    /// report a `WalkError` to the update that called it. It records the tag here
+    /// instead, and `intoEvents` reads it after the update returns. A generator
+    /// with a failure recorded produced a partial event list, so the list is
+    /// dropped rather than raised half-built.
+    ///
+    /// **The tag is kept and not reduced to a bit.** `WalkError` has nine
+    /// members, and `error.OutOfMemory` is the only one the C ABI can report
+    /// through `accesskit_last_error`. A field that could only say that
+    /// something failed would read as the wrong one of the nine to every caller
+    /// that inspects it, and the difference is exactly the difference between a
+    /// walk that reached its bound and an allocator that ran out. This is the
+    /// same shape `src/adapters/macos/events.zig:218` keeps.
+    failure: ?WalkError = null,
 
     /// The handler `Tree.updateAndProcessChanges` reports to.
     fn changeHandler(self: *EventGenerator) TreeChangeHandler {
@@ -1628,11 +1640,13 @@ const EventGenerator = struct {
         };
     }
 
-    /// Records the first failure and stops: `error.OutOfMemory` records itself,
-    /// and a walk that reached its bound records the same tag because the C ABI
-    /// has no tag for it.
+    /// Records `failure` and keeps the first failure a slot reported.
+    ///
+    /// A second failure never clears the first. `intoEvents` reads this once,
+    /// after the commit, when the tree is consistent, and it wants the tag that
+    /// stopped the walk rather than the last one to arrive.
     fn fail(self: *EventGenerator, failure: WalkError) void {
-        self.failed = true;
+        if (self.failure == null) self.failure = failure;
         reportQueryFailure(failure);
     }
 
@@ -1813,7 +1827,7 @@ const EventGenerator = struct {
     /// the whole list. `AK/ios/src/event.rs:198-204`.
     fn intoEvents(self: *EventGenerator) ?*IosQueuedEvents {
         const adapter = self.adapter;
-        if (self.failed) {
+        if (self.failure != null) {
             releaseEventList(adapter.gpa, &self.events);
             return null;
         }
@@ -1825,7 +1839,7 @@ const EventGenerator = struct {
                     .node => |id| id,
                 },
             ));
-            if (self.failed) {
+            if (self.failure != null) {
                 releaseEventList(adapter.gpa, &self.events);
                 return null;
             }
@@ -2454,6 +2468,37 @@ fn adapterFor(
 }
 
 // --- Tests -------------------------------------------------------------------
+
+test "a slot records the tag it failed with, and keeps the first one" {
+    // A `TreeChangeHandler` slot returns `void`, so a failure has nowhere to
+    // go but this field. `WalkError` carries nine tags and only `OutOfMemory`
+    // reaches `accesskit_last_error`, so a field that could only say that
+    // something failed would read as an exhausted allocator for every other
+    // one of them. A second failure must not overwrite the first either:
+    // `intoEvents` reads the field once, after the commit, and the tag that
+    // stopped the walk is the one it wants.
+    const gpa = testing.allocator;
+    var state: Fake = .{ .gpa = gpa };
+    defer state.deinit();
+    var activation: ActivationFixture = .{ .gpa = gpa };
+    var deactivation: DeactivationFixture = .{};
+    const adapter = adapterFor(&state, gpa, &activation, &deactivation) orelse
+        return error.NoAdapter;
+    defer teardown(adapter);
+
+    var generator: EventGenerator = .{
+        .adapter = adapter,
+        .platform_focus = adapter.platform_focus,
+    };
+    defer generator.releaseEvents();
+    try testing.expectEqual(@as(?WalkError, null), generator.failure);
+
+    generator.fail(error.TreeCycle);
+    try testing.expectEqual(@as(?WalkError, error.TreeCycle), generator.failure);
+
+    generator.fail(error.OutOfMemory);
+    try testing.expectEqual(@as(?WalkError, error.TreeCycle), generator.failure);
+}
 
 test "the five modules of the iOS binding layer are reachable and analysed" {
     testing.refAllDecls(foundation);

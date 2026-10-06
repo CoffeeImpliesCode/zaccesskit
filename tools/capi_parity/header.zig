@@ -1420,6 +1420,10 @@ const LayoutCtx = struct {
             }
         }
         if (!known) {
+            // The offsets of a record whose layout is unknown are not a value a
+            // reader can use, but the buffer still has one owner, so it is
+            // stored and then sliced away rather than dropped on the floor.
+            rec.offsets = offsets[0..0];
             if (rec.tag.len != 0) _ = ctx.resolving.remove(rec.tag);
             return .unknown;
         }

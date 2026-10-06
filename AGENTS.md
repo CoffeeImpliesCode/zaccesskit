@@ -280,12 +280,60 @@ Each item names the failure it prevents. Do not rediscover them.
     `// ziglint-ignore: Z001` to 498 lines, or by adding a second config.
     `docs/32-layout-and-naming-corrections.md:206-221` settles naming for the
     Zig half, and this settles it for the boundary.
+- **Z006 and Z032 findings under `src/adapters/` are vendor mirrors, and each
+  one is exempted at its site.** Z006 asks for `snake_case` on a variable and
+  Z032 asks for `CgFloat` in place of `CGFloat`. All 64 findings are the same
+  class Z001 and `identifier-style` already cover: the identifier names a
+  platform constant or a platform type, and the spelling is the tie to the
+  header or the upstream line. Measured over the whole project on this host,
+  **Z006 has 51 findings and Z032 has 13, and every one of the 64 is under
+  `src/adapters/`.** There is no finding of either rule elsewhere in the tree,
+  so the cost of the exemption is zero today.
+  - | Rule | Files and counts | What the name is |
+  |---|---|---|
+  | Z006 | `android/values.zig` 46 | The Android SDK constants of `AK/android/src/util.rs:14-68`. Five of the 46 hold a `Bundle` key that Android compares byte for byte. |
+  | Z006 | `windows/bindings.zig` 5 | `UIA_CONTROLTYPE_ID`, `UIA_EVENT_ID`, `UIA_PATTERN_ID`, `UIA_PROPERTY_ID` and `UIA_TEXTATTRIBUTE_ID`. |
+  | Z032 | `ios/foundation.zig` 12 | The CoreGraphics, Foundation and UIKit type names, pinned a second time by `platform_names` and asserted by a test. |
+  | Z032 | `android/jni_table.zig` 1 | `JNINativeMethod` at `jni.h:180-184`, the struct `RegisterNatives` reads. |
+  - **Why the matcher cannot tell.** `ziglint/src/Linter.zig:2362` fires Z006
+    when `isSnakeCase` is false and neither `isTypeAlias` (`:3385`) nor
+    `isFunctionAlias` (`:3479`) is true. `isTypeAlias` accepts a `.field_access`
+    only when the **field** name is PascalCase, so an alias whose vendor field
+    is `UIA_CONTROLTYPE_ID` is read as a variable. Z032 is
+    `checkAcronymCasing` at `:3215`, which counts any run of two uppercase
+    letters and cannot tell an SDK type name from a Zig one.
+  - The reason is written as a doc comment on the module that owns the names:
+    `android/values.zig`, `windows/bindings.zig`, `ios/foundation.zig`, and on
+    the declaration itself for `android/jni_table.zig`. Do not "fix" these by
+    renaming a vendor name or by adding `// ziglint-ignore` to 64 lines.
+- **A change slot records the tag it failed with, and never a bit.** A
+  `consumer.tree.TreeChangeHandler` slot returns `void`, so a failure has no
+  return path, and each of the four adapters records it in a field the caller
+  reads after the update commits.
+  - | Adapter | Field | Type |
+  |---|---|---|
+  | Windows | `change_handler.zig:73` `Failure` | `out_of_memory: bool` plus `query_error: ?QueryError`, two fields because the two are different events |
+  | macOS | `events.zig:218` `failure` | `?SlotError` |
+  | iOS | `root.zig:1630` `failure` | `?WalkError` |
+  | Android | `adapter.zig:677` `append_error` | `?Allocator.Error`, and `QueuedEvents.append` reports no other tag |
+  - **This was a real defect twice, and both fixes are in the tree.** Every
+    Windows slot once ran `catch { self.failure.out_of_memory = true; }`, so
+    every `QueryError` a walk raised reached `adapter.zig:305` as
+    `error.OutOfMemory` and the `query_error` field was written by nothing but
+    a test; `change_handler.zig:1061` names it. The macOS generator once held
+    the same bit. **A caller that answers every tag with one sentinel does not
+    make the collapse correct**: the information is destroyed at the field, and
+    `accesskit_last_error` has two members, so a query that reached its bound
+    and an allocator that ran out both arrive as an allocation failure. The
+    rule to apply is that the field's type is the error set the slot can
+    produce, or a struct with one field per distinct outcome.
 - **`identifier-style` is off in `.zwanzig.json`, and it stays off.** The rule
   asks for `camelCase` on a function, `snake_case` on a constant and a payload,
   and `PascalCase` on a type. 605 of its 637 findings are the same
   vendor-mirror and C ABI class that Z001 already covers, and the same
   reasoning applies: renaming them changes behaviour or breaks a foreign
-  boundary, not style. The config is `{"disabled_rules":["identifier-style"]}`.
+  boundary, not style. The config disables that one rule and sets `max_states_per_point` to 200. It
+  also carries a `_comment` array recording why the budget stays at 200.
   - **The mechanism exists and is the same shape as `.ziglint.zon`.** zwanzig
     reads `--config <path>`, default `.zwanzig.json`, resolved from the working
     directory, which `zig-gate:7` sets to the project root. The keys are

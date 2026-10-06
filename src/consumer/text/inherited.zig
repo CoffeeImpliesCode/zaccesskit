@@ -66,6 +66,9 @@ pub fn nodeTextDirection(
 }
 
 /// The direction the run at `position` inherits.
+/// Port obligation: upstream `Position::text_direction`, written by the
+/// `inherited_properties!` macro at `text.rs:988` from its row at `text.rs:1201`.
+/// Nothing in this tree calls it; the declaration stays as a port obligation.
 pub fn positionTextDirection(
     position_value: Position,
 ) QueryError!?TextDirection {
@@ -73,6 +76,9 @@ pub fn positionTextDirection(
 }
 
 /// The direction across `range`, or `.mixed` when the runs disagree.
+/// Port obligation: upstream `Range::text_direction`, written by the
+/// `inherited_properties!` macro at `text.rs:993` from its row at `text.rs:1201`.
+/// Nothing in this tree calls it; the declaration stays as a port obligation.
 pub fn rangeTextDirection(
     gpa: std.mem.Allocator,
     range_value: Range,
@@ -111,11 +117,17 @@ pub fn nodeLanguage(node: NodeRef) QueryError!?[]const u8 {
 }
 
 /// The language the run at `position` inherits.
+/// Port obligation: upstream `Position::language`, written by the
+/// `inherited_properties!` macro at `text.rs:988` from its row at `text.rs:1203`.
+/// Nothing in this tree calls it; the declaration stays as a port obligation.
 pub fn positionLanguage(position_value: Position) QueryError!?[]const u8 {
     return nodeLanguage(position_value.inner.node);
 }
 
 /// The language across `range`, or `.mixed` when the runs disagree.
+/// Port obligation: upstream `Range::language`, written by the
+/// `inherited_properties!` macro at `text.rs:993` from its row at `text.rs:1203`.
+/// Nothing in this tree calls it; the declaration stays as a port obligation.
 pub fn rangeLanguage(
     gpa: std.mem.Allocator,
     range_value: Range,
@@ -133,6 +145,9 @@ pub fn nodeFontSize(
 }
 
 /// The font size the run at `position` inherits.
+/// Port obligation: upstream `Position::font_size`, written by the
+/// `inherited_properties!` macro at `text.rs:988` from its row at `text.rs:1204`.
+/// Nothing in this tree calls it; the declaration stays as a port obligation.
 pub fn positionFontSize(
     position_value: Position,
 ) QueryError!?f32 {
@@ -140,6 +155,9 @@ pub fn positionFontSize(
 }
 
 /// The font size across `range`, or `.mixed` when the runs disagree.
+/// Port obligation: upstream `Range::font_size`, written by the
+/// `inherited_properties!` macro at `text.rs:993` from its row at `text.rs:1204`.
+/// Nothing in this tree calls it; the declaration stays as a port obligation.
 pub fn rangeFontSize(
     gpa: std.mem.Allocator,
     range_value: Range,
@@ -157,6 +175,9 @@ pub fn nodeFontWeight(
 }
 
 /// The font weight the run at `position` inherits.
+/// Port obligation: upstream `Position::font_weight`, written by the
+/// `inherited_properties!` macro at `text.rs:988` from its row at `text.rs:1205`.
+/// Nothing in this tree calls it; the declaration stays as a port obligation.
 pub fn positionFontWeight(
     position_value: Position,
 ) QueryError!?f32 {
@@ -164,6 +185,9 @@ pub fn positionFontWeight(
 }
 
 /// The font weight across `range`, or `.mixed` when the runs disagree.
+/// Port obligation: upstream `Range::font_weight`, written by the
+/// `inherited_properties!` macro at `text.rs:993` from its row at `text.rs:1205`.
+/// Nothing in this tree calls it; the declaration stays as a port obligation.
 pub fn rangeFontWeight(
     gpa: std.mem.Allocator,
     range_value: Range,
@@ -181,6 +205,9 @@ pub fn nodeBackgroundColor(
 }
 
 /// The background colour the run at `position` inherits.
+/// Port obligation: upstream `Position::background_color`, written by the
+/// `inherited_properties!` macro at `text.rs:988` from its row at `text.rs:1206`.
+/// Nothing in this tree calls it; the declaration stays as a port obligation.
 pub fn positionBackgroundColor(
     position_value: Position,
 ) QueryError!?Color {
@@ -188,6 +215,9 @@ pub fn positionBackgroundColor(
 }
 
 /// The background colour across `range`, or `.mixed` when the runs disagree.
+/// Port obligation: upstream `Range::background_color`, written by the
+/// `inherited_properties!` macro at `text.rs:993` from its row at `text.rs:1206`.
+/// Nothing in this tree calls it; the declaration stays as a port obligation.
 pub fn rangeBackgroundColor(
     gpa: std.mem.Allocator,
     range_value: Range,
@@ -205,6 +235,9 @@ pub fn nodeForegroundColor(
 }
 
 /// The foreground colour the run at `position` inherits.
+/// Port obligation: upstream `Position::foreground_color`, written by the
+/// `inherited_properties!` macro at `text.rs:988` from its row at `text.rs:1207`.
+/// Nothing in this tree calls it; the declaration stays as a port obligation.
 pub fn positionForegroundColor(
     position_value: Position,
 ) QueryError!?Color {
@@ -212,6 +245,9 @@ pub fn positionForegroundColor(
 }
 
 /// The foreground colour across `range`, or `.mixed` when the runs disagree.
+/// Port obligation: upstream `Range::foreground_color`, written by the
+/// `inherited_properties!` macro at `text.rs:993` from its row at `text.rs:1207`.
+/// Nothing in this tree calls it; the declaration stays as a port obligation.
 pub fn rangeForegroundColor(
     gpa: std.mem.Allocator,
     range_value: Range,
@@ -229,6 +265,9 @@ pub fn nodeOverline(
 }
 
 /// The overline the run at `position` inherits.
+/// Port obligation: upstream `Position::overline`, written by the
+/// `inherited_properties!` macro at `text.rs:988` from its row at `text.rs:1208`.
+/// Nothing in this tree calls it; the declaration stays as a port obligation.
 pub fn positionOverline(
     position_value: Position,
 ) QueryError!?TextDecoration {
@@ -236,6 +275,9 @@ pub fn positionOverline(
 }
 
 /// The overline across `range`, or `.mixed` when the runs disagree.
+/// Port obligation: upstream `Range::overline`, written by the
+/// `inherited_properties!` macro at `text.rs:993` from its row at `text.rs:1208`.
+/// Nothing in this tree calls it; the declaration stays as a port obligation.
 pub fn rangeOverline(
     gpa: std.mem.Allocator,
     range_value: Range,
@@ -253,6 +295,9 @@ pub fn nodeStrikethrough(
 }
 
 /// The strikethrough the run at `position` inherits.
+/// Port obligation: upstream `Position::strikethrough`, written by the
+/// `inherited_properties!` macro at `text.rs:988` from its row at `text.rs:1209`.
+/// Nothing in this tree calls it; the declaration stays as a port obligation.
 pub fn positionStrikethrough(
     position_value: Position,
 ) QueryError!?TextDecoration {
@@ -260,6 +305,9 @@ pub fn positionStrikethrough(
 }
 
 /// The strikethrough across `range`, or `.mixed` when the runs disagree.
+/// Port obligation: upstream `Range::strikethrough`, written by the
+/// `inherited_properties!` macro at `text.rs:993` from its row at `text.rs:1209`.
+/// Nothing in this tree calls it; the declaration stays as a port obligation.
 pub fn rangeStrikethrough(
     gpa: std.mem.Allocator,
     range_value: Range,
@@ -277,6 +325,9 @@ pub fn nodeUnderline(
 }
 
 /// The underline the run at `position` inherits.
+/// Port obligation: upstream `Position::underline`, written by the
+/// `inherited_properties!` macro at `text.rs:988` from its row at `text.rs:1210`.
+/// Nothing in this tree calls it; the declaration stays as a port obligation.
 pub fn positionUnderline(
     position_value: Position,
 ) QueryError!?TextDecoration {
@@ -284,6 +335,9 @@ pub fn positionUnderline(
 }
 
 /// The underline across `range`, or `.mixed` when the runs disagree.
+/// Port obligation: upstream `Range::underline`, written by the
+/// `inherited_properties!` macro at `text.rs:993` from its row at `text.rs:1210`.
+/// Nothing in this tree calls it; the declaration stays as a port obligation.
 pub fn rangeUnderline(
     gpa: std.mem.Allocator,
     range_value: Range,
@@ -301,6 +355,9 @@ pub fn nodeTextAlign(
 }
 
 /// The alignment the run at `position` inherits.
+/// Port obligation: upstream `Position::text_align`, written by the
+/// `inherited_properties!` macro at `text.rs:988` from its row at `text.rs:1211`.
+/// Nothing in this tree calls it; the declaration stays as a port obligation.
 pub fn positionTextAlign(
     position_value: Position,
 ) QueryError!?TextAlign {
@@ -308,6 +365,9 @@ pub fn positionTextAlign(
 }
 
 /// The alignment across `range`, or `.mixed` when the runs disagree.
+/// Port obligation: upstream `Range::text_align`, written by the
+/// `inherited_properties!` macro at `text.rs:993` from its row at `text.rs:1211`.
+/// Nothing in this tree calls it; the declaration stays as a port obligation.
 pub fn rangeTextAlign(
     gpa: std.mem.Allocator,
     range_value: Range,
@@ -325,6 +385,9 @@ pub fn nodeVerticalOffset(
 }
 
 /// The vertical offset the run at `position` inherits.
+/// Port obligation: upstream `Position::vertical_offset`, written by the
+/// `inherited_properties!` macro at `text.rs:988` from its row at `text.rs:1212`.
+/// Nothing in this tree calls it; the declaration stays as a port obligation.
 pub fn positionVerticalOffset(
     position_value: Position,
 ) QueryError!?VerticalOffset {
@@ -332,6 +395,9 @@ pub fn positionVerticalOffset(
 }
 
 /// The vertical offset across `range`, or `.mixed` when the runs disagree.
+/// Port obligation: upstream `Range::vertical_offset`, written by the
+/// `inherited_properties!` macro at `text.rs:993` from its row at `text.rs:1212`.
+/// Nothing in this tree calls it; the declaration stays as a port obligation.
 pub fn rangeVerticalOffset(
     gpa: std.mem.Allocator,
     range_value: Range,

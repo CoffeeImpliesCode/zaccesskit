@@ -258,8 +258,8 @@ pub const TreeIndexMap = struct {
     /// caller at `tree.rs:705` drives by naming the committed map as `self`.
     pub fn cloneInto(
         self: *TreeIndexMap,
-        source: *const TreeIndexMap,
         gpa: std.mem.Allocator,
+        source: *const TreeIndexMap,
     ) std.mem.Allocator.Error!void {
         var id_to_index = try source.id_to_index.clone(gpa);
         errdefer id_to_index.deinit(gpa);
@@ -421,7 +421,7 @@ test "a copy answers as the source did and neither follows the other" {
 
     var out: TreeIndexMap = .empty;
     defer out.deinit(gpa);
-    try out.cloneInto(&source, gpa);
+    try out.cloneInto(gpa, &source);
 
     try testing.expectEqual(copied, out.getIndex(copied_id).?);
     try testing.expectEqual(copied_id, out.getId(copied).?);
@@ -449,7 +449,7 @@ test "a copy replaces what the destination held" {
     _ = try out.getOrCreateIndex(gpa, stale_id);
     const stale = try out.getOrCreateIndex(gpa, treeIdFromBytes(.{8} ** 16));
 
-    try out.cloneInto(&source, gpa);
+    try out.cloneInto(gpa, &source);
 
     // The source handed out index 0 alone, so the copy drops index 1 and every
     // entry the destination held. A port that merged instead leaves `.{ 8 }`
@@ -477,7 +477,7 @@ test "a failed copy leaves the destination as the caller passed it" {
 
     var failing = std.testing.FailingAllocator.init(gpa, .{ .fail_index = 0 });
     const failing_gpa = failing.allocator();
-    try testing.expectError(error.OutOfMemory, out.cloneInto(&source, failing_gpa));
+    try testing.expectError(error.OutOfMemory, out.cloneInto(failing_gpa, &source));
 
     try testing.expectEqual(held, out.getIndex(held_id).?);
     try testing.expect(out.getIndex(treeIdFromBytes(.{1} ** 16)) == null);
