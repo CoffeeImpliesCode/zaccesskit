@@ -355,11 +355,15 @@ fn releaseCustomAction(gpa: std.mem.Allocator, action: *CustomAction) void {
 ///
 /// `handle` is untouched and keeps its own buffer, so the caller keeps
 /// releasing it through `accesskit_custom_action_free` or through the list it
-/// came from. That is the copy `accesskit_node_set_custom_actions` and
-/// `accesskit_node_push_custom_action` make: the header states at
-/// `include/zaccesskit.h:5084-5086` and `:5096-5097` that neither takes
-/// ownership of the caller's action, and upstream's shim clones each element
-/// the same way at `accesskit-c/src/common.rs:823` and `:838`.
+/// came from. That is the copy `accesskit_node_set_custom_actions` makes, which
+/// the header states at `include/zaccesskit.h:5099` takes ownership of nothing,
+/// and upstream's shim clones each element the same way at
+/// `accesskit-c/src/common.rs:823`.
+///
+/// `accesskit_node_push_custom_action` is the other half and is **not** this
+/// call: `include/zaccesskit.h:5108` says it takes ownership of the handle, so
+/// that one moves the value out through `marshal.actionFromHandle` and releases
+/// the block rather than copying it.
 ///
 /// Returns `error.OutOfMemory` when `gpa` cannot supply the description
 /// bytes. The call then holds no allocation and the caller owns nothing new,

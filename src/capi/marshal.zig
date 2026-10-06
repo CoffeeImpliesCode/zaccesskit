@@ -635,6 +635,24 @@ pub const CLengths = extern struct {
 /// that is a bare alias, which is why it is a `const` and not a function.
 pub const CustomActionHandle = *CustomAction;
 
+/// The action a handle block carries, read out whole.
+///
+/// `include/zaccesskit.h:5108` says `accesskit_node_push_custom_action` takes
+/// ownership of the handle, so the value has to be out of the block before the
+/// block goes back, and it has to be a copy rather than a borrow: the
+/// description buffer the two share is released with the block.
+///
+/// The block itself is not released here, and the caller releases it. The
+/// difference from `action_request.customActionClone` is that this reads the
+/// buffer rather than copying it, because the buffer is what the caller is
+/// handing over rather than what it is lending.
+///
+/// A free function that allocates nothing, so it takes no allocator
+/// (`AGENTS.md:99`).
+pub fn actionFromHandle(handle: CustomActionHandle) CustomAction {
+    return handle.*;
+}
+
 /// `struct accesskit_custom_actions` from
 /// `accesskit-c/include/accesskit.h:1512-1524`.
 ///
@@ -1158,17 +1176,16 @@ pub fn custom_actions_to_c(
     errdefer gpa.free(owned);
 
     // An allocation that fails partway leaves the slots above the failure
-    // uninitialised, so the release loop counts what it wrote rather than what
-    // it allocated. That is the difference between a clean failure and a read
-    // of undefined storage.
+    // uninitialised, so the release walks the slots this loop wrote rather
+    // than every slot it allocated. That is the difference between a clean
+    // failure and a read of undefined storage.
     var written: usize = 0;
     errdefer {
-        var index: usize = 0;
-        while (index < written) : (index += 1) {
-            // A slot below `written` holds the action this loop built and a
-            // slot above it was never assigned, so the capture is the question
-            // and the unwrap would have been the answer.
-            if (owned[index]) |held| {
+        // Every slot in this range holds an action the loop below built, so
+        // the capture is the question and the unwrap would have been the
+        // answer.
+        for (owned[0..written]) |slot| {
+            if (slot) |held| {
                 held.deinit(gpa);
                 gpa.destroy(held);
             }
@@ -1185,7 +1202,12 @@ pub fn custom_actions_to_c(
         owned[written] = fresh;
     }
 
-    outer.* = .{ .length = owned.len, .values = owned.ptr };
+    // The array leaves with the struct that names it: `outer` is the caller's
+    // block from here on, and `custom_actions_deinit` releases both halves of
+    // what went into it. The two halves go in one at a time so each write is
+    // the array handing itself over.
+    outer.length = owned.len;
+    outer.values = owned.ptr;
     return outer;
 }
 

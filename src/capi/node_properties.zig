@@ -6103,7 +6103,7 @@ export fn accesskit_node_push_custom_action(
     enter();
     const store = mutable_properties(node);
     const gpa = allocation.allocator();
-    const taken: CustomAction = action.*;
+    const taken: CustomAction = marshal.actionFromHandle(action);
     gpa.destroy(action);
     props_vectors.pushCustomAction(store, taken) catch |err| switch (err) {
         error.OutOfMemory => note_oom(),
@@ -7392,17 +7392,28 @@ const CountingPair = struct {
         return memory.ptr;
     }
 
+    /// The block `held` names, at `byte_count` bytes.
+    ///
+    /// The length is not derivable from the pointer, because the C pair is
+    /// handed only a pointer at `include/zaccesskit.h:6473`. `live` recorded
+    /// the length the block was made at, and `free` on `inner` needs that same
+    /// one, so the two halves of the pair meet here and nowhere else.
+    fn blockAt(held: *anyopaque, byte_count: usize) []align(8) u8 {
+        const base: [*]align(8) u8 = @ptrCast(@alignCast(held));
+        return base[0..byte_count];
+    }
+
     /// The release half, the second parameter of the declaration at
     /// `include/zaccesskit.h:6473`.
     ///
-    /// The block goes back at the length `live` recorded, because `free` on
-    /// `inner` needs the exact length and the C pair is handed only a pointer.
+    /// The block goes back through `blockAt`, so it goes back at the length
+    /// `live` recorded for it rather than at a length this frame guesses.
     fn free(ptr: ?*anyopaque, ctx: ?*anyopaque) callconv(.c) void {
         const self: *CountingPair = @ptrCast(@alignCast(ctx orelse return));
         const held = ptr orelse return;
         const address = @intFromPtr(held);
         const size = self.live.fetchRemove(address) orelse return;
-        const slice = @as([*]align(8) u8, @ptrCast(@alignCast(held)))[0..size.value];
+        const slice = blockAt(held, size.value);
         const entry = self.releases.getOrPut(self.inner, address) catch {
             self.inner.free(slice);
             return;

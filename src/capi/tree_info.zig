@@ -247,8 +247,13 @@ pub const accesskit_tree_info = struct {
         // `CString::new(...).unwrap()` at `accesskit-c/src/common.rs:890`, which
         // panics on the same value.
         const kept = text[0 .. std.mem.indexOfScalar(u8, text, 0) orelse text.len];
-        const copy = try self.gpa.dupe(u8, kept);
-        if (store(self, which, copy)) |displaced| self.gpa.free(displaced);
+        // The copy is made and handed over in one expression. `store` is the
+        // only writer of either half and the object releases whatever it wrote,
+        // so a copy bound to a name here would name a second owner of the same
+        // bytes that this frame never gives up.
+        if (store(self, which, try self.gpa.dupe(u8, kept))) |displaced| {
+            self.gpa.free(displaced);
+        }
     }
 };
 
