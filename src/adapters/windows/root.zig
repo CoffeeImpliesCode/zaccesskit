@@ -50,6 +50,7 @@ const subclass = @import("subclass.zig");
 const syscalls = @import("syscalls.zig");
 const window_handle_mod = @import("window_handle.zig");
 const schema = @import("../../schema/root.zig");
+pub const util = @import("util.zig");
 
 /// The COM boundary, as one namespace. These four files carry the type half
 /// of the Windows boundary and the object model, and they reach
@@ -727,4 +728,5 @@ test "the COM boundary is reached, so its tests run and its bodies are analysed"
     testing.refAllDecls(WindowsBoundary.error_codes);
     testing.refAllDecls(WindowsBoundary.window_handle);
     testing.refAllDecls(WindowsBoundary.bindings);
+    testing.refAllDecls(util);
 }
