@@ -145,13 +145,6 @@ pub const member_add_accessible: [:0]const u8 = "AddAccessible";
 /// `org.a11y.atspi.Event.Cache`.
 pub const member_remove_accessible: [:0]const u8 = "RemoveAccessible";
 
-/// The reason `BoundsChanged` reports when only the extents moved. The
-/// reference spells these as decimal text in the first argument, so they are
-/// text here too and not an integer.
-pub const bounds_reason_size: []const u8 = "1";
-
-/// The reason `BoundsChanged` reports when only the origin moved.
-pub const bounds_reason_location: []const u8 = "2";
 
 /// The value the fourth argument of an event body carries.
 ///
@@ -170,7 +163,7 @@ pub const AnyData = union(enum) {
     integer: i32,
     /// A boolean, `b`.
     boolean: bool,
-    /// A text value, `s`.
+    /// A text value, `s`. Ownership belongs to the enclosing `Event`.
     text: []const u8,
     /// A box, `(iiii)`. `BoundsChanged` puts the node's new extents here,
     /// because the body's five arguments leave no room for a box: a string, two
@@ -362,6 +355,10 @@ pub const Event = struct {
     any_data: AnyData = .none,
     /// The fifth body argument, `a{sv}`.
     properties: Properties = Properties.empty(),
+    /// Queue-owned text allocation, or `null` for a borrowed payload.
+    /// When present, `any_data.text` names exactly this allocation.
+    /// Release with the allocator that copied it. A copy is not a second owner.
+    owned_text: ?[]u8 = null,
 
     /// The interface this event goes out on, which is the header `INTERFACE`
     /// field.
@@ -379,16 +376,18 @@ pub const Event = struct {
         return event_body_signature;
     }
 
-    /// Releases the property dictionary. The header fields borrow string
-    /// literals and the body arguments borrow their owner's memory, so this is
-    /// the whole teardown.
+    /// Releases the dictionary and `owned_text`, but never a borrowed text payload.
+    /// After `drainInto`, the caller releases each transferred event once.
     ///
     /// **Errors.** This function does not fail.
     pub fn deinit(self: *Event, gpa: std.mem.Allocator) void {
         self.properties.deinit(gpa);
-        // SAFETY: the line above released the one buffer this value owned, and
-        // the reset is what a stale read sees. Nothing after it reads a
-        // released field, and no statement below this one reads `self`.
+        if (self.owned_text) |text| {
+            std.debug.assert(self.any_data == .text);
+            std.debug.assert(self.any_data.text.ptr == text.ptr);
+            std.debug.assert(self.any_data.text.len == text.len);
+            gpa.free(text);
+        }
         self.* = undefined;
     }
 
@@ -443,10 +442,36 @@ pub const EventQueue = struct {
         return self.items.items.len;
     }
 
-    /// Appends one event.
+    /// Appends one event, copying borrowed `any_data.text` with `gpa`.
     ///
-    /// **Errors.** `error.OutOfMemory` from `gpa`.
-    pub fn push(self: *EventQueue, gpa: std.mem.Allocator, event: Event) !void {
+    /// Success transfers the dictionary and any already-owned text to the queue.
+    /// Already-owned text must use `gpa`. Other event fields remain borrowed.
+    /// On `error.OutOfMemory`, the queue is unchanged and the caller retains
+    /// every input allocation. The queue releases a failed temporary text copy.
+    pub fn push(
+        self: *EventQueue,
+        gpa: std.mem.Allocator,
+        event: Event,
+    ) std.mem.Allocator.Error!void {
+        if (event.owned_text) |text| {
+            std.debug.assert(event.any_data == .text);
+            std.debug.assert(event.any_data.text.ptr == text.ptr);
+            std.debug.assert(event.any_data.text.len == text.len);
+            try self.items.append(gpa, event);
+            return;
+        }
+        if (event.any_data == .text) {
+            const text = try gpa.dupe(u8, event.any_data.text);
+            errdefer gpa.free(text);
+            var owned = event;
+            owned.any_data = .{ .text = text };
+            owned.owned_text = text;
+            try self.items.append(gpa, owned);
+            const stored = self.items.items[self.items.items.len - 1];
+            std.debug.assert(stored.owned_text.?.ptr == stored.any_data.text.ptr);
+            std.debug.assert(stored.owned_text.?.len == stored.any_data.text.len);
+            return;
+        }
         try self.items.append(gpa, event);
     }
 
@@ -778,4 +803,103 @@ test "draining moves each event's dictionary rather than copying or dropping it"
     for (taken.items) |*moved| moved.deinit(gpa);
     taken.deinit(gpa);
     queue.deinit(gpa);
+}
+
+test "queued text survives producer buffer reuse" {
+    const gpa = testing.allocator;
+    var queue = EventQueue.empty();
+    defer queue.deinit(gpa);
+    var producer = [_]u8{ 'B', 'e', 'f', 'o', 'r', 'e' };
+    try queue.push(gpa, .{
+        .kind = .object,
+        .member = member_announcement,
+        .id = .root,
+        .any_data = .{ .text = &producer },
+    });
+    @memcpy(&producer, "After!");
+    try testing.expectEqualStrings("Before", queue.items.items[0].any_data.text);
+}
+
+test "queue text-copy fail-N keeps only completed events" {
+    const allocation_attempt_bound = 16;
+    for (0..allocation_attempt_bound) |fail_index| {
+        var failing = testing.FailingAllocator.init(testing.allocator, .{
+            .fail_index = fail_index,
+        });
+        const gpa = failing.allocator();
+        var queue = EventQueue.empty();
+        defer queue.deinit(gpa);
+        queue.push(gpa, .{
+            .kind = .object,
+            .member = member_announcement,
+            .id = .root,
+            .any_data = .{ .text = "Owned by queue" },
+        }) catch |failure| {
+            try testing.expectEqual(error.OutOfMemory, failure);
+            try testing.expectEqual(@as(usize, 0), queue.count());
+            continue;
+        };
+        try testing.expectEqual(@as(usize, 1), queue.count());
+        try testing.expectEqualStrings("Owned by queue", queue.items.items[0].any_data.text);
+        return;
+    }
+    return error.AllocationAttemptBoundExceeded;
+}
+
+test "direct events never release borrowed text" {
+    var producer = [_]u8{ 'T', 'e', 'x', 't' };
+    var event: Event = .{
+        .kind = .object,
+        .member = member_announcement,
+        .id = .root,
+        .any_data = .{ .text = &producer },
+    };
+    event.deinit(testing.allocator);
+    try testing.expectEqualStrings("Text", &producer);
+}
+
+test "draining transfers the queue text owner exactly once" {
+    const gpa = testing.allocator;
+    var queue = EventQueue.empty();
+    defer queue.deinit(gpa);
+    var taken: std.ArrayList(Event) = .empty;
+    defer {
+        for (taken.items) |*event| event.deinit(gpa);
+        taken.deinit(gpa);
+    }
+    try queue.push(gpa, .{
+        .kind = .object,
+        .member = member_announcement,
+        .id = .root,
+        .any_data = .{ .text = "Transferred" },
+    });
+    const allocation = queue.items.items[0].owned_text.?;
+    try queue.drainInto(gpa, &taken);
+    try testing.expectEqual(@as(usize, 0), queue.count());
+    try testing.expectEqual(@as(usize, 1), taken.items.len);
+    try testing.expect(taken.items[0].owned_text.?.ptr == allocation.ptr);
+    try testing.expect(taken.items[0].any_data.text.ptr == allocation.ptr);
+    try testing.expectEqualStrings("Transferred", taken.items[0].any_data.text);
+}
+
+test "failed push retains input owned text and dictionary" {
+    const backing = testing.allocator;
+    var failing = testing.FailingAllocator.init(backing, .{ .fail_index = 0 });
+    const gpa = failing.allocator();
+    var queue = EventQueue.empty();
+    defer queue.deinit(gpa);
+    const text = try backing.dupe(u8, "Retained");
+    var event: Event = .{
+        .kind = .object,
+        .member = member_announcement,
+        .id = .root,
+        .any_data = .{ .text = text },
+        .owned_text = text,
+    };
+    defer event.deinit(backing);
+    try event.properties.put(backing, "retained", .{ .boolean = true });
+    try testing.expectError(error.OutOfMemory, queue.push(gpa, event));
+    try testing.expectEqual(@as(usize, 0), queue.count());
+    try testing.expectEqualStrings("Retained", event.any_data.text);
+    try testing.expectEqual(@as(usize, 1), event.properties.count());
 }
