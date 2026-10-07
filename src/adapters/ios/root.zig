@@ -3302,8 +3302,9 @@ test "the platform node map answers for the identifiers the node layer wrote" {
     // `get_or_create_platform_node` at `AK/ios/src/context.rs:74-85` records the
     // node under the identifier it was asked about, and the same call twice
     // answers the same pointer, which is upstream's `result.clone()` at `:79`.
-    const created = (try getOrCreatePlatformNode(adapter, id)).?;
-    try testing.expectEqual(created, (try getOrCreatePlatformNode(adapter, id)).?);
+    const created = (try getOrCreatePlatformNode(adapter, id)) orelse
+        return error.NoPlatformNode;
+    try testing.expectEqual(@as(?*PlatformNode, created), try getOrCreatePlatformNode(adapter, id));
     try testing.expectEqual(id, created.ivars.node_id);
     // The node carries no instance on this host, so the hit test still answers
     // null: `platformObjectFor` refuses to hand a Zig struct to the runtime.
@@ -3367,7 +3368,8 @@ test "a node carries its own identifier and its own context" {
     defer teardown(adapter);
 
     const id = FullNodeId.init(.{ .value = 7 }, consumer.tree_index.TreeIndex.init(3));
-    const node = (try getOrCreatePlatformNode(adapter, id)).?;
+    const node = (try getOrCreatePlatformNode(adapter, id)) orelse
+        return error.NoPlatformNode;
     try testing.expectEqual(id, node.ivars.node_id);
     try testing.expectEqual(@as(*const IosAdapter, adapter), node.ivars.context);
 }

@@ -635,7 +635,7 @@ fn liveRegionChanged(
     if (live == .off) return false;
     if (old_was_filtered_out) return true;
     if (live != try consumer.node_ref.set_state.live(old)) return true;
-    return try namesDiffer(gpa, old, new);
+    return namesDiffer(gpa, old, new);
 }
 
 /// Whether `node` supports the selection item pattern.

@@ -506,12 +506,13 @@ test "the parent space reverses the parent's own corner" {
         .parent_and_index = null,
         .data = schema.Node.init(gpa, .group),
     });
-    const parent = state.nodes.getPtr(parent_id).?;
+    const parent = state.nodes.getPtr(parent_id) orelse return error.TestExpectedEqual;
     try schema.option.setBounds(&parent.data.properties, schema.rectInit(100, 200, 300, 400));
     state.root_id = parent_id;
     state.focus_id = parent_id;
     state.is_host_focused = false;
-    const parent_ref = consumer.node_id.NodeRef.init(&state, parent_id).?;
+    const parent_ref = consumer.node_id.NodeRef.init(&state, parent_id) orelse
+        return error.TestExpectedEqual;
 
     const bounds = WindowBounds.empty;
     const corner = try bounds.origin(parent_ref, .parent);

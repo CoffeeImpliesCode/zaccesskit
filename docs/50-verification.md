@@ -542,3 +542,339 @@ cannot yet support.
 | H14 | **Line coverage for the whole tree.** No coverage number exists and none is promised. The `zig-cov` wiring is documented two ways that disagree (`docs/18` §7.3), and the stage is advisory anyway. | Not a number. The obligation `docs/18` §7.2 sets instead: every uncovered path in the changed set carries one of three dispositions, and the third is written down. A number is not a disposition. |
 
 ---
+
+## 8. Portable AT-SPI node fixes
+
+This change addresses [issue #2](https://github.com/CoffeeImpliesCode/zaccesskit/issues/2).
+The source reference is AccessKit commit
+`466e24e252103f4d82bd6fbab98141b551e46e0c`.
+The 43 original open rows now name their portable Zig counterparts.
+The methods return values or emit application actions. They do not register D-Bus objects.
+The ledger also corrects the three mappings for `adapter_id`, `id`, and `role`.
+
+### 8.1 Defects and regression tests
+
+| Defect | Observed failure before the fix | Regression |
+|---|---|---|
+| Unsupported bulk selection resolved the node | The missing-node case returned `error.Defunct` instead of `false`. Upstream `node.rs:1381-1389` returns `false` without resolution. | `unsupported bulk selection returns false without resolving a node` |
+| Cache strings lost their allocation length | `CacheNode.deinit` triggered `Invalid free`. The stored text length was smaller than the list capacity. | `cache text ownership transfer releases grown name and description under fail N` and the real cache query |
+| Child lookup ran before the selection capability check | `expected error.UnsupportedInterface, found error.Defunct` for an image with no children. | `selection and text methods emit actions for the real consumer tree` |
+| Lazy method analysis hid invalid calls | The first build reported two errors. The broader value/action tests exposed seven more. Caret and point queries exposed two more. | The real value, action, caret, and point tests call those methods. |
+
+The cache fix transfers each list through `toOwnedSlice`.
+An error releases the list and each earlier buffer.
+Fail-N tests exercise the existing `error.OutOfMemory` paths.
+This change adds no production error tag.
+Selection methods use the resolved node once.
+The filtered child cursor owns the walk bound and reports `error.TreeCycle` on exhaustion.
+The fixture loops use finite named arrays.
+
+The initial command was:
+
+```sh
+zig build test --summary all -j4
+```
+
+Its step summary was:
+
+```text
+Build Summary: 6/11 steps succeeded (2 failed)
+test transitive failure
+```
+
+The focused run includes six behavior tests and six existing reachability sweeps.
+The final run reported:
+
+```text
+All 12 tests passed.
+```
+
+The mutation check changed only `selectAll` from `false` to `true`.
+The regression detected the change:
+
+```text
+adapters.atspi.node.test.unsupported bulk selection returns false without resolving a node...FAIL (TestUnexpectedResult)
+6 passed; 0 skipped; 1 failed.
+```
+
+The implementation was restored before the passing run.
+
+### 8.2 Real consumer smoke
+
+A standalone program built a seven-node `TreeUpdate` and passed it to `Tree.init`.
+It called the real node methods and inspected their emitted `ActionRequest` values.
+It did not replace the node implementation.
+The program reported:
+
+```text
+PASS real Tree.init: image=(115,230,40,40) value=4.5 step=0.25 text=bc family=Fixture Sans selected=1 click_target=5 selection=(0,2) removed=(3,3) scroll=(45,50) substring_scroll=(60,80)
+```
+
+The substring-scroll oracle follows `node.rs:1728-1758` and `util.rs:44-56`.
+Window coordinates use a zero origin.
+The text range starts at `(10,0)`, so the request `(70,80)` emits `(60,80)`.
+The smoke proves portable queries and action emission only.
+It does not prove live D-Bus registration or communication with an accessibility client.
+
+### 8.3 Android decisions
+
+[Issue #4](https://github.com/CoffeeImpliesCode/zaccesskit/issues/4) permits written decisions.
+The ledger records scroll payload ownership and the accessibility-manager lookup contract.
+Root scroll events use the host-view representation.
+The proposed slot error set preserves filter errors.
+The manager descriptor follows the linked Android API and JNI specification.
+Both rows remain open because this change does not implement either contract.
+
+### 8.4 Retained root-mapper obligation
+
+Review identified a separate path in `PlatformRoot.mapDescendantCacheNodes`.
+A standalone identity-mapper probe used a real tree and the application registry.
+Compilation failed before the mapper could run:
+
+```text
+src/adapters/atspi/node.zig:2375:9: error: expected type 'i32', found 'error{TooManyChildren}!i32'
+        child_count,
+        ^~~~~~~~~~~
+```
+
+The child-count cast at `node.zig:2369` lacks an error return.
+The ledger reopens upstream `node.rs:1973` instead of retaining a completion claim.
+`[INFERENCE]` The mapper can also retain cache strings that the collector then releases.
+The compile failure prevented a runtime check of that ownership concern.
+This path needs its own cast, ownership, and allocation-failure checks.
+
+The actual ledger has 1356 rows.
+The original 43 completions and the reopened root row change the open count from 108 to 66.
+The prior header count of 104 did not match the inventory.
+
+### 8.5 Final native tests and gate
+
+The final `zig build test --summary all -j4` run reported these count and summary lines:
+
+```text
+All 353 tests passed.
+All 353 tests passed.
+All 1599 tests passed.
+All 1599 tests passed.
+Build Summary: 11/11 steps succeeded
+```
+
+The two library shards run in Debug and ReleaseSafe.
+The two 353-test shards replay the committed decoder corpus in those modes.
+This change adds no decoder boundary or fixture.
+
+The final `zig-gate` run executed all nine default stages.
+These are its verdict lines:
+
+```text
+== zig fmt --check ==
+  fmt: OK
+== zig build ==
+  build: OK
+== zig build test ==
+  test: OK
+== zig ast-check ==
+  ast-check: OK
+== ziglint ==
+  ziglint: found 119 issue(s), exit 1
+== zlint ==
+  zlint: found 10 issue(s), exit 0
+== zbc ==
+  zbc: 0 error(s), 0 warning(s) (advisory), exit 134
+== zwanzig ==
+  zwanzig: found 103 finding(s) in 4 rule class(es), exit 1
+  zwanzig: FAILED (zwanzig reported 104 issue(s) but 103 diagnostic line(s) parsed; the output format moved)
+== cross-test ==
+  cross-test: status=pass pass=3 fail=0 build_only=0 partial=0 summary=/tmp/cache/zaccesskit/cross-test/cross-test-summary.json
+  cross-test: OK
+GATE FAILED — fix the issues above
+```
+
+The gate exited 1. This is not a green-gate claim.
+The `zbc` process panicked with `integer overflow` in its AST parameter scan.
+The `zwanzig` finding count did not match the parsed diagnostic count.
+The native tests do not resolve the remaining lint findings or either tool failure.
+No rule was disabled and no stage was skipped.
+The four optional-unwrap findings introduced by the first test draft were removed.
+
+The final cross-test summary records execution, not build-only results:
+
+| Target | Status | Tests | Reason |
+|---|---|---|---|
+| `x86_64-linux` | pass | 1599 | `tests_complete` |
+| `aarch64-linux` | pass | 1589 | `tests_complete` |
+| `powerpc64-linux` | pass | 1589 | `tests_complete` |
+
+The foreign rows do not execute the Windows COM surface.
+No row proves communication with a live platform accessibility object.
+
+The final source format check reported no file.
+The added source lines contain no unbounded loop, empty catch, discarded error,
+unexplained `unreachable`, or file-scope variable.
+The old private `nodeRefFor` name has no remaining reference.
+Repository scans found no Rust manifest or build input and no Rust tool invocation.
+
+## 9. Final correction evidence
+
+This section supersedes section 8.4's reopened cache claim and section 8's final counters.
+Section 8 remains the historical record of that earlier run.
+The evidence comes from `correction-proof.json` and raw artifacts `252`, `292`, and `303`.
+
+### 9.1 Root cache contract and tests
+
+`PlatformRoot.mapDescendantCacheNodes` at `src/adapters/atspi/node.zig:2251` now uses an owned-input mapper contract.
+The mapper consumes each `CacheNode` on success and error, including both text buffers.
+The collector reserves output capacity before handoff.
+The release callback frees partial mapped output on failure and must not retain its item pointer.
+Both callbacks run on the calling thread and must not change the registry or trees.
+On success, the caller owns all mapped items and the list buffer through the supplied allocator.
+On error, no result survives. The collector does not undo mapper side effects.
+The return error set joins `NodeError` with the mapper's closed error set and rejects `anyerror`.
+Checked child counts and indices replace the failed cast recorded in section 8.4.
+
+The focused result records 17 passing tests, including these five root-cache tests:
+
+| Test | Evidence covered |
+|---|---|
+| `root cache identity retains owned name and description` | Identity mapping retains text after collector temporaries end. |
+| `root cache preserves multi window preorder filtering indices and focus` | Two windows preserve preorder, promoted children, hidden-subtree filtering, indices, and per-window focus. |
+| `root cache releases owned inputs and mapped outputs under fail N` | Fail-N covers the successful walk's allocations and partial ownership. |
+| `root cache query failure releases partial mapped outputs under fail N` | Fail-N covers allocations before query failure and releases earlier results. |
+| `root cache mapper rejection consumes input and releases outputs under fail N` | Fail-N covers mapper rejection, consumed input, and partial output release. |
+
+### 9.2 Windows formatter cases and errors
+
+`src/adapters/windows/util.zig` has nine formatter tests:
+
+| Test | Cases covered |
+|---|---|
+| `toolkit description preserves Unicode code units and version presence` | Default name, empty name, absent/empty version, empty-name version, BMP/non-BMP Unicode, and interior NUL. |
+| `ARIA empty and exact multiple properties have no invented escaping` | Empty builder, empty fields, exact semicolons, Unicode, equals signs, and literal backslashes. |
+| `ARIA booleans and usize use lowercase and exact decimal digits` | Both booleans, zero, and maximum `usize`. |
+| `toolkit description fail-N releases all intermediate buffers` | Description allocation failures release temporary storage. |
+| `ARIA fail-N preserves completed properties separators and transfer ownership` | Property allocation failures and owned output. |
+| `ARIA allocation failure does not leave a separator before a later retry` | Failed writes preserve completed properties and permit a correct retry. |
+| `ARIA failed ownership transfer keeps completed bytes until a successful transfer` | Failed transfer preserves the builder and permits a later transfer. |
+| `ARIA typed writers fail-N leave an empty builder usable and leak nothing` | Boolean and integer writer allocation failures. |
+| `toolkit description rejects invalid UTF-8 in name and version` | Both inputs return `error.InvalidUtf8`. |
+
+`DescriptionError` is the closed set `error{ OutOfMemory, InvalidUtf8 }`.
+`PropertyError` is the closed set `error{OutOfMemory}`.
+Fail-N tests reach the new APIs' `OutOfMemory` paths. The named invalid-UTF-8 test reaches `InvalidUtf8`.
+Neither formatter imposes an arbitrary size cap. Checked size arithmetic reports unrepresentable allocation sizes as `OutOfMemory`.
+The integer buffer uses `@bitSizeOf(usize)`, which bounds every decimal representation, including zero.
+The description returns native UTF-16 code units, not a little-endian byte sequence.
+The big-endian branch converts decoder output and the space separator with `littleToNative`.
+The executed `powerpc64-linux` suite checks the same exact Unicode code-unit oracle on a big-endian target.
+This is portable formatter evidence, not Windows COM execution.
+
+### 9.3 Smoke, mutation, and native results
+
+The real-consumer smoke reported this exact line:
+
+```text
+PASS cache preorder=[7:0,7:2,7:5,11:0,11:2,11:5] indices=[0,0,1,1,0,1] children=[2,0,0,2,0,0] focused=[0,1,0,0,0,0] name="Retained image" description="Retained description" toolkit_utf16=[233,55357,56832,32,946,46,49] aria="disabled=false;level=7"
+```
+
+Artifact `292` records the wrong-cache-index and comma-for-semicolon mutations in one native run:
+
+```text
+1400/1624 adapters.atspi.node.test.root cache preserves multi window preorder filtering indices and focus...expected 1, found 0
+FAIL (TestExpectedEqual)
+1619 passed; 0 skipped; 5 failed.
+```
+
+The comma mutation failed four formatter checks: exact properties, booleans/integers, fail-N property output, and allocation-failure retry.
+The index mutation failed the root-cache preorder test. The proof records that both mutations were restored.
+Artifact `252` records these native count and summary lines:
+
+```text
+All 353 tests passed.
+All 1624 tests passed.
+All 353 tests passed.
+All 1624 tests passed.
+Build Summary: 11/11 steps succeeded
+```
+
+Debug and ReleaseSafe each ran 1624 library tests and 353 committed-corpus tests.
+This correction adds no protocol-decoder boundary or corpus fixture.
+These results do not claim new fuzz coverage or live-platform proof.
+
+### 9.4 Full gate result and retained policy
+
+Artifact `303` ran all nine stages. Its stage heads and verdict were:
+
+```text
+== zig fmt --check ==
+  fmt: OK
+== zig build ==
+  build: OK
+== zig build test ==
+  test: OK
+== zig ast-check ==
+  ast-check: OK
+== ziglint ==
+  ziglint: found 96 issue(s), exit 1
+== zlint ==
+  zlint: found 3 issue(s), exit 0
+== zbc ==
+  zbc: 0 error(s), 0 warning(s) (advisory), exit 134
+== zwanzig ==
+  zwanzig: found 66 finding(s) in 4 rule class(es), exit 1
+  zwanzig: FAILED (zwanzig reported 67 issue(s) but 66 diagnostic line(s) parsed; the output format moved)
+== cross-test ==
+  cross-test: status=pass pass=3 fail=0 build_only=0 partial=0 summary=/tmp/tmp/zig-gate-cross/cross-test-summary.json
+  cross-test: OK
+GATE FAILED — fix the issues above
+```
+
+The gate exited 1. It did not pass.
+`zbc` still panicked with integer overflow. The `zwanzig` count still disagreed with the parsed diagnostic count.
+The final executed cross-test counts supersede section 8.5:
+
+| Target | Status | Tests |
+|---|---|---|
+| `x86_64-linux` | pass | 1624 |
+| `aarch64-linux` | pass | 1614 |
+| `powerpc64-linux` | pass | 1614 |
+
+Tools, lint rules, production invariant-backed unwraps, and the external checker's 200-state cap remain unchanged.
+Allocator-first parameters, foreign SDK/C names, and valid deinitialization resets remain unchanged.
+The Z017 direct-return experiment failed compilation because the error-union payload could not coerce to the optional payload.
+The recorded Debug `zig test` CLI experiment exited 1 with eleven errors in the optional string getters.
+The compiler reported: `error union payload '[]u8' cannot cast into error union payload '?[]u8'`.
+That experiment does not show that a hoisted temporary fails.
+The current source retains `return try`. It does not apply lint-policy hoisting solely to hide the warning.
+
+### 9.5 Tool reports, host fit, and ledger
+
+The approved tool reports are:
+
+- [zbc #105](https://github.com/CoffeeImpliesCode/zbc/issues/105): integer overflow in the AST parameter scan.
+- [zwanzig #87](https://github.com/CoffeeImpliesCode/zwanzig/issues/87): separate owned getter results reported as a double free.
+- [zwanzig #86](https://github.com/CoffeeImpliesCode/zwanzig/issues/86): a live generic callback reported as unused.
+
+`CoffeeImpliesCode/ziglint` has issues disabled.
+The five Ziglint drafts cover Z030 valid resets/idempotent deinitialization, Z006 PascalCase SDK type aliases,
+Z006 exported C ABI constants, Z032 foreign SDK/JNI acronym names, and Z017 syntactically truncated code suggestions.
+The Z017 draft does not report the `return try` warning itself as a checker defect.
+Z023 allocator-first order remains a policy conflict, not a tool-defect draft.
+All five remain drafts, not posted issues.
+Authenticated queries for `CoffeeImpliesCode/zlint` and `CoffeeImpliesCode/zig-gate` returned HTTP 404.
+Reports for those destinations remain unfileable. No report was redirected to an unrelated repository.
+
+The nogui fit review inspected source at
+[`a7761b4245974d62adf6f65fba41812f23bc5b9c`](https://github.com/CoffeeImpliesCode/nogui/tree/a7761b4245974d62adf6f65fba41812f23bc5b9c).
+It did not execute nogui.
+`src/v7/semantics.zig` owns the model semantics. `App.present` commits the semantic snapshot.
+The replacement seam is the host accessibility adapter and its bridge, not the semantic producer.
+Current zaccesskit is not a drop-in replacement.
+Custom-action, positioned editable-text, callback-close, and native bus/attachment gaps still need equivalent implementations.
+The tool reports contain no nogui review data.
+
+The ledger records 1356 rows: 457 ported, 647 adapted, 194 not applicable, and 58 open.
+The open rows split into Unix 39, Windows 13, atspi-common 4, and Android 2.
+The signature wrap adds five lines below `node.zig:2256`.
+The ledger's `notifyChanges` coordinate now names `node.zig:2453`, as the source and LSP show.
+Original upstream coordinates remain unchanged.
+

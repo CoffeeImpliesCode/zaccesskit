@@ -42,8 +42,6 @@ const consumer = @import("../../consumer/root.zig");
 const schema = @import("../../schema/root.zig");
 const window_bounds = @import("window_bounds.zig");
 
-const FullNodeId = consumer.tree_index.FullNodeId;
-
 /// The failures one of these operations reports.
 ///
 /// `adapterIndex` refuses with `error.AdapterNotRegistered` and never fails for

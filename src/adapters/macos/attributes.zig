@@ -77,7 +77,7 @@ pub const number_of_characters_zero: i64 = 0;
 ///
 /// It is the `NsRange` of `util.zig:66` at the start of the document, so the
 /// sentinel and the type the conversions answer cannot drift apart.
-pub const selected_text_range_zero = util.NsRange{ .location = 0, .length = 0 };
+pub const selected_text_range_zero: util.NsRange = .{ .location = 0, .length = 0 };
 
 /// What one of the 54 selectors returns.
 ///
@@ -847,14 +847,20 @@ test "the 14 groups cover all 54 selectors exactly once" {
 test "the 13 text-range selectors stay one arm" {
     try testing.expectEqual(@as(usize, 13), text_range_selectors.len);
     for (text_range_selectors) |name| {
-        try testing.expectEqual(Answer.supports_text_ranges, answerFor(name).?);
+        try testing.expectEqual(
+            Answer.supports_text_ranges,
+            answerFor(name) orelse return error.TestUnexpectedResult,
+        );
     }
     // Each is one of the 54, and each appears exactly once across the groups.
     for (text_range_selectors) |name| {
         try testing.expect(findSelector(name) != null);
     }
     // `setAccessibilityValue:` is in its own arm and not in this one.
-    try testing.expectEqual(Answer.set_value, answerFor("setAccessibilityValue:").?);
+    try testing.expectEqual(
+        Answer.set_value,
+        answerFor("setAccessibilityValue:") orelse return error.TestUnexpectedResult,
+    );
     try testing.expect(findSelector("setAccessibilityValue:") != null);
 }
 
@@ -880,7 +886,10 @@ test "the three attributes and their has-property conjuncts" {
     try testing.expect(!std.mem.eql(u8, attributes[2].name, "AXDomIdentifier"));
     try testing.expect(!std.mem.eql(u8, attributes[2].name, "AXDOMID"));
     try testing.expect(findSelector("accessibilityAttributeValue:") != null);
-    try testing.expectEqual(Answer.has_any_attribute, answerFor("accessibilityAttributeValue:").?);
+    try testing.expectEqual(
+        Answer.has_any_attribute,
+        answerFor("accessibilityAttributeValue:") orelse return error.TestUnexpectedResult,
+    );
 }
 
 test "the four non-nil selectors answer their sentinel when the node is gone" {
@@ -933,7 +942,10 @@ test "accessibilityActionNames is empty rather than nil when no action is suppor
     // The selector itself is one of the 54 and sits in the always group, so a
     // client asking whether it may call it is always told yes.
     try testing.expect(findSelector("accessibilityActionNames") != null);
-    try testing.expectEqual(Answer.always, answerFor("accessibilityActionNames").?);
+    try testing.expectEqual(
+        Answer.always,
+        answerFor("accessibilityActionNames") orelse return error.TestUnexpectedResult,
+    );
 }
 
 test "the name published by accessibilityActionNames is the name performAction matches" {
@@ -944,7 +956,10 @@ test "the name published by accessibilityActionNames is the name performAction m
     const published = actionNames(true);
     try testing.expectEqual(@as(usize, 1), published.len);
     for (published) |name| {
-        try testing.expectEqual(schema.Action.scroll_into_view, actionForName(name).?);
+        try testing.expectEqual(
+            schema.Action.scroll_into_view,
+            actionForName(name) orelse return error.TestUnexpectedResult,
+        );
     }
     // Every other name dispatches nothing, which is what makes the pair total.
     try testing.expect(actionForName("AXPress") == null);

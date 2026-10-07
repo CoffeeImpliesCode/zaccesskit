@@ -336,7 +336,7 @@ const Spec = struct {
 /// a four-byte astral character is a four and not a one. A fixture that fills
 /// the list with ones would model every astral character as four characters.
 fn utf8Lengths(gpa: Allocator, body: []const u8) ![]u8 {
-    var view = std.unicode.Utf8View.init(body) catch |err| return err;
+    var view = try std.unicode.Utf8View.init(body);
     var lengths: std.ArrayList(u8) = .empty;
     errdefer lengths.deinit(gpa);
     var iterator = view.iterator();
@@ -404,11 +404,13 @@ test "a zero length leaves the range degenerate and a length names an end" {
     defer tree.deinit();
     const root = try nodeOf(&tree, 1);
 
-    const caret = (try fromNsRange(gpa, root, .{ .location = 2, .length = 0 })).?;
+    const caret = (try fromNsRange(gpa, root, .{ .location = 2, .length = 0 })) orelse
+        return error.TestUnexpectedResult;
     try testing.expect(try consumer.text.range.isDegenerate(gpa, caret));
     try testing.expectEqual(@as(usize, 2), caret.start.character_index);
 
-    const two = (try fromNsRange(gpa, root, .{ .location = 2, .length = 2 })).?;
+    const two = (try fromNsRange(gpa, root, .{ .location = 2, .length = 2 })) orelse
+        return error.TestUnexpectedResult;
     try testing.expect(!try consumer.text.range.isDegenerate(gpa, two));
     const round_trip = try toNsRange(two);
     try testing.expectEqual(NsRange{ .location = 2, .length = 2 }, round_trip);
@@ -464,17 +466,20 @@ test "a character is measured in UTF-16 code units and not in characters" {
     const root = try nodeOf(&tree, 1);
 
     // The astral character sits between index 1 and index 3.
-    const at_astral = (try consumer.text.query.textPositionFromGlobalUtf16Index(root, 1)).?;
+    const at_astral = (try consumer.text.query.textPositionFromGlobalUtf16Index(root, 1)) orelse
+        return error.TestUnexpectedResult;
     const astral = try toNsRangeForCharacter(gpa, at_astral);
     try testing.expectEqual(NsRange{ .location = 1, .length = 2 }, astral);
 
     // The ASCII character before it is one unit long.
-    const at_ascii = (try consumer.text.query.textPositionFromGlobalUtf16Index(root, 0)).?;
+    const at_ascii = (try consumer.text.query.textPositionFromGlobalUtf16Index(root, 0)) orelse
+        return error.TestUnexpectedResult;
     const ascii = try toNsRangeForCharacter(gpa, at_ascii);
     try testing.expectEqual(NsRange{ .location = 0, .length = 1 }, ascii);
 
     // The document end has no character after it, so it is degenerate.
-    const at_end = (try consumer.text.query.textPositionFromGlobalUtf16Index(root, 4)).?;
+    const at_end = (try consumer.text.query.textPositionFromGlobalUtf16Index(root, 4)) orelse
+        return error.TestUnexpectedResult;
     const end_range = try toNsRangeForCharacter(gpa, at_end);
     try testing.expectEqual(NsRange{ .location = 4, .length = 0 }, end_range);
 }
@@ -495,7 +500,10 @@ test "a range over two runs names its own two ends" {
     const root = try nodeOf(&tree, 1);
 
     const second_run = try fromNsRange(gpa, root, .{ .location = 7, .length = 3 });
-    try testing.expectEqual(NsRange{ .location = 7, .length = 3 }, try toNsRange(second_run.?));
+    try testing.expectEqual(
+        NsRange{ .location = 7, .length = 3 },
+        try toNsRange(second_run orelse return error.TestUnexpectedResult),
+    );
 }
 
 /// A range over one document, used by the test that checks the round trip.
@@ -505,9 +513,11 @@ fn rangeOver(
     first: usize,
     last: usize,
 ) !Range {
-    const start = (try consumer.text.query.textPositionFromGlobalUtf16Index(node, first)).?;
+    const start = (try consumer.text.query.textPositionFromGlobalUtf16Index(node, first)) orelse
+        return error.TestUnexpectedResult;
     var range = try consumer.text.range.toDegenerateRange(gpa, start);
-    const end = (try consumer.text.query.textPositionFromGlobalUtf16Index(node, last)).?;
+    const end = (try consumer.text.query.textPositionFromGlobalUtf16Index(node, last)) orelse
+        return error.TestUnexpectedResult;
     try consumer.text.range.setEnd(gpa, &range, end);
     return range;
 }
@@ -658,7 +668,7 @@ test "a flipped view divides by the backing scale and keeps the top edge" {
     // `y0` and not `y1`, so the bounds height is never read.
     var view_byte: u8 = 0;
     var window_byte: u8 = 0;
-    var host = RectHost{
+    var host: RectHost = .{
         .window = opaqueFromByte(&window_byte),
         .backing_scale = 2,
         .flipped = true,
@@ -703,7 +713,7 @@ test "a view that is not flipped measures the top edge from the bottom" {
     // bounds 300 tall the top edge is 300 - 40 = 260 and not 20.
     var view_byte: u8 = 0;
     var window_byte: u8 = 0;
-    var host = RectHost{
+    var host: RectHost = .{
         .window = opaqueFromByte(&window_byte),
         .backing_scale = 1,
         .flipped = false,
@@ -727,7 +737,7 @@ test "a view in no window reports NoWindow and converts nothing" {
     // The port names the case, and neither conversion may run: a rect measured
     // against no window is not a rect the caller can use.
     var view_byte: u8 = 0;
-    var host = RectHost{
+    var host: RectHost = .{
         .window = null,
         .backing_scale = 2,
         .flipped = true,
@@ -750,7 +760,7 @@ test "a view that leaves its window between the two reads reports NoWindow" {
     // send happens between the two reads.
     var view_byte: u8 = 0;
     var window_byte: u8 = 0;
-    var host = RectHost{
+    var host: RectHost = .{
         .window = opaqueFromByte(&window_byte),
         .backing_scale = 2,
         .flipped = true,
@@ -813,7 +823,7 @@ test "every channel is divided by 255 in the order upstream passes them" {
     // green, blue, alpha, and each is `channel as f64 / 255.0`, so 255 is one,
     // 0 is zero and 51 is 0.2.
     var color_byte: u8 = 0;
-    var host = ColorHost{ .answer = opaqueFromByte(&color_byte) };
+    var host: ColorHost = .{ .answer = opaqueFromByte(&color_byte) };
 
     const answered = try toNsColorAttribute(host.platform(), .{
         .red = 255,
@@ -841,7 +851,7 @@ test "a platform with no colour reports NoColor" {
     // Upstream writes `Id::retain(cg_color).unwrap()` at
     // `AK/macos/src/util.rs:107`, which panics on a nil `CGColor`. The port
     // names the case instead.
-    var host = ColorHost{ .answer = null };
+    var host: ColorHost = .{ .answer = null };
     try testing.expectError(error.NoColor, toNsColorAttribute(host.platform(), .{
         .red = 1,
         .green = 2,

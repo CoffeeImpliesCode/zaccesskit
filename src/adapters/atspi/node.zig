@@ -46,11 +46,12 @@
 //!
 //! | Walk | Bound |
 //! |---|---|
-//! | `childAtIndex`, `childCount`, `isChildSelected`, `selectChild`, `deselectChild` | the filtered child cursor, which visits each child once |
+//! | `childAtIndex`, `childCount` | bounded filtered child cursor |
+//! | `isChildSelected`, `selectChild`, `deselectChild` | bounded filtered child cursor |
 //! | `selectedItems` | `treeWalkStepBound(nodes.count())`, enforced by the consumer's own item walk |
 //! | `notifyStateChanges` | `wire.state_count`, through `StateSet.difference` |
 //! | `notifyChildrenChanges` | each of the two child lists, and the membership scan is over the other |
-//! | `mapDescendants`, `mapDescendantCacheNodes` | `treeWalkStepBound(nodes.count())` per window, one step per node visited |
+//! | `mapDescendants`, `mapDescendantCacheNodes` | `treeWalkStepBound`, per window |
 //!
 //! The two descendant walks are the only recursive ones. Upstream recurses with
 //! no bound at all, because a Rust `Vec` cannot hold a cycle; the port's tree can
@@ -76,6 +77,7 @@ const wire = @import("wire.zig");
 const wire_rect = @import("wire/rect.zig");
 const consumer = @import("../../consumer/root.zig");
 const schema = @import("../../schema/root.zig");
+const affine = @import("../../schema/geometry/affine.zig");
 
 const ActionRequest = schema.ActionRequest;
 const AppContext = app_context.AppContext;
@@ -240,9 +242,9 @@ pub fn cacheNodeFor(
     const parent = try parentOrRootOf(node);
     const interfaces = try node_interfaces.interfaces(node, node_state.node_filter);
     const states = try node_state.stateOf(node, window_focused);
-    const name = takeText(try nodeName(gpa, node));
+    const name = try takeText(gpa, try nodeName(gpa, node));
     errdefer gpa.free(name);
-    const description = takeText(try nodeDescription(gpa, node));
+    const description = try takeText(gpa, try nodeDescription(gpa, node));
     errdefer gpa.free(description);
     return .{
         .adapter_id = adapter_id,
@@ -265,11 +267,15 @@ pub fn cacheNodeFor(
 /// slice rather than a null pointer, because every caller releases the buffer
 /// with `gpa` and `free` is not a function that takes a null.
 ///
-/// **Errors.** This function does not fail. The empty case is a comptime value
-/// and owns nothing.
-fn takeText(text: ?std.ArrayList(u8)) []u8 {
-    const held = text orelse return std.ArrayList(u8).empty.items;
-    return held.items;
+/// The returned slice retains the allocation length needed by `gpa.free`.
+/// The function releases the list if the ownership transfer fails.
+///
+/// **Errors.** `error.OutOfMemory` when the list cannot resize to its text length.
+/// A missing text returns an empty slice without an allocation.
+fn takeText(gpa: std.mem.Allocator, text: ?std.ArrayList(u8)) std.mem.Allocator.Error![]u8 {
+    var held = text orelse return std.ArrayList(u8).empty.items;
+    defer held.deinit(gpa);
+    return held.toOwnedSlice(gpa);
 }
 
 /// The nearest ancestor of `node` the filter keeps, or the application object.
@@ -784,17 +790,8 @@ pub const PlatformNode = struct {
     ///
     /// **Errors.** `error.Defunct` and `error.TreeCycle`.
     pub fn childAtIndex(self: PlatformNode, index: usize) NodeError!?FullNodeId {
-        const node = try self.resolve();
-        var children = try consumer.node_ref.hierarchy.filteredChildren(
-            node,
-            node_state.node_filter,
-        );
-        var seen: usize = 0;
-        while (try children.next()) |child| {
-            if (seen == index) return child.id();
-            seen += 1;
-        }
-        return null;
+        const child = (try filteredChildAtIndex(try self.resolve(), index)) orelse return null;
+        return child.id();
     }
 
     /// Every child identifier, each put through `map_child`.
@@ -888,7 +885,7 @@ pub const PlatformNode = struct {
         var out: RelationSet = .{};
         errdefer out.deinit(gpa);
         var controlled = consumer.node_ref.set_state.controls(node);
-        while (controlled.next()) |target| {
+        while (try controlled.next()) |target| {
             const verdict = try node_state.node_filter.call(target);
             if (verdict != .include) continue;
             try out.controller_for.append(gpa, target.id());
@@ -949,7 +946,10 @@ pub const PlatformNode = struct {
             node,
             coord_type,
         );
-        const local = (try consumer.node_ref.geometry.transform(node)).inverse().mulPoint(point);
+        const local = affine.mulPoint(
+            affine.inverse(try consumer.node_ref.geometry.transform(node)),
+            point,
+        );
         const found = try consumer.node_ref.geometry.nodeAtPoint(
             self.context.gpa,
             node,
@@ -1222,9 +1222,9 @@ pub const PlatformNode = struct {
     /// **Errors.** `error.Defunct`, `error.UnsupportedInterface`,
     /// `error.TreeCycle`, `error.NoActionSink` and `error.OutOfMemory`.
     pub fn selectChild(self: PlatformNode, child_index: usize) NodeError!bool {
-        try self.resolveForSelection();
-        const child = (try self.childAtIndex(child_index)) orelse return error.Defunct;
-        const handle = self.nodeRefFor(child);
+        const node = try self.resolveForSelection();
+        const handle = (try filteredChildAtIndex(node, child_index)) orelse return error.Defunct;
+        const child = handle.id();
         if (consumer.node_ref.properties.isSelected(handle) == true) return true;
         if (consumer.node_ref.predicates.isSelectable(handle) and
             try consumer.node_ref.predicates.isClickable(handle, node_state.node_filter))
@@ -1273,9 +1273,8 @@ pub const PlatformNode = struct {
     /// **Errors.** `error.Defunct`, `error.UnsupportedInterface` and
     /// `error.TreeCycle`.
     pub fn isChildSelected(self: PlatformNode, child_index: usize) NodeError!bool {
-        try self.resolveForSelection();
-        const child = (try self.childAtIndex(child_index)) orelse return error.Defunct;
-        const handle = self.nodeRefFor(child);
+        const node = try self.resolveForSelection();
+        const handle = (try filteredChildAtIndex(node, child_index)) orelse return error.Defunct;
         return consumer.node_ref.containers.isItemLike(handle) and
             consumer.node_ref.properties.isSelected(handle) == true;
     }
@@ -1283,18 +1282,18 @@ pub const PlatformNode = struct {
     /// Always `false`, because this adapter cannot select every child at once.
     /// Upstream `PlatformNode::select_all` at `node.rs:1381-1384`.
     ///
-    /// **Errors.** `error.Defunct` and `error.UnsupportedInterface`.
-    pub fn selectAll(self: PlatformNode) NodeError!bool {
-        try self.resolveForSelection();
+    /// **Errors.** This function does not fail and does not resolve the node.
+    pub fn selectAll(self: PlatformNode) error{}!bool {
+        _ = self;
         return false;
     }
 
     /// Always `false`, because this adapter cannot clear every child at once.
     /// Upstream `PlatformNode::clear_selection` at `node.rs:1386-1389`.
     ///
-    /// **Errors.** `error.Defunct` and `error.UnsupportedInterface`.
-    pub fn clearSelection(self: PlatformNode) NodeError!bool {
-        try self.resolveForSelection();
+    /// **Errors.** This function does not fail and does not resolve the node.
+    pub fn clearSelection(self: PlatformNode) error{}!bool {
+        _ = self;
         return false;
     }
 
@@ -1307,9 +1306,9 @@ pub const PlatformNode = struct {
     /// **Errors.** `error.Defunct`, `error.UnsupportedInterface`,
     /// `error.TreeCycle`, `error.NoActionSink` and `error.OutOfMemory`.
     pub fn deselectChild(self: PlatformNode, child_index: usize) NodeError!bool {
-        const child = (try self.childAtIndex(child_index)) orelse return error.Defunct;
-        try self.resolveForSelection();
-        const handle = self.nodeRefFor(child);
+        const node = try self.resolveForSelection();
+        const handle = (try filteredChildAtIndex(node, child_index)) orelse return error.Defunct;
+        const child = handle.id();
         if (consumer.node_ref.properties.isSelected(handle) == false) return true;
         if (consumer.node_ref.predicates.isSelectable(handle) and
             try consumer.node_ref.predicates.isClickable(handle, node_state.node_filter))
@@ -1407,7 +1406,7 @@ pub const PlatformNode = struct {
             .action = .set_text_selection,
             .target_tree = located.tree_id,
             .target_node = located.local_id,
-            .data = .{ .set_text_selection = range.toTextSelection() },
+            .data = .{ .set_text_selection = consumer.text.range.toTextSelection(range) },
         });
         return true;
     }
@@ -1513,7 +1512,10 @@ pub const PlatformNode = struct {
             node,
             coord_type,
         );
-        const local = (try consumer.node_ref.geometry.transform(node)).inverse().mulPoint(point);
+        const local = affine.mulPoint(
+            affine.inverse(try consumer.node_ref.geometry.transform(node)),
+            point,
+        );
         const position = try consumer.text.query.textPositionAtPoint(
             self.context.gpa,
             node,
@@ -1584,7 +1586,7 @@ pub const PlatformNode = struct {
             .action = .set_text_selection,
             .target_tree = located.tree_id,
             .target_node = located.local_id,
-            .data = .{ .set_text_selection = range.toTextSelection() },
+            .data = .{ .set_text_selection = consumer.text.range.toTextSelection(range) },
         });
         return true;
     }
@@ -1614,7 +1616,7 @@ pub const PlatformNode = struct {
             .action = .set_text_selection,
             .target_tree = located.tree_id,
             .target_node = located.local_id,
-            .data = .{ .set_text_selection = range.toTextSelection() },
+            .data = .{ .set_text_selection = consumer.text.range.toTextSelection(range) },
         });
         return true;
     }
@@ -1834,16 +1836,21 @@ pub const PlatformNode = struct {
             .data = .{ .numeric_value = value },
         });
     }
-
-    /// The handle for the identifier `id`, or `error.Defunct` when the tree no
-    /// longer holds it. Upstream's `resolve` applied to a child the caller just
-    /// named.
-    ///
-    /// **Errors.** `error.Defunct`.
-    fn nodeRefFor(self: PlatformNode, id: FullNodeId) NodeRef {
-        return NodeRef.init(self.context.state, id) orelse unreachable;
-    }
 };
+
+/// The child cursor owns the walk bound and reports `error.TreeCycle` on exhaustion.
+fn filteredChildAtIndex(node: NodeRef, index: usize) QueryError!?NodeRef {
+    var children = try consumer.node_ref.hierarchy.filteredChildren(
+        node,
+        node_state.node_filter,
+    );
+    var seen: usize = 0;
+    while (try children.next()) |child| {
+        if (seen == index) return child;
+        seen += 1;
+    }
+    return null;
+}
 
 /// The width and height `Image.GetImageSize` returns, in whole pixels.
 pub const ImageSize = struct {
@@ -2222,7 +2229,7 @@ pub const PlatformRoot = struct {
         return out;
     }
 
-    /// Every node of every window as a cache entry, each put through `map_node`.
+    /// Every node of every window as a cache entry, passed to `mapDescendantCacheNodes_callback`.
     ///
     /// Upstream `PlatformRoot::map_descendant_cache_nodes` at `node.rs:1973-2033`.
     /// It is `mapDescendants` with a cache entry built at each step and the
@@ -2232,15 +2239,34 @@ pub const PlatformRoot = struct {
     ///
     /// **Bound.** `treeWalkStepBound(nodes.count())` per window, as above.
     ///
-    /// **Errors.** Every error `cacheNodeFor` reports, plus `error.TreeCycle`,
-    /// `error.IndexOutOfRange` and `error.OutOfMemory`.
+    /// `mapDescendantCacheNodes_callback(gpa, entry)` consumes `entry` on success and error.
+    /// It must release or transfer both owned text buffers and return a closed error union.
+    /// `mapDescendantCacheNodes_release_callback(gpa, *item)` releases each item on failure.
+    /// The release callback must not retain the item pointer after it returns.
+    /// Both callbacks run on the calling thread and must not change the registry or trees.
+    /// On success, the caller owns every item and the list buffer, all allocated with `gpa`.
+    /// On error, no result survives. Mapper side effects are not undone.
+    ///
+    /// **Errors.** `NodeError` joined to the mapper's closed error set. `anyerror` is rejected.
     pub fn mapDescendantCacheNodes(
         self: PlatformRoot,
         gpa: std.mem.Allocator,
-        map_node: anytype,
-    ) !std.ArrayList(ReturnTypeOf(map_node)) {
-        var out: std.ArrayList(ReturnTypeOf(map_node)) = .empty;
-        errdefer out.deinit(gpa);
+        mapDescendantCacheNodes_release_callback: anytype,
+        mapDescendantCacheNodes_callback: anytype,
+    ) (NodeError || CacheMapperErrorSet(
+        mapDescendantCacheNodes_callback,
+    ))!std.ArrayList(
+        @typeInfo(ReturnTypeOf(mapDescendantCacheNodes_callback)).error_union.payload,
+    ) {
+        const Item = @typeInfo(ReturnTypeOf(mapDescendantCacheNodes_callback)).error_union.payload;
+        var out: std.ArrayList(Item) = .empty;
+        errdefer {
+            const mapped_item_count_max = out.items.len;
+            for (out.items[0..mapped_item_count_max]) |*item| {
+                mapDescendantCacheNodes_release_callback(gpa, item);
+            }
+            out.deinit(gpa);
+        }
         for (self.app.adapters.items, 0..) |entry, slot| {
             const window_focused = entry.context.state.focusId() != null;
             const budget = consumer.tree_state.treeWalkStepBound(
@@ -2248,7 +2274,7 @@ pub const PlatformRoot = struct {
             );
             const slot_index = std.math.cast(i32, slot) orelse return error.IndexOutOfRange;
             try collectCacheDescendants(
-                ReturnTypeOf(map_node),
+                Item,
                 gpa,
                 entry.context,
                 entry.id,
@@ -2257,7 +2283,7 @@ pub const PlatformRoot = struct {
                 window_focused,
                 budget,
                 &out,
-                map_node,
+                mapDescendantCacheNodes_callback,
             );
         }
         return out;
@@ -2280,6 +2306,15 @@ fn ReturnTypeOf(comptime callable: anytype) type {
     return @typeInfo(Fn).@"fn".return_type.?;
 }
 
+fn CacheMapperErrorSet(comptime cacheMapperErrorSet_callback: anytype) type {
+    const MapperError: type =
+        @typeInfo(ReturnTypeOf(cacheMapperErrorSet_callback)).error_union.error_set;
+    if (@typeInfo(MapperError).error_set == null) {
+        @compileError("mapDescendantCacheNodes mapper must return a closed error set, not anyerror");
+    }
+    return MapperError;
+}
+
 /// Reports `node`, then every descendant of it, parent before child.
 ///
 /// The shared body of `mapDescendants`. `budget` is the number of nodes this walk
@@ -2299,7 +2334,7 @@ fn collectDescendants(
     index_in_parent: usize,
     budget: usize,
     out: *std.ArrayList(Item),
-    map_node: anytype,
+    collectDescendants_callback: anytype,
 ) NodeError!void {
     if (budget == 0) return error.TreeCycle;
     var children = try consumer.node_ref.hierarchy.filteredChildren(
@@ -2310,7 +2345,7 @@ fn collectDescendants(
     defer held.deinit(gpa);
     while (try children.next()) |child| try held.append(gpa, child);
 
-    try out.append(gpa, map_node(
+    try out.append(gpa, collectDescendants_callback(
         PlatformNode.init(context, adapter_id, node.id()),
         index_in_parent,
         held.items.len,
@@ -2325,7 +2360,7 @@ fn collectDescendants(
             child_index,
             budget - 1,
             out,
-            map_node,
+            collectDescendants_callback,
         );
     }
 }
@@ -2349,8 +2384,8 @@ fn collectCacheDescendants(
     window_focused: bool,
     budget: usize,
     out: *std.ArrayList(Item),
-    map_node: anytype,
-) NodeError!void {
+    collectCacheDescendants_callback: anytype,
+) (NodeError || CacheMapperErrorSet(collectCacheDescendants_callback))!void {
     if (budget == 0) return error.TreeCycle;
     var children = try consumer.node_ref.hierarchy.filteredChildren(
         node,
@@ -2360,8 +2395,10 @@ fn collectCacheDescendants(
     defer held.deinit(gpa);
     while (try children.next()) |child| try held.append(gpa, child);
 
-    const child_count = std.math.cast(i32, held.items.len) orelse error.TooManyChildren;
-    var entry = try cacheNodeFor(
+    const child_count = std.math.cast(i32, held.items.len) orelse return error.TooManyChildren;
+    // Reserve before creating the entry, so the collector retains no ownership at handoff.
+    try out.ensureUnusedCapacity(gpa, 1);
+    const entry = try cacheNodeFor(
         gpa,
         node,
         adapter_id,
@@ -2369,8 +2406,7 @@ fn collectCacheDescendants(
         child_count,
         window_focused,
     );
-    defer entry.deinit(gpa);
-    try out.append(gpa, map_node(entry));
+    out.appendAssumeCapacity(try collectCacheDescendants_callback(gpa, entry));
 
     for (held.items, 0..) |child, child_index| {
         const position = std.math.cast(i32, child_index) orelse return error.IndexOutOfRange;
@@ -2384,7 +2420,7 @@ fn collectCacheDescendants(
             window_focused,
             budget - 1,
             out,
-            map_node,
+            collectCacheDescendants_callback,
         );
     }
 }
@@ -2399,7 +2435,7 @@ fn collectCacheDescendants(
 /// | Step | Upstream | Events |
 /// |---|---|---|
 /// | 1 | `notify_state_changes` `:606-620` | one `StateChanged` per differing member, never for `focused` |
-/// | 2 | `notify_property_changes` `:622-671` | `PropertyChange` for name, description, parent, role and value, plus one `Announcement` |
+/// | 2 | `notify_property_changes` `:622-671` | `PropertyChange` and `Announcement` |
 /// | 3 | `notify_bounds_changes` `:673-684` | one `BoundsChanged` |
 /// | 4 | `notify_children_changes` `:692-705` | one `ChildrenChanged` per added and per removed child |
 /// | 5 | `notify_document_changes` `:686-690` | one `LoadComplete` |
@@ -2711,4 +2747,625 @@ fn containsId(list: []const FullNodeId, id: FullNodeId) bool {
         if (std.meta.eql(held, id)) return true;
     }
     return false;
+}
+
+test "unsupported bulk selection returns false without resolving a node" {
+    // Upstream answers false even when the node is absent or has no selection interface.
+    var state: TreeState = .{};
+    defer state.deinit(std.testing.allocator);
+    const context: NodeContext = .{
+        .state = &state,
+        .app = null,
+        .bounds = .empty,
+        .sink = null,
+        .gpa = std.testing.allocator,
+    };
+    const node = PlatformNode.init(&context, 7, .init(.{ .value = 99 }, .init(0)));
+    try std.testing.expect(!try node.selectAll());
+    try std.testing.expect(!try node.clearSelection());
+}
+
+fn fixtureId(value: u64) FullNodeId {
+    return .init(.{ .value = value }, .init(0));
+}
+
+fn fixtureInsert(
+    gpa: std.mem.Allocator,
+    state: *TreeState,
+    value: u64,
+    parent_value: ?u64,
+    index: usize,
+    data: schema.Node,
+) !void {
+    try state.nodes.put(gpa, fixtureId(value), .{
+        .parent_and_index = if (parent_value) |parent_value_|
+            .{ .parent_id = fixtureId(parent_value_), .index = index }
+        else
+            null,
+        .data = data,
+    });
+}
+
+fn fixtureState(gpa: std.mem.Allocator, state: *TreeState) !void {
+    const tree_index = try state.tree_index_map.getOrCreateIndex(gpa, schema.tree_id_root);
+    try std.testing.expectEqual(@as(u32, 0), tree_index.value());
+    state.root_id = fixtureId(0);
+    state.focus_id = fixtureId(0);
+    state.info = schema.TreeInfo.init(.{ .value = 0 });
+    state.info.toolkit_name = "fixture-toolkit";
+    state.info.toolkit_version = "2.0";
+
+    {
+        var root_node = schema.Node.init(gpa, .window);
+        errdefer root_node.deinit();
+        try schema.ids_props.setChildren(&root_node.properties, &.{
+            .{ .value = 1 }, .{ .value = 2 }, .{ .value = 3 },
+        });
+        try fixtureInsert(gpa, state, 0, null, 0, root_node);
+    }
+
+    {
+        var image = schema.Node.init(gpa, .image);
+        errdefer image.deinit();
+        try schema.strings.setLabel(&image.properties, "Diagram");
+        try schema.strings.setDescription(&image.properties, "A tree");
+        try schema.strings.setUrl(&image.properties, "https://example.test/tree");
+        try schema.strings.setRoleDescription(&image.properties, "diagram");
+        try schema.strings.setAuthorId(&image.properties, "diagram-id");
+        try schema.option.setBounds(&image.properties, schema.rectInit(10, 20, 50, 60));
+        try schema.numbers.setNumericValue(&image.properties, 4.5);
+        try schema.numbers.setNumericValueStep(&image.properties, 0.25);
+        try schema.ids_props.setControls(&image.properties, &.{.{ .value = 2 }});
+        try fixtureInsert(gpa, state, 1, 0, 0, image);
+    }
+
+    {
+        var list = schema.Node.init(gpa, .list_box);
+        errdefer list.deinit();
+        try schema.ids_props.setChildren(&list.properties, &.{ .{ .value = 4 }, .{ .value = 5 } });
+        try fixtureInsert(gpa, state, 2, 0, 1, list);
+    }
+    const selected_states = [_]bool{ true, false };
+    for (selected_states, 0..) |selected, index| {
+        var item = schema.Node.init(gpa, .list_box_option);
+        errdefer item.deinit();
+        try schema.enums.setSelected(&item.properties, selected);
+        item.addAction(.click);
+        try fixtureInsert(gpa, state, @intCast(index + 4), 2, index, item);
+    }
+
+    {
+        var document = schema.Node.init(gpa, .text_input);
+        errdefer document.deinit();
+        try schema.ids_props.setChildren(&document.properties, &.{.{ .value = 6 }});
+        try schema.option.setTextSelection(&document.properties, .{
+            .anchor = .{ .node_id = .{ .value = 6 }, .character_index = 1 },
+            .focus = .{ .node_id = .{ .value = 6 }, .character_index = 3 },
+        });
+        try fixtureInsert(gpa, state, 3, 0, 2, document);
+    }
+    {
+        var run = schema.Node.init(gpa, .text_run);
+        errdefer run.deinit();
+        try schema.strings.setValue(&run.properties, "abcd");
+        try schema.strings.setFontFamily(&run.properties, "Fixture Sans");
+        try schema.vectors.setCharacterLengths(&run.properties, &.{ 1, 1, 1, 1 });
+        try schema.option.setBounds(&run.properties, schema.rectInit(0, 0, 40, 20));
+        try schema.vectors.setCharacterPositions(&run.properties, &.{ 0, 10, 20, 30 });
+        try schema.vectors.setCharacterWidths(&run.properties, &.{ 10, 10, 10, 10 });
+        try schema.enums.setTextDirection(&run.properties, .left_to_right);
+        try fixtureInsert(gpa, state, 6, 3, 0, run);
+    }
+}
+
+const ActionProbe = struct {
+    count: usize = 0,
+    last: ?ActionRequest = null,
+
+    fn receive(context: ?*anyopaque, request: ActionRequest) void {
+        const pointer = context orelse @panic("The fixture action sink requires its probe.");
+        const self: *ActionProbe = @ptrCast(@alignCast(pointer));
+        self.count += 1;
+        self.last = request;
+    }
+};
+
+fn fixtureContext(gpa: std.mem.Allocator, state: *const TreeState) NodeContext {
+    return .{
+        .state = state,
+        .app = null,
+        .bounds = .init(
+            schema.rectInit(100, 200, 300, 400),
+            schema.rectInit(105, 210, 295, 395),
+        ),
+        .sink = null,
+        .gpa = gpa,
+    };
+}
+
+test "node values use the real filtered tree and preserve handle identity" {
+    const gpa = std.testing.allocator;
+    var state: TreeState = .{};
+    defer state.deinit(gpa);
+    try fixtureState(gpa, &state);
+    var app = try AppContext.init(gpa, "Fixture");
+    defer app.deinit();
+    var context = fixtureContext(gpa, &state);
+    context.app = &app;
+    try app.pushAdapter(7, &context);
+    const root_node = PlatformNode.init(&context, 7, fixtureId(0));
+    const image = root_node.relative(fixtureId(1));
+    try std.testing.expectEqual(@as(usize, 7), image.adapterNumber());
+    try std.testing.expectEqual(fixtureId(1), image.nodeId());
+    try std.testing.expect(image.context == root_node.context);
+    try std.testing.expectEqualStrings("Fixture", (try image.root()).name());
+    try std.testing.expectEqualStrings("fixture-toolkit", image.toolkitName());
+    try std.testing.expectEqualStrings("2.0", image.toolkitVersion());
+    try std.testing.expectEqualStrings("diagram-id", try image.accessibleId());
+    try std.testing.expectEqualStrings("diagram", try image.localizedRoleName());
+    try std.testing.expectEqual(node_role.roleOf(try image.resolve()), try image.role());
+    try std.testing.expectEqual(@as(i32, 3), try root_node.childCount());
+    try std.testing.expectEqual(fixtureId(1), (try root_node.childAtIndex(0)).?);
+    try std.testing.expectEqual(@as(?FullNodeId, null), try root_node.childAtIndex(3));
+    try std.testing.expect((try image.parent()).eql(.{ .node = fixtureId(0) }));
+    try std.testing.expect((try root_node.parent()) == .root);
+    try std.testing.expectEqual(@as(i32, 0), try image.indexInParent());
+    try std.testing.expectEqual(image.objectId().node.node, fixtureId(1));
+    var name_ = try image.name(gpa);
+    defer name_.deinit(gpa);
+    try std.testing.expectEqualStrings("Diagram", name_.items);
+    var description_ = try image.description(gpa);
+    defer description_.deinit(gpa);
+    try std.testing.expectEqualStrings("A tree", description_.items);
+    var cache = try image.cacheNode();
+    defer cache.deinit(gpa);
+    try std.testing.expectEqualStrings("Diagram", cache.name);
+    try std.testing.expectEqualStrings("A tree", cache.description);
+    try std.testing.expectEqual(@as(usize, 7), cache.adapter_id);
+    try std.testing.expectEqual(fixtureId(1), cache.id);
+    try std.testing.expectEqual(@as(i32, 0), cache.child_count);
+    var relations = try image.relationSet(gpa);
+    defer relations.deinit(gpa);
+    try std.testing.expectEqualSlices(FullNodeId, &.{fixtureId(2)}, relations.controller_for.items);
+    try std.testing.expectEqual(@as(i32, 1), try image.nAnchors());
+    try std.testing.expectEqual(@as(i32, 0), try root_node.nAnchors());
+    try std.testing.expect(try image.hyperlinkIsValid());
+    try std.testing.expect(!try root_node.hyperlinkIsValid());
+    var mapped = try root_node.mapChildren(gpa, fixtureIdentity);
+    defer mapped.deinit(gpa);
+    try std.testing.expectEqualSlices(
+        FullNodeId,
+        &.{ fixtureId(1), fixtureId(2), fixtureId(3) },
+        mapped.items,
+    );
+    try std.testing.expectEqual(@as(i32, -1), try image.hyperlinkStartIndex());
+    try std.testing.expectEqual(@as(i32, -1), try image.hyperlinkEndIndex());
+    var image_description = try image.imageDescription(gpa);
+    defer image_description.deinit(gpa);
+    try std.testing.expectEqualStrings("A tree", image_description.items);
+    try std.testing.expectEqual(wire_rect.Rect.init(115, 230, 40, 40), try image.imageExtents(.screen));
+    try std.testing.expectEqual(Point{ .x = 115, .y = 230 }, try image.imagePosition(.screen));
+    try std.testing.expectEqual(ImageSize{ .width = 40, .height = 40 }, try image.imageSize());
+    try std.testing.expectEqual(fixtureId(1), (try image.accessibleAtPoint(120, 235, .screen)).?);
+    try std.testing.expectEqual(@as(?FullNodeId, null), try image.accessibleAtPoint(0, 0, .screen));
+    try std.testing.expectEqual(@as(f64, 0.25), try image.minimumIncrement());
+    try std.testing.expectEqual(@as(f64, 4.5), try image.currentValue());
+    try std.testing.expectEqual(@as(f64, 0), try root_node.minimumIncrement());
+    try std.testing.expectEqual(@as(f64, 0), try root_node.currentValue());
+}
+
+test "selection and text methods emit actions for the real consumer tree" {
+    const gpa = std.testing.allocator;
+    var state: TreeState = .{};
+    defer state.deinit(gpa);
+    try fixtureState(gpa, &state);
+    var probe: ActionProbe = .{};
+    var context = fixtureContext(gpa, &state);
+    context.sink = .{ .context = &probe, .raise = ActionProbe.receive };
+    const list = PlatformNode.init(&context, 7, fixtureId(2));
+    try std.testing.expectEqual(@as(i32, 1), try list.nSelectedChildren());
+    try std.testing.expectEqual(fixtureId(4), (try list.selectedChild(0)).?);
+    try std.testing.expectEqual(@as(?FullNodeId, null), try list.selectedChild(1));
+    try std.testing.expect(try list.isChildSelected(0));
+    try std.testing.expect(!try list.isChildSelected(1));
+    try std.testing.expect(try list.selectChild(0));
+    try std.testing.expectEqual(@as(usize, 0), probe.count);
+    try std.testing.expect(try list.selectChild(1));
+    try std.testing.expectEqual(schema.Action.click, probe.last.?.action);
+    try std.testing.expectEqual(@as(u64, 5), probe.last.?.target_node.value);
+    try std.testing.expect(try list.deselectSelectedChild(0));
+    try std.testing.expectEqual(@as(u64, 4), probe.last.?.target_node.value);
+    try std.testing.expect(try list.deselectChild(0));
+    try std.testing.expectEqual(@as(u64, 4), probe.last.?.target_node.value);
+    const count = probe.count;
+    try std.testing.expect(try list.deselectChild(1));
+    try std.testing.expectEqual(count, probe.count);
+    try std.testing.expect(!try list.selectAll());
+    try std.testing.expect(!try list.clearSelection());
+    try std.testing.expectError(error.Defunct, list.selectChild(2));
+    try std.testing.expectError(error.Defunct, list.deselectSelectedChild(1));
+    try std.testing.expectError(error.Defunct, list.isChildSelected(2));
+
+    const document = list.relative(fixtureId(3));
+    var text_ = try document.text(1, 3);
+    defer text_.deinit(gpa);
+    try std.testing.expectEqualStrings("bc", text_.items);
+    const attribute = try document.textAttributeValue(1, "family-name");
+    defer gpa.free(attribute);
+    try std.testing.expectEqualStrings("Fixture Sans", attribute);
+    const unknown = try document.textAttributeValue(1, "unknown");
+    defer gpa.free(unknown);
+    try std.testing.expectEqualStrings("", unknown);
+    try std.testing.expectError(error.IndexOutOfRange, document.text(9, 10));
+    try std.testing.expectError(error.IndexOutOfRange, document.textAttributeValue(9, "family-name"));
+    try std.testing.expect(try document.addSelection(0, 2));
+    const selection_request = probe.last orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(schema.Action.set_text_selection, selection_request.action);
+    const selection_data = selection_request.data orelse return error.TestUnexpectedResult;
+    try std.testing.expect(std.meta.activeTag(selection_data) == .set_text_selection);
+    const selection_ = selection_data.set_text_selection;
+    try std.testing.expectEqual(@as(u64, 6), selection_.anchor.node_id.value);
+    try std.testing.expectEqual(@as(usize, 0), selection_.anchor.character_index);
+    try std.testing.expectEqual(@as(usize, 2), selection_.focus.character_index);
+    try std.testing.expect(try document.removeSelection(0));
+    const remove_request = probe.last orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(schema.Action.set_text_selection, remove_request.action);
+    const remove_data = remove_request.data orelse return error.TestUnexpectedResult;
+    try std.testing.expect(std.meta.activeTag(remove_data) == .set_text_selection);
+    const removed = remove_data.set_text_selection;
+    try std.testing.expectEqual(@as(usize, 3), removed.anchor.character_index);
+    try std.testing.expectEqual(removed.anchor, removed.focus);
+    try std.testing.expect(!try document.removeSelection(1));
+    const image = list.relative(fixtureId(1));
+    try std.testing.expect(try image.scrollToPoint(.screen, 150, 260));
+    try std.testing.expectEqual(schema.Action.scroll_to_point, probe.last.?.action);
+    try std.testing.expectEqual(@as(u64, 1), probe.last.?.target_node.value);
+    try std.testing.expectEqual(Point{ .x = 45, .y = 50 }, probe.last.?.data.?.scroll_to_point);
+    // Upstream util.rs:44-56 uses zero as the window origin, not the decoration offset.
+    try std.testing.expectEqual(
+        schema.rectInit(10, 0, 30, 20),
+        (try util.textRangeBoundsFromOffsets(gpa, try document.resolve(), 1, 3)).?,
+    );
+    try std.testing.expect(try document.scrollSubstringToPoint(1, 3, .window, 70, 80));
+    try std.testing.expectEqual(@as(u64, 3), probe.last.?.target_node.value);
+    try std.testing.expectEqual(Point{ .x = 60, .y = 80 }, probe.last.?.data.?.scroll_to_point);
+    try std.testing.expectError(error.UnsupportedInterface, image.text(0, 1));
+    try std.testing.expectError(error.UnsupportedInterface, image.selectChild(0));
+    try std.testing.expectError(error.UnsupportedInterface, image.isChildSelected(0));
+    try std.testing.expectError(error.UnsupportedInterface, image.deselectChild(0));
+    context.sink = null;
+    try std.testing.expectError(error.NoActionSink, list.selectChild(1));
+    try std.testing.expectError(error.NoActionSink, image.scrollToPoint(.window, 0, 0));
+}
+
+fn fixtureIdentity(id: FullNodeId) FullNodeId {
+    return id;
+}
+
+fn allocatingNodeQueries(gpa: std.mem.Allocator) !void {
+    const backing = std.testing.allocator;
+    var state: TreeState = .{};
+    defer state.deinit(backing);
+    try fixtureState(backing, &state);
+    var probe: ActionProbe = .{};
+    var context = fixtureContext(gpa, &state);
+    context.sink = .{ .context = &probe, .raise = ActionProbe.receive };
+    const root_node = PlatformNode.init(&context, 7, fixtureId(0));
+    const image = root_node.relative(fixtureId(1));
+    var name_ = try image.name(gpa);
+    defer name_.deinit(gpa);
+    var description_ = try image.description(gpa);
+    defer description_.deinit(gpa);
+    var image_description = try image.imageDescription(gpa);
+    defer image_description.deinit(gpa);
+    var cache = try image.cacheNode();
+    defer cache.deinit(gpa);
+    var relations = try image.relationSet(gpa);
+    defer relations.deinit(gpa);
+    var children = try root_node.mapChildren(gpa, fixtureIdentity);
+    defer children.deinit(gpa);
+    try std.testing.expectEqual(fixtureId(1), (try image.accessibleAtPoint(120, 235, .screen)).?);
+    const list = root_node.relative(fixtureId(2));
+    try std.testing.expectEqual(@as(i32, 1), try list.nSelectedChildren());
+    try std.testing.expectEqual(fixtureId(4), (try list.selectedChild(0)).?);
+    try std.testing.expect(try list.deselectSelectedChild(0));
+    const document = root_node.relative(fixtureId(3));
+    var text_ = try document.text(1, 3);
+    defer text_.deinit(gpa);
+    const attribute = try document.textAttributeValue(1, "family-name");
+    defer gpa.free(attribute);
+    try std.testing.expect(try document.addSelection(0, 2));
+    try std.testing.expect(try document.removeSelection(0));
+    try std.testing.expect(try document.scrollSubstringToPoint(1, 3, .window, 70, 80));
+}
+
+test "node allocating queries release every partial result under fail N" {
+    try std.testing.checkAllAllocationFailures(
+        std.testing.allocator,
+        allocatingNodeQueries,
+        .{},
+    );
+}
+
+test "text caret and point wrappers use the same consumer range and affine APIs" {
+    const gpa = std.testing.allocator;
+    var state: TreeState = .{};
+    defer state.deinit(gpa);
+    try fixtureState(gpa, &state);
+    var probe: ActionProbe = .{};
+    var context = fixtureContext(gpa, &state);
+    context.sink = .{ .context = &probe, .raise = ActionProbe.receive };
+    const document = PlatformNode.init(&context, 7, fixtureId(3));
+    try std.testing.expect(try document.setCaretOffset(2));
+    const request = probe.last orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(schema.Action.set_text_selection, request.action);
+    const data = request.data orelse return error.TestUnexpectedResult;
+    try std.testing.expect(std.meta.activeTag(data) == .set_text_selection);
+    const selection_ = data.set_text_selection;
+    try std.testing.expectEqual(@as(usize, 2), selection_.anchor.character_index);
+    try std.testing.expectEqual(selection_.anchor, selection_.focus);
+    try std.testing.expectEqual(@as(i32, 1), try document.offsetAtPoint(15, 15, .window));
+}
+
+fn allocatingCacheTextTransfers(gpa: std.mem.Allocator) !void {
+    const values = [_][]const u8{ "Diagram", "A tree" };
+    const fixture_text_count_max = values.len;
+    for (values[0..fixture_text_count_max]) |value| {
+        var held = try std.ArrayList(u8).initCapacity(gpa, 64);
+        held.appendSliceAssumeCapacity(value);
+        const transferred = try takeText(gpa, held);
+        defer gpa.free(transferred);
+        try std.testing.expectEqualStrings(value, transferred);
+    }
+    const empty = try takeText(gpa, null);
+    defer gpa.free(empty);
+    try std.testing.expectEqual(@as(usize, 0), empty.len);
+}
+
+test "cache text ownership transfer releases grown name and description under fail N" {
+    try std.testing.checkAllAllocationFailures(
+        std.testing.allocator,
+        allocatingCacheTextTransfers,
+        .{},
+    );
+}
+
+fn cacheWalkTree(gpa: std.mem.Allocator, options: struct {
+    focused: bool,
+    broken_label: bool,
+}) !consumer.tree.Tree {
+    var update: schema.TreeUpdate = .{};
+    var update_transferred = false;
+    errdefer if (!update_transferred) update.deinit(gpa);
+    const roles = [_]schema.Role{
+        .window, .generic_container, .image, .group, .button, .button,
+    };
+    const fixture_node_count_max = roles.len;
+    for (roles[0..fixture_node_count_max], 0..) |role, index| {
+        var data = schema.Node.init(gpa, role);
+        var data_transferred = false;
+        errdefer if (!data_transferred) data.deinit();
+        switch (index) {
+            0 => {
+                try schema.ids_props.setChildren(&data.properties, &.{
+                    .{ .value = 1 }, .{ .value = 3 }, .{ .value = 5 },
+                });
+                try schema.strings.setLabel(&data.properties, "Window");
+            },
+            1 => try schema.ids_props.setChildren(&data.properties, &.{.{ .value = 2 }}),
+            2 => {
+                try schema.strings.setLabel(&data.properties, "Retained image");
+                try schema.strings.setDescription(&data.properties, "Retained description");
+            },
+            3 => {
+                schema.flags.setHidden(&data.flags, true);
+                try schema.ids_props.setChildren(&data.properties, &.{.{ .value = 4 }});
+            },
+            5 => if (options.broken_label) {
+                try schema.ids_props.setLabelledBy(&data.properties, &.{.{ .value = 404 }});
+            },
+            else => {},
+        }
+        // pushNode consumes data even on error, so disarm cleanup before the call.
+        data_transferred = true;
+        try update.pushNode(gpa, .{ .value = @intCast(index) }, data);
+    }
+    update.tree = schema.TreeInfo.init(.{ .value = 0 });
+    update.focus = .{ .value = 2 };
+    update_transferred = true;
+    return consumer.tree.Tree.init(gpa, update, options.focused);
+}
+
+fn cacheWalkIdentity(_: std.mem.Allocator, entry: CacheNode) error{}!CacheNode {
+    return entry;
+}
+
+fn cacheWalkRelease(gpa: std.mem.Allocator, entry: *CacheNode) void {
+    entry.deinit(gpa);
+}
+
+test "root cache identity retains owned name and description" {
+    // Read transferred strings after the collector and its temporary buffers are gone.
+    const gpa = std.testing.allocator;
+    var tree = try cacheWalkTree(gpa, .{ .focused = true, .broken_label = false });
+    defer tree.deinit();
+    var app = try AppContext.init(gpa, "Cache fixture");
+    defer app.deinit();
+    var context = fixtureContext(gpa, tree.stateOf());
+    context.app = &app;
+    try app.pushAdapter(7, &context);
+    var out = try PlatformRoot.init(&app).mapDescendantCacheNodes(
+        gpa,
+        cacheWalkRelease,
+        cacheWalkIdentity,
+    );
+    defer {
+        const mapped_item_count_max = out.items.len;
+        for (out.items[0..mapped_item_count_max]) |*entry| entry.deinit(gpa);
+        out.deinit(gpa);
+    }
+    try std.testing.expectEqual(@as(usize, 3), out.items.len);
+    try std.testing.expectEqualStrings("Retained image", out.items[1].name);
+    try std.testing.expectEqualStrings("Retained description", out.items[1].description);
+}
+
+test "root cache preserves multi window preorder filtering indices and focus" {
+    // A transparent container promotes its child. A hidden subtree contributes no entries.
+    const gpa = std.testing.allocator;
+    var first = try cacheWalkTree(gpa, .{ .focused = true, .broken_label = false });
+    defer first.deinit();
+    var second = try cacheWalkTree(gpa, .{ .focused = false, .broken_label = false });
+    defer second.deinit();
+    var app = try AppContext.init(gpa, "Cache fixture");
+    defer app.deinit();
+    var first_context = fixtureContext(gpa, first.stateOf());
+    var second_context = fixtureContext(gpa, second.stateOf());
+    first_context.app = &app;
+    second_context.app = &app;
+    try app.pushAdapter(7, &first_context);
+    try app.pushAdapter(11, &second_context);
+    var out = try PlatformRoot.init(&app).mapDescendantCacheNodes(
+        gpa,
+        cacheWalkRelease,
+        cacheWalkIdentity,
+    );
+    defer {
+        const mapped_item_count_max = out.items.len;
+        for (out.items[0..mapped_item_count_max]) |*entry| entry.deinit(gpa);
+        out.deinit(gpa);
+    }
+    try std.testing.expectEqual(@as(usize, 6), out.items.len);
+    const ids = [_]u32{ 0, 2, 5, 0, 2, 5 };
+    const indices = [_]i32{ 0, 0, 1, 1, 0, 1 };
+    const counts = [_]i32{ 2, 0, 0, 2, 0, 0 };
+    const expected_item_count_max = ids.len;
+    for (out.items[0..expected_item_count_max], 0..) |entry, index| {
+        try std.testing.expectEqual(fixtureId(ids[index]), entry.id);
+        try std.testing.expectEqual(@as(usize, if (index < 3) 7 else 11), entry.adapter_id);
+        try std.testing.expectEqual(indices[index], entry.index_in_parent);
+        try std.testing.expectEqual(counts[index], entry.child_count);
+        if (index == 0 or index == 3) {
+            try std.testing.expect(entry.parent == .root);
+            try std.testing.expectEqual(index == 0, entry.states.contains(.active));
+        } else {
+            try std.testing.expect(entry.parent.eql(.{ .node = fixtureId(0) }));
+        }
+        try std.testing.expectEqual(index == 1, entry.states.contains(.focused));
+    }
+}
+
+const CacheWalkOwnedItem = struct {
+    cache: CacheNode,
+    copied_name: []u8,
+};
+
+fn cacheWalkReleaseItem(gpa: std.mem.Allocator, item: *CacheWalkOwnedItem) void {
+    gpa.free(item.copied_name);
+    item.cache.deinit(gpa);
+}
+
+fn cacheWalkMapItem(
+    gpa: std.mem.Allocator,
+    entry: CacheNode,
+) error{OutOfMemory}!CacheWalkOwnedItem {
+    var owned = entry;
+    errdefer owned.deinit(gpa);
+    const copied_name = try gpa.dupe(u8, entry.name);
+    return .{ .cache = owned, .copied_name = copied_name };
+}
+
+fn cacheWalkRejectItem(
+    gpa: std.mem.Allocator,
+    entry: CacheNode,
+) error{ OutOfMemory, MapperRejected }!CacheWalkOwnedItem {
+    var item = try cacheWalkMapItem(gpa, entry);
+    errdefer cacheWalkReleaseItem(gpa, &item);
+    if (std.meta.eql(entry.id, fixtureId(5))) return error.MapperRejected;
+    return item;
+}
+
+fn allocatingCacheWalk(gpa: std.mem.Allocator, comptime mode: enum {
+    success,
+    query_error,
+    mapper_error,
+}) !void {
+    // Keep tree construction outside fail-N so each failure targets collector or mapper storage.
+    const backing = std.testing.allocator;
+    var tree = try cacheWalkTree(backing, .{
+        .focused = true,
+        .broken_label = mode == .query_error,
+    });
+    defer tree.deinit();
+    var app = try AppContext.init(backing, "Cache fixture");
+    defer app.deinit();
+    var context = fixtureContext(gpa, tree.stateOf());
+    context.app = &app;
+    try app.pushAdapter(7, &context);
+    if (mode == .success) {
+        // Twelve entries force output growth after earlier items own both input and output buffers.
+        const adapter_id_end_max = 11;
+        for (8..adapter_id_end_max) |adapter_id| try app.pushAdapter(adapter_id, &context);
+    }
+    const mapper = if (mode == .mapper_error) cacheWalkRejectItem else cacheWalkMapItem;
+    var out = PlatformRoot.init(&app).mapDescendantCacheNodes(
+        gpa,
+        cacheWalkReleaseItem,
+        mapper,
+    ) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => {
+            try std.testing.expectEqual(
+                @as(anyerror, if (mode == .query_error) error.NoSuchNode else error.MapperRejected),
+                err,
+            );
+            try std.testing.expect(mode != .success);
+            return;
+        },
+    };
+    defer {
+        const mapped_item_count_max = out.items.len;
+        for (out.items[0..mapped_item_count_max]) |*item| cacheWalkReleaseItem(gpa, item);
+        out.deinit(gpa);
+    }
+    try std.testing.expect(mode == .success);
+    try std.testing.expectEqual(@as(usize, 12), out.items.len);
+    try std.testing.expectEqualStrings("Retained image", out.items[1].cache.name);
+    try std.testing.expectEqualStrings("Retained image", out.items[1].copied_name);
+    try std.testing.expectEqualStrings("Retained description", out.items[1].cache.description);
+}
+
+fn allocatingCacheWalkSuccess(gpa: std.mem.Allocator) !void {
+    try allocatingCacheWalk(gpa, .success);
+}
+
+fn allocatingCacheWalkQueryError(gpa: std.mem.Allocator) !void {
+    try allocatingCacheWalk(gpa, .query_error);
+}
+
+fn allocatingCacheWalkMapperError(gpa: std.mem.Allocator) !void {
+    try allocatingCacheWalk(gpa, .mapper_error);
+}
+
+test "root cache releases owned inputs and mapped outputs under fail N" {
+    try std.testing.checkAllAllocationFailures(
+        std.testing.allocator,
+        allocatingCacheWalkSuccess,
+        .{},
+    );
+}
+
+test "root cache query failure releases partial mapped outputs under fail N" {
+    try std.testing.checkAllAllocationFailures(
+        std.testing.allocator,
+        allocatingCacheWalkQueryError,
+        .{},
+    );
+}
+
+test "root cache mapper rejection consumes input and releases outputs under fail N" {
+    try std.testing.checkAllAllocationFailures(
+        std.testing.allocator,
+        allocatingCacheWalkMapperError,
+        .{},
+    );
 }
