@@ -102,26 +102,26 @@ pub fn nameAt(index: usize) ?[]const u8 {
 /// `text_attributes.rs:14-16`.
 fn familyName(gpa: std.mem.Allocator, node: NodeRef) AttributeError!?[]u8 {
     const found = try consumer.text.inherited.nodeFontFamily(node) orelse return null;
-    return try gpa.dupe(u8, found);
+    return gpa.dupe(u8, found);
 }
 
 /// `text_attributes.rs:18-20`. A size of `12.0` reads back as `12`.
 fn size(gpa: std.mem.Allocator, node: NodeRef) AttributeError!?[]u8 {
     const found = try consumer.text.inherited.nodeFontSize(node) orelse return null;
-    return try std.fmt.allocPrint(gpa, "{d}", .{found});
+    return std.fmt.allocPrint(gpa, "{d}", .{found});
 }
 
 /// `text_attributes.rs:22-24`. A weight of `400.0` reads back as `400`.
 fn weight(gpa: std.mem.Allocator, node: NodeRef) AttributeError!?[]u8 {
     const found = try consumer.text.inherited.nodeFontWeight(node) orelse return null;
-    return try std.fmt.allocPrint(gpa, "{d}", .{found});
+    return std.fmt.allocPrint(gpa, "{d}", .{found});
 }
 
 /// `text_attributes.rs:26-28`. A node that is not italic answers `null`, which
 /// is what makes this entry absent rather than empty.
 fn style(gpa: std.mem.Allocator, node: NodeRef) AttributeError!?[]u8 {
     if (!try consumer.text.inherited.nodeIsItalic(node)) return null;
-    return try gpa.dupe(u8, "italic");
+    return gpa.dupe(u8, "italic");
 }
 
 /// `text_attributes.rs:30-32`. A node that declares a strikethrough answers
@@ -129,14 +129,14 @@ fn style(gpa: std.mem.Allocator, node: NodeRef) AttributeError!?[]u8 {
 /// string for all of them.
 fn strikethrough(gpa: std.mem.Allocator, node: NodeRef) AttributeError!?[]u8 {
     if (try consumer.text.inherited.nodeStrikethrough(node) == null) return null;
-    return try gpa.dupe(u8, "true");
+    return gpa.dupe(u8, "true");
 }
 
 /// `text_attributes.rs:34-42`. A double decoration reads back as `double` and
 /// every other decoration as `single`, which is the reference's wildcard arm.
 fn underline(gpa: std.mem.Allocator, node: NodeRef) AttributeError!?[]u8 {
     const found = try consumer.text.inherited.nodeUnderline(node) orelse return null;
-    return try gpa.dupe(u8, switch (found.style) {
+    return gpa.dupe(u8, switch (found.style) {
         .double => "double",
         .solid, .dotted, .dashed, .wavy => "single",
     });
@@ -151,26 +151,26 @@ fn colorToString(gpa: std.mem.Allocator, color: Color) std.mem.Allocator.Error![
 /// `text_attributes.rs:44-46`.
 fn bgColor(gpa: std.mem.Allocator, node: NodeRef) AttributeError!?[]u8 {
     const found = try consumer.text.inherited.nodeBackgroundColor(node) orelse return null;
-    return try colorToString(gpa, found);
+    return colorToString(gpa, found);
 }
 
 /// `text_attributes.rs:48-50`.
 fn fgColor(gpa: std.mem.Allocator, node: NodeRef) AttributeError!?[]u8 {
     const found = try consumer.text.inherited.nodeForegroundColor(node) orelse return null;
-    return try colorToString(gpa, found);
+    return colorToString(gpa, found);
 }
 
 /// `text_attributes.rs:52-54`.
 fn language(gpa: std.mem.Allocator, node: NodeRef) AttributeError!?[]u8 {
     const found = try consumer.text.inherited.nodeLanguage(node) orelse return null;
-    return try gpa.dupe(u8, found);
+    return gpa.dupe(u8, found);
 }
 
 /// `text_attributes.rs:56-66`. `justify` reads back as `fill`, which is the
 /// name the reference gives the AT-SPI value.
 fn justification(gpa: std.mem.Allocator, node: NodeRef) AttributeError!?[]u8 {
     const found = try consumer.text.inherited.nodeTextAlign(node) orelse return null;
-    return try gpa.dupe(u8, switch (found) {
+    return gpa.dupe(u8, switch (found) {
         .left => "left",
         .center => "center",
         .right => "right",
@@ -293,20 +293,20 @@ test "the font attributes read the three stored values" {
     try schema.strings.setLanguage(&node_state.data.properties, "en");
     const node = try handle(&state, 0);
 
-    const family = (try readOf(node, "family-name")).?;
+    const family = (try readOf(node, "family-name")) orelse return error.TestExpectedEqual;
     defer gpa.free(family);
     try testing.expectEqualStrings("Noto", family);
 
-    const size_text = (try readOf(node, "size")).?;
+    const size_text = (try readOf(node, "size")) orelse return error.TestExpectedEqual;
     defer gpa.free(size_text);
     // Rust's `12.0f32.to_string()` is `12`, and this is the same number.
     try testing.expectEqualStrings("12", size_text);
 
-    const weight_text = (try readOf(node, "weight")).?;
+    const weight_text = (try readOf(node, "weight")) orelse return error.TestExpectedEqual;
     defer gpa.free(weight_text);
     try testing.expectEqualStrings("700", weight_text);
 
-    const tag = (try readOf(node, "language")).?;
+    const tag = (try readOf(node, "language")) orelse return error.TestExpectedEqual;
     defer gpa.free(tag);
     try testing.expectEqualStrings("en", tag);
 }
@@ -326,7 +326,7 @@ test "a node that is not italic has no style and a node that is has one" {
     // `setItalic` at `schema/props/flags.zig:251` writes the node's own flag
     // word through a pointer and answers `void`, so there is no `try` either.
     schema.flags.setItalic(&node_state.data.flags, true);
-    const italic = (try readOf(node, "style")).?;
+    const italic = (try readOf(node, "style")) orelse return error.TestExpectedEqual;
     defer gpa.free(italic);
     try testing.expectEqualStrings("italic", italic);
 }
@@ -349,11 +349,11 @@ test "the colours read three channels and no alpha" {
     );
     const node = try handle(&state, 0);
 
-    const behind = (try readOf(node, "bg-color")).?;
+    const behind = (try readOf(node, "bg-color")) orelse return error.TestExpectedEqual;
     defer gpa.free(behind);
     try testing.expectEqualStrings("1,2,3", behind);
 
-    const in_front = (try readOf(node, "fg-color")).?;
+    const in_front = (try readOf(node, "fg-color")) orelse return error.TestExpectedEqual;
     defer gpa.free(in_front);
     try testing.expectEqualStrings("255,0,0", in_front);
 }
@@ -372,7 +372,7 @@ test "an underline reads as double and every other decoration as single" {
         &node_state.data.properties,
         .{ .style = .double, .color = .{ .red = 0, .green = 0, .blue = 0, .alpha = 255 } },
     );
-    const doubled = (try readOf(node, "underline")).?;
+    const doubled = (try readOf(node, "underline")) orelse return error.TestExpectedEqual;
     defer gpa.free(doubled);
     try testing.expectEqualStrings("double", doubled);
 
@@ -380,7 +380,7 @@ test "an underline reads as double and every other decoration as single" {
         &node_state.data.properties,
         .{ .style = .wavy, .color = .{ .red = 0, .green = 0, .blue = 0, .alpha = 255 } },
     );
-    const waved = (try readOf(node, "underline")).?;
+    const waved = (try readOf(node, "underline")) orelse return error.TestExpectedEqual;
     defer gpa.free(waved);
     try testing.expectEqualStrings("single", waved);
 }
@@ -399,7 +399,7 @@ test "a strikethrough reads as true whatever its decoration is" {
     );
     const node = try handle(&state, 0);
 
-    const answer = (try readOf(node, "strikethrough")).?;
+    const answer = (try readOf(node, "strikethrough")) orelse return error.TestExpectedEqual;
     defer gpa.free(answer);
     try testing.expectEqualStrings("true", answer);
 }
@@ -423,7 +423,7 @@ test "the four alignments read as the four names the reference writes" {
         try schema.enums.setTextAlign(&node_state.data.properties, one.alignment);
         const node = try handle(&state, 0);
 
-        const answer = (try readOf(node, "justification")).?;
+        const answer = (try readOf(node, "justification")) orelse return error.TestExpectedEqual;
         defer gpa.free(answer);
         try testing.expectEqualStrings(one.text, answer);
     }

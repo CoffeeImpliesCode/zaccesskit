@@ -109,9 +109,15 @@ const std = @import("std");
 const adapter_errors = @import("error.zig");
 const boundary = @import("../../capi/boundary.zig");
 const events = @import("events.zig");
+const app_context = @import("app_context.zig");
+const node = @import("node.zig");
+const node_interfaces = @import("node_interfaces.zig");
+const node_role = @import("node_role.zig");
+const node_state = @import("node_state.zig");
 const object_address = @import("object_address.zig");
 const object_id = @import("object_id.zig");
 const platform_adapter = @import("platform_adapter.zig");
+const util = @import("util.zig");
 const wire = @import("wire.zig");
 const wire_action = @import("wire/action.zig");
 const wire_rect = @import("wire/rect.zig");
@@ -656,20 +662,20 @@ test "every module in this adapter is reachable and analysed" {
     // three times already. The four modules below were the fourth instance: they
     // imported a D-Bus library this project does not depend on, so nothing
     // reached them and the gate analysed them at no point.
-    // The five node-side modules are bound inline rather than at file scope,
-    // because a file-scope import would move every line the closed ledger cites
-    // below this file's first hundred lines.
     std.testing.refAllDecls(adapter_errors);
-    std.testing.refAllDecls(@import("node_interfaces.zig"));
-    std.testing.refAllDecls(@import("node_role.zig"));
-    std.testing.refAllDecls(@import("node_state.zig"));
-    std.testing.refAllDecls(@import("util.zig"));
+    std.testing.refAllDecls(node_interfaces);
+    std.testing.refAllDecls(node_role);
+    std.testing.refAllDecls(node_state);
+    std.testing.refAllDecls(util);
+    std.testing.refAllDecls(object_address);
+    std.testing.refAllDecls(wire_action);
+    std.testing.refAllDecls(wire_rect);
     // `node.zig` and `app_context.zig` are analysed but never reached from
     // production code on this host: no object is registered, so nothing calls
     // a node method. Without these two lines the gate would analyse them at
     // no point, which is the defect this test exists to catch.
-    std.testing.refAllDecls(@import("node.zig"));
-    std.testing.refAllDecls(@import("app_context.zig"));
+    std.testing.refAllDecls(node);
+    std.testing.refAllDecls(app_context);
 }
 
 test "the object identifier names the three paths this adapter exports" {
