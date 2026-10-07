@@ -2228,7 +2228,7 @@ pub const PlatformRoot = struct {
         return out;
     }
 
-    /// Every node of every window as a cache entry, each put through `map_node`.
+    /// Every node of every window as a cache entry, passed to `mapDescendantCacheNodes_callback`.
     ///
     /// Upstream `PlatformRoot::map_descendant_cache_nodes` at `node.rs:1973-2033`.
     /// It is `mapDescendants` with a cache entry built at each step and the
@@ -2238,26 +2238,30 @@ pub const PlatformRoot = struct {
     ///
     /// **Bound.** `treeWalkStepBound(nodes.count())` per window, as above.
     ///
-    /// `map_node(gpa, entry)` returns an error union and consumes `entry` on
-    /// success and error. It must release or transfer both owned text buffers.
-    /// `release_item(gpa, *item)` releases each mapped item on collection failure.
+    /// `mapDescendantCacheNodes_callback(gpa, entry)` consumes `entry` on success and error.
+    /// It must release or transfer both owned text buffers and return a closed error union.
+    /// `mapDescendantCacheNodes_release_callback(gpa, *item)` releases each item on failure.
+    /// The release callback must not retain the item pointer after it returns.
     /// Both callbacks run on the calling thread and must not change the registry or trees.
     /// On success, the caller owns every item and the list buffer, all allocated with `gpa`.
     /// On error, no result survives. Mapper side effects are not undone.
     ///
-    /// **Errors.** `NodeError` joined to the mapper's error set.
+    /// **Errors.** `NodeError` joined to the mapper's closed error set. `anyerror` is rejected.
     pub fn mapDescendantCacheNodes(
         self: PlatformRoot,
         gpa: std.mem.Allocator,
-        release_item: anytype,
-        map_node: anytype,
-    ) (NodeError || @typeInfo(ReturnTypeOf(map_node)).error_union.error_set)!
-        std.ArrayList(@typeInfo(ReturnTypeOf(map_node)).error_union.payload)
+        mapDescendantCacheNodes_release_callback: anytype,
+        mapDescendantCacheNodes_callback: anytype,
+    ) (NodeError || CacheMapperErrorSet(mapDescendantCacheNodes_callback))!
+        std.ArrayList(@typeInfo(ReturnTypeOf(mapDescendantCacheNodes_callback)).error_union.payload)
     {
-        const Item = @typeInfo(ReturnTypeOf(map_node)).error_union.payload;
+        const Item = @typeInfo(ReturnTypeOf(mapDescendantCacheNodes_callback)).error_union.payload;
         var out: std.ArrayList(Item) = .empty;
         errdefer {
-            for (out.items) |*item| release_item(gpa, item);
+            const mapped_item_count_max = out.items.len;
+            for (out.items[0..mapped_item_count_max]) |*item| {
+                mapDescendantCacheNodes_release_callback(gpa, item);
+            }
             out.deinit(gpa);
         }
         for (self.app.adapters.items, 0..) |entry, slot| {
@@ -2276,7 +2280,7 @@ pub const PlatformRoot = struct {
                 window_focused,
                 budget,
                 &out,
-                map_node,
+                mapDescendantCacheNodes_callback,
             );
         }
         return out;
@@ -2297,6 +2301,14 @@ fn ReturnTypeOf(comptime callable: anytype) type {
         else => @TypeOf(callable),
     };
     return @typeInfo(Fn).@"fn".return_type.?;
+}
+
+fn CacheMapperErrorSet(comptime CacheMapperErrorSet_callback: anytype) type {
+    const MapperError = @typeInfo(ReturnTypeOf(CacheMapperErrorSet_callback)).error_union.error_set;
+    if (@typeInfo(MapperError).error_set == null) {
+        @compileError("mapDescendantCacheNodes mapper must return a closed error set, not anyerror");
+    }
+    return MapperError;
 }
 
 /// Reports `node`, then every descendant of it, parent before child.
@@ -2368,8 +2380,8 @@ fn collectCacheDescendants(
     window_focused: bool,
     budget: usize,
     out: *std.ArrayList(Item),
-    map_node: anytype,
-) (NodeError || @typeInfo(ReturnTypeOf(map_node)).error_union.error_set)!void {
+    collectCacheDescendants_callback: anytype,
+) (NodeError || CacheMapperErrorSet(collectCacheDescendants_callback))!void {
     if (budget == 0) return error.TreeCycle;
     var children = try consumer.node_ref.hierarchy.filteredChildren(
         node,
@@ -2390,7 +2402,7 @@ fn collectCacheDescendants(
         child_count,
         window_focused,
     );
-    out.appendAssumeCapacity(try map_node(gpa, entry));
+    out.appendAssumeCapacity(try collectCacheDescendants_callback(gpa, entry));
 
     for (held.items, 0..) |child, child_index| {
         const position = std.math.cast(i32, child_index) orelse return error.IndexOutOfRange;
@@ -2404,7 +2416,7 @@ fn collectCacheDescendants(
             window_focused,
             budget - 1,
             out,
-            map_node,
+            collectCacheDescendants_callback,
         );
     }
 }
@@ -3093,7 +3105,8 @@ test "text caret and point wrappers use the same consumer range and affine APIs"
 
 fn allocatingCacheTextTransfers(gpa: std.mem.Allocator) !void {
     const values = [_][]const u8{ "Diagram", "A tree" };
-    for (values) |value| {
+    const fixture_text_count_max = values.len;
+    for (values[0..fixture_text_count_max]) |value| {
         var held = try std.ArrayList(u8).initCapacity(gpa, 64);
         held.appendSliceAssumeCapacity(value);
         const transferred = try takeText(gpa, held);
@@ -3113,16 +3126,21 @@ test "cache text ownership transfer releases grown name and description under fa
     );
 }
 
-fn cacheWalkTree(gpa: std.mem.Allocator, focused: bool, broken_label: bool) !consumer.tree.Tree {
+fn cacheWalkTree(gpa: std.mem.Allocator, options: struct {
+    focused: bool,
+    broken_label: bool,
+}) !consumer.tree.Tree {
     var update: schema.TreeUpdate = .{};
     var update_transferred = false;
     errdefer if (!update_transferred) update.deinit(gpa);
     const roles = [_]schema.Role{
         .window, .generic_container, .image, .group, .button, .button,
     };
-    for (roles, 0..) |role, index| {
+    const fixture_node_count_max = roles.len;
+    for (roles[0..fixture_node_count_max], 0..) |role, index| {
         var data = schema.Node.init(gpa, role);
-        errdefer data.deinit();
+        var data_transferred = false;
+        errdefer if (!data_transferred) data.deinit();
         switch (index) {
             0 => {
                 try schema.ids_props.setChildren(&data.properties, &.{
@@ -3139,17 +3157,19 @@ fn cacheWalkTree(gpa: std.mem.Allocator, focused: bool, broken_label: bool) !con
                 schema.flags.setHidden(&data.flags, true);
                 try schema.ids_props.setChildren(&data.properties, &.{.{ .value = 4 }});
             },
-            5 => if (broken_label) {
+            5 => if (options.broken_label) {
                 try schema.ids_props.setLabelledBy(&data.properties, &.{.{ .value = 404 }});
             },
             else => {},
         }
+        // pushNode consumes data even on error, so disarm cleanup before the call.
+        data_transferred = true;
         try update.pushNode(gpa, .{ .value = @intCast(index) }, data);
     }
     update.tree = schema.TreeInfo.init(.{ .value = 0 });
     update.focus = .{ .value = 2 };
     update_transferred = true;
-    return consumer.tree.Tree.init(gpa, update, focused);
+    return consumer.tree.Tree.init(gpa, update, options.focused);
 }
 
 fn cacheWalkIdentity(_: std.mem.Allocator, entry: CacheNode) error{}!CacheNode {
@@ -3163,7 +3183,7 @@ fn cacheWalkRelease(gpa: std.mem.Allocator, entry: *CacheNode) void {
 test "root cache identity retains owned name and description" {
     // Read transferred strings after the collector and its temporary buffers are gone.
     const gpa = std.testing.allocator;
-    var tree = try cacheWalkTree(gpa, true, false);
+    var tree = try cacheWalkTree(gpa, .{ .focused = true, .broken_label = false });
     defer tree.deinit();
     var app = try AppContext.init(gpa, "Cache fixture");
     defer app.deinit();
@@ -3176,7 +3196,8 @@ test "root cache identity retains owned name and description" {
         cacheWalkIdentity,
     );
     defer {
-        for (out.items) |*entry| entry.deinit(gpa);
+        const mapped_item_count_max = out.items.len;
+        for (out.items[0..mapped_item_count_max]) |*entry| entry.deinit(gpa);
         out.deinit(gpa);
     }
     try std.testing.expectEqual(@as(usize, 3), out.items.len);
@@ -3187,9 +3208,9 @@ test "root cache identity retains owned name and description" {
 test "root cache preserves multi window preorder filtering indices and focus" {
     // A transparent container promotes its child. A hidden subtree contributes no entries.
     const gpa = std.testing.allocator;
-    var first = try cacheWalkTree(gpa, true, false);
+    var first = try cacheWalkTree(gpa, .{ .focused = true, .broken_label = false });
     defer first.deinit();
-    var second = try cacheWalkTree(gpa, false, false);
+    var second = try cacheWalkTree(gpa, .{ .focused = false, .broken_label = false });
     defer second.deinit();
     var app = try AppContext.init(gpa, "Cache fixture");
     defer app.deinit();
@@ -3205,14 +3226,16 @@ test "root cache preserves multi window preorder filtering indices and focus" {
         cacheWalkIdentity,
     );
     defer {
-        for (out.items) |*entry| entry.deinit(gpa);
+        const mapped_item_count_max = out.items.len;
+        for (out.items[0..mapped_item_count_max]) |*entry| entry.deinit(gpa);
         out.deinit(gpa);
     }
     try std.testing.expectEqual(@as(usize, 6), out.items.len);
     const ids = [_]u32{ 0, 2, 5, 0, 2, 5 };
     const indices = [_]i32{ 0, 0, 1, 1, 0, 1 };
     const counts = [_]i32{ 2, 0, 0, 2, 0, 0 };
-    for (out.items, 0..) |entry, index| {
+    const expected_item_count_max = ids.len;
+    for (out.items[0..expected_item_count_max], 0..) |entry, index| {
         try std.testing.expectEqual(fixtureId(ids[index]), entry.id);
         try std.testing.expectEqual(@as(usize, if (index < 3) 7 else 11), entry.adapter_id);
         try std.testing.expectEqual(indices[index], entry.index_in_parent);
@@ -3264,7 +3287,10 @@ fn allocatingCacheWalk(gpa: std.mem.Allocator, comptime mode: enum {
 }) !void {
     // Keep tree construction outside fail-N so each failure targets collector or mapper storage.
     const backing = std.testing.allocator;
-    var tree = try cacheWalkTree(backing, true, mode == .query_error);
+    var tree = try cacheWalkTree(backing, .{
+        .focused = true,
+        .broken_label = mode == .query_error,
+    });
     defer tree.deinit();
     var app = try AppContext.init(backing, "Cache fixture");
     defer app.deinit();
@@ -3273,7 +3299,8 @@ fn allocatingCacheWalk(gpa: std.mem.Allocator, comptime mode: enum {
     try app.pushAdapter(7, &context);
     if (mode == .success) {
         // Twelve entries force output growth after earlier items own both input and output buffers.
-        for (8..11) |adapter_id| try app.pushAdapter(adapter_id, &context);
+        const adapter_id_end_max = 11;
+        for (8..adapter_id_end_max) |adapter_id| try app.pushAdapter(adapter_id, &context);
     }
     const mapper = if (mode == .mapper_error) cacheWalkRejectItem else cacheWalkMapItem;
     var out = PlatformRoot.init(&app).mapDescendantCacheNodes(
@@ -3292,7 +3319,8 @@ fn allocatingCacheWalk(gpa: std.mem.Allocator, comptime mode: enum {
         },
     };
     defer {
-        for (out.items) |*item| cacheWalkReleaseItem(gpa, item);
+        const mapped_item_count_max = out.items.len;
+        for (out.items[0..mapped_item_count_max]) |*item| cacheWalkReleaseItem(gpa, item);
         out.deinit(gpa);
     }
     try std.testing.expect(mode == .success);
