@@ -1,12 +1,9 @@
 //! Build wiring for zaccesskit.
 //!
-//! **What this build publishes.** One module, `zaccesskit`, rooted at
-//! `src/root.zig`. A dependent package reaches it as
-//! `dep.module("zaccesskit")`; no executable and no C artifact exist yet, so
-//! `dep.artifact("zaccesskit")` is unsupported and `zig-out/bin` stays empty.
-//! The `test` tree is built and is named in `.paths`, so a packaged copy runs
-//! its own gate. `docs/40-plan.md` names the milestone that adds the C ABI
-//! artifact, and that artifact is not declared before it exists.
+//! **What this build publishes.** `dep.module("zaccesskit")` imports the Zig
+//! surface. `dep.artifact("zaccesskit")` links the C library and supplies
+//! `zaccesskit.h`. `-Dlinkage=static` is the default. `-Dlinkage=dynamic` selects
+//! the same C surface as a shared library.
 //!
 //! **Compiler.** `build.zig.zon` declares `.minimum_zig_version = "0.16.0"`.
 //! That is a lower bound, not the supported compiler. Zig 0.16.0 is the line
@@ -37,6 +34,11 @@ const test_address_space_kb: u32 = 4 * 1024 * 1024;
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
+    const linkage = b.option(
+        std.builtin.LinkMode,
+        "linkage",
+        "C library linkage: static (default) or dynamic",
+    ) orelse .static;
 
     // zio is the async runtime the port is built around. It is a module-level
     // import rather than a whole-package import: only the library needs a
@@ -73,7 +75,7 @@ pub fn build(b: *std.Build) void {
     const mod = b.addModule("zaccesskit", .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
-        .optimize = .Debug,
+        .optimize = optimize,
         .imports = &.{
             .{ .name = "zio", .module = zio.module("zio") },
             .{ .name = "build_options", .module = options.createModule() },
@@ -81,17 +83,88 @@ pub fn build(b: *std.Build) void {
         },
     });
 
-    // Library tests, once per safety mode. Both modes belong to the gate
-    // because the house gate runs a plain `zig build test` with no
-    // `-Doptimize`, so an optimized-only failure cannot slip past a Debug-only
-    // run. The Debug shard is the published module itself, so a change that
-    // breaks `dep.module("zaccesskit")` breaks the gate. A module's mode is
-    // fixed at creation, so ReleaseSafe needs a private equivalent.
+    const library = b.addLibrary(.{
+        .name = "zaccesskit",
+        .linkage = linkage,
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("capi_root.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+            .imports = &.{
+                .{ .name = "zio", .module = zio.module("zio") },
+                .{ .name = "build_options", .module = options.createModule() },
+                .{ .name = "win32", .module = win32.module("win32") },
+            },
+        }),
+    });
+    library.installHeader(b.path("include/zaccesskit.h"), "zaccesskit.h");
+    b.installArtifact(library);
+
+    // The gate modes stay fixed even when a consumer selects another mode.
+    const debug_module = if (optimize == .Debug) mod else b.createModule(.{
+        .root_source_file = b.path("src/root.zig"),
+        .target = target,
+        .optimize = .Debug,
+        .imports = &.{
+            .{ .name = "zio", .module = zio.module("zio") },
+            .{ .name = "build_options", .module = options.createModule() },
+            .{ .name = "win32", .module = win32.module("win32") },
+        },
+    });
     const test_step = b.step("test", "Run the library tests in Debug and ReleaseSafe");
+
+    const test_c_step = b.step("test-c", "Link and run the offline C11 consumer");
+    const supports_c_run = target.query.isNative() or target.result.os.tag == .linux;
+    const c_consumer_run: ?*std.Build.Step.Run = if (supports_c_run) run: {
+        const c_consumer = b.addExecutable(.{
+            .name = "c-consumer",
+            .root_module = b.createModule(.{
+                .target = target,
+                .optimize = optimize,
+                .link_libc = true,
+            }),
+        });
+        c_consumer.root_module.addCSourceFiles(.{
+            .files = &.{"test/c_consumer/consumer.c"},
+            .flags = &.{ "-std=c11", "-Wall", "-Wextra", "-Werror" },
+        });
+        c_consumer.root_module.linkLibrary(library);
+        const c_run = b.addRunArtifact(c_consumer);
+        c_run.has_side_effects = true;
+        test_c_step.dependOn(&c_run.step);
+        if (target.query.isNative()) test_step.dependOn(&c_run.step);
+        break :run c_run;
+    } else unavailable: {
+        const unsupported = b.addFail("test-c requires a native target or a Linux foreign target");
+        test_c_step.dependOn(&unsupported.step);
+        break :unavailable null;
+    };
+
+    // Compile separately so external profilers can run the emitted binary.
+    // Use -Doptimize=ReleaseSafe for a benchmark with safety checks enabled.
+    const benchmark = b.addExecutable(.{
+        .name = "consumer-bench",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("consumer_bench_root.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "zaccesskit", .module = mod },
+            },
+        }),
+    });
+    const bench_build_step = b.step("bench-build", "Compile the consumer benchmark without running it");
+    bench_build_step.dependOn(&benchmark.step);
+    const bench_step = b.step("bench", "Run the consumer benchmark without internal timing");
+    const benchmark_run = b.addRunArtifact(benchmark);
+    benchmark_run.has_side_effects = true;
+    if (b.args) |args| benchmark_run.addArgs(args);
+    bench_step.dependOn(&benchmark_run.step);
 
     const debug_tests = b.addTest(.{
         .name = "test-Debug",
-        .root_module = mod,
+        .root_module = debug_module,
     });
     test_step.dependOn(&addCeilingedRun(b, "test-Debug", debug_tests).step);
 
@@ -109,6 +182,119 @@ pub fn build(b: *std.Build) void {
         }),
     });
     test_step.dependOn(&addCeilingedRun(b, "test-ReleaseSafe", release_tests).step);
+
+    const bench_test_step = b.step("bench-test", "Test the benchmark in Debug and ReleaseSafe");
+    const benchmark_test_modes = [_]std.builtin.OptimizeMode{ .Debug, .ReleaseSafe };
+    for (benchmark_test_modes) |mode| {
+        const name = b.fmt("bench-test-{s}", .{@tagName(mode)});
+        const benchmark_tests = b.addTest(.{
+            .name = name,
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("consumer_bench_root.zig"),
+                .target = target,
+                .optimize = mode,
+                .imports = &.{
+                    .{
+                        .name = "zaccesskit",
+                        .module = if (mode == .Debug) debug_module else release_tests.root_module,
+                    },
+                },
+            }),
+        });
+        const benchmark_test_run = addCeilingedRun(b, name, benchmark_tests);
+        bench_test_step.dependOn(&benchmark_test_run.step);
+        test_step.dependOn(&benchmark_test_run.step);
+    }
+
+    const integration_step = b.step(
+        "integration",
+        "Run the offline application roundtrip in Debug and ReleaseSafe",
+    );
+    const integration_modes = [_]std.builtin.OptimizeMode{ .Debug, .ReleaseSafe };
+    for (integration_modes) |mode| {
+        const name = b.fmt("integration-{s}", .{@tagName(mode)});
+        const integration_tests = b.addTest(.{
+            .name = name,
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("integration_root.zig"),
+                .target = target,
+                .optimize = mode,
+                .link_libc = true,
+                .imports = &.{
+                    .{ .name = "zio", .module = zio.module("zio") },
+                    .{ .name = "build_options", .module = options.createModule() },
+                    .{ .name = "win32", .module = win32.module("win32") },
+                },
+            }),
+        });
+        const integration_run = addCeilingedRun(b, name, integration_tests);
+        integration_step.dependOn(&integration_run.step);
+        test_step.dependOn(&integration_run.step);
+    }
+
+    const reference_step = b.step(
+        "reference",
+        "Run the pinned reference fixtures in Debug and ReleaseSafe",
+    );
+    const reference_modes = [_]std.builtin.OptimizeMode{ .Debug, .ReleaseSafe };
+    for (reference_modes) |mode| {
+        const name = b.fmt("reference-{s}", .{@tagName(mode)});
+        const reference_tests = b.addTest(.{
+            .name = name,
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("reference_root.zig"),
+                .target = target,
+                .optimize = mode,
+                .link_libc = true,
+                .imports = &.{
+                    .{ .name = "zio", .module = zio.module("zio") },
+                    .{ .name = "build_options", .module = options.createModule() },
+                    .{ .name = "win32", .module = win32.module("win32") },
+                },
+            }),
+        });
+        const reference_run = addCeilingedRun(b, name, reference_tests);
+        reference_step.dependOn(&reference_run.step);
+        test_step.dependOn(&reference_run.step);
+    }
+
+    const integration_program = b.addExecutable(.{
+        .name = "integration-run",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("integration_root.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+            .imports = &.{
+                .{ .name = "zio", .module = zio.module("zio") },
+                .{ .name = "build_options", .module = options.createModule() },
+                .{ .name = "win32", .module = win32.module("win32") },
+            },
+        }),
+    });
+    const integration_program_run = b.addRunArtifact(integration_program);
+    integration_program_run.has_side_effects = true;
+    const integration_run_step = b.step("integration-run", "Run the offline application scenario");
+    integration_run_step.dependOn(&integration_program_run.step);
+
+    const reference_program = b.addExecutable(.{
+        .name = "reference-run",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("reference_root.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+            .imports = &.{
+                .{ .name = "zio", .module = zio.module("zio") },
+                .{ .name = "build_options", .module = options.createModule() },
+                .{ .name = "win32", .module = win32.module("win32") },
+            },
+        }),
+    });
+    const reference_program_run = b.addRunArtifact(reference_program);
+    reference_program_run.has_side_effects = true;
+    const reference_run_step = b.step("reference-run", "Run the pinned reference fixture checks");
+    reference_run_step.dependOn(&reference_program_run.step);
 
     // The foreign matrix. This step runs the Debug shard through the build
     // system's own runner selection, which is native for the host and
@@ -142,6 +328,9 @@ pub fn build(b: *std.Build) void {
     // A cached run executes no tests and cannot prove execution coverage.
     cross_run.has_side_effects = true;
     cross_test_step.dependOn(&cross_run.step);
+    if (target.result.os.tag == .linux) {
+        if (c_consumer_run) |c_run| cross_test_step.dependOn(&c_run.step);
+    }
 
     // The fuzz and adversarial harness. Its module root is `fuzz_root.zig` at
     // the repository root and not a file under `test/`, because a module's
@@ -213,9 +402,7 @@ pub fn build(b: *std.Build) void {
     // published module so `src/capi/platform.zig` owns the guard logic rather
     // than a second copy of it living in the tool.
     //
-    // Debug, and the same module the Debug test shard uses: the sweep reads
-    // the same declarations the tests compile, and a mode that analysed a
-    // different set would be measuring something nobody builds.
+    // Debug matches the fixed Debug gate, independent of consumer options.
     //
     // `has_side_effects` because a cached run executes nothing. A parity check
     // that can report success without having compared anything is the failure
@@ -233,7 +420,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = .Debug,
         .imports = &.{
-            .{ .name = "zaccesskit", .module = mod },
+            .{ .name = "zaccesskit", .module = debug_module },
         },
     });
 
