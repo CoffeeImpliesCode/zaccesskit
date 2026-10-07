@@ -1,21 +1,17 @@
 //! Portable Windows text utilities from AccessKit at
 //! `466e24e252103f4d82bd6fbab98141b551e46e0c`, `adapters/windows/src/util.rs`.
 //! Reach these functions through the Windows namespace's `util` module.
-//! Native SafeArray, HWND, and window-title wrappers remain open and are not implemented here.
 //! Returned descriptions belong to the caller. ARIA buffers belong to one builder until transfer.
 //!
-//! Bounds apply before conversion or copying. This module performs no platform calls or I/O.
+//! This module performs no platform calls or I/O.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const TreeState = @import("../../consumer/tree_state.zig").TreeState;
 const testing = std.testing;
 
-/// Maximum combined UTF-8 description input or serialized ARIA output.
-/// Longer text returns `error.TextTooLong` without changing a builder.
-pub const max_text_bytes: usize = 1024 * 1024;
-
-/// An owned description could not be allocated, decoded, or fit within `max_text_bytes`.
-pub const DescriptionError = error{ OutOfMemory, InvalidUtf8, TextTooLong };
+/// An owned description could not be allocated or decoded as UTF-8.
+pub const DescriptionError = error{ OutOfMemory, InvalidUtf8 };
 
 /// Returns native UTF-16 code units without a terminator.
 /// Upstream `toolkit_description`, `util.rs:413-424`, writes the name then an optional space/version.
@@ -25,14 +21,12 @@ pub const DescriptionError = error{ OutOfMemory, InvalidUtf8, TextTooLong };
 pub fn toolkitDescription(gpa: std.mem.Allocator, state: *const TreeState) DescriptionError![]u16 {
     const name = state.toolkitName();
     const version = state.toolkitVersion();
-    if (name.len > max_text_bytes) return error.TextTooLong;
     var byte_count = name.len;
     if (version) |value| {
-        if (byte_count == max_text_bytes) return error.TextTooLong;
-        byte_count += 1;
-        if (value.len > max_text_bytes - byte_count) return error.TextTooLong;
-        byte_count += value.len;
+        byte_count = std.math.add(usize, byte_count, 1) catch return error.OutOfMemory;
+        byte_count = std.math.add(usize, byte_count, value.len) catch return error.OutOfMemory;
     }
+    _ = std.math.mul(usize, byte_count, @sizeOf(u16)) catch return error.OutOfMemory;
 
     var result: std.ArrayList(u16) = .empty;
     errdefer result.deinit(gpa);
@@ -48,14 +42,17 @@ pub fn toolkitDescription(gpa: std.mem.Allocator, state: *const TreeState) Descr
         );
         result.items.len += version_units;
     }
-    for (result.items) |*unit| {
-        unit.* = std.mem.littleToNative(u16, unit.*);
+    if (comptime builtin.cpu.arch.endian() == .big) {
+        const item_count = result.items.len;
+        for (result.items[0..item_count]) |*unit| {
+            unit.* = std.mem.littleToNative(u16, unit.*);
+        }
     }
     return result.toOwnedSlice(gpa);
 }
 
-/// A complete property could not be allocated or fit within `max_text_bytes`.
-pub const PropertyError = error{ OutOfMemory, TextTooLong };
+/// A complete property could not be allocated.
+pub const PropertyError = error{OutOfMemory};
 
 /// Owns bytes for upstream `AriaProperties`, `util.rs:433-436`.
 /// `bytes` holds complete `name=value` pairs. `need_separator` records at least one completed pair.
@@ -87,23 +84,19 @@ pub const AriaProperties = struct {
 
     /// Adds an exact `name=value` pair, with `;` only after a completed pair.
     /// Upstream `write_property`, `util.rs:446-455`. Empty names and values are accepted.
-    /// Both errors preserve all completed bytes and the separator state.
+    /// Allocation or size overflow preserves all completed bytes and the separator state.
     /// Successful writes can invalidate slices into `bytes`.
     pub fn writeProperty(
         gpa: std.mem.Allocator,
         self: *AriaProperties,
         options: Property,
     ) PropertyError!void {
-        std.debug.assert(self.bytes.items.len <= max_text_bytes);
         std.debug.assert(self.need_separator == (self.bytes.items.len != 0));
-        var remaining = max_text_bytes - self.bytes.items.len;
         const punctuation: usize = if (self.need_separator) 2 else 1;
-        if (remaining < punctuation) return error.TextTooLong;
-        remaining -= punctuation;
-        if (options.name.len > remaining) return error.TextTooLong;
-        remaining -= options.name.len;
-        if (options.value.len > remaining) return error.TextTooLong;
-        const property_bytes = punctuation + options.name.len + options.value.len;
+        const name_bytes = std.math.add(usize, punctuation, options.name.len) catch
+            return error.OutOfMemory;
+        const property_bytes = std.math.add(usize, name_bytes, options.value.len) catch
+            return error.OutOfMemory;
         // Reserve the entire property before exposing even its separator.
         try self.bytes.ensureUnusedCapacity(gpa, property_bytes);
         if (self.need_separator) self.bytes.appendAssumeCapacity(';');
@@ -111,12 +104,11 @@ pub const AriaProperties = struct {
         self.bytes.appendAssumeCapacity('=');
         self.bytes.appendSliceAssumeCapacity(options.value);
         self.need_separator = true;
-        std.debug.assert(self.bytes.items.len <= max_text_bytes);
         std.debug.assert(self.need_separator == (self.bytes.items.len != 0));
     }
 
     /// Adds lowercase `true` or `false`. Upstream `write_bool_property`, `util.rs:457-459`.
-    /// Has the same ownership, bounds, and error guarantees as `writeProperty`.
+    /// Has the same ownership and error guarantees as `writeProperty`.
     pub fn writeBoolProperty(
         gpa: std.mem.Allocator,
         self: *AriaProperties,
@@ -127,16 +119,16 @@ pub const AriaProperties = struct {
     }
 
     /// Adds unsigned decimal digits. Upstream `write_usize_property`, `util.rs:461-463`.
-    /// Has the same ownership, bounds, and error guarantees as `writeProperty`.
+    /// Has the same ownership and error guarantees as `writeProperty`.
     pub fn writeUsizeProperty(
         gpa: std.mem.Allocator,
         self: *AriaProperties,
         name: []const u8,
         value: usize,
     ) PropertyError!void {
-        // A binary bit count bounds the decimal digit count, including zero.
         var buffer: [@bitSizeOf(usize)]u8 = undefined;
-        const decimal = std.fmt.bufPrint(&buffer, "{d}", .{value}) catch unreachable;
+        const decimal = std.fmt.bufPrint(&buffer, "{d}", .{value}) catch
+            unreachable; // A usize's binary bit count bounds its decimal digits, including zero.
         try writeProperty(gpa, self, .{ .name = name, .value = decimal });
     }
 
@@ -170,7 +162,8 @@ test "toolkit description preserves Unicode code units and version presence" {
         .{ .name = "é😀", .version = "β.1", .expected = &.{ 0xe9, 0xd83d, 0xde00, 32, 0x3b2, 46, 49 } },
         .{ .name = "A\x00B", .version = "1", .expected = &.{ 65, 0, 66, 32, 49 } },
     };
-    for (cases) |case| {
+    const case_count = cases.len;
+    for (cases[0..case_count]) |case| {
         var state: TreeState = .{};
         state.info.toolkit_name = case.name;
         state.info.toolkit_version = case.version;
@@ -305,27 +298,6 @@ test "ARIA failed ownership transfer keeps completed bytes until a successful tr
     try testing.expect(!properties.hasProperties());
 }
 
-test "utility bounds include separators equals signs and the present version space" {
-    const input = try testing.allocator.alloc(u8, max_text_bytes);
-    defer testing.allocator.free(input);
-    @memset(input, 'a');
-    var state: TreeState = .{};
-    state.info.toolkit_name = input;
-    state.info.toolkit_version = "";
-    try testing.expectError(error.TextTooLong, toolkitDescription(testing.allocator, &state));
-    var properties = AriaProperties.init();
-    defer properties.deinit(testing.allocator);
-    try AriaProperties.writeProperty(testing.allocator, &properties,
-        .{ .name = "", .value = input[0 .. max_text_bytes - 1] });
-    try testing.expectEqual(@as(usize, max_text_bytes), properties.bytes.items.len);
-    try testing.expectEqual(@as(u8, '='), properties.bytes.items[0]);
-    try testing.expectEqualSlices(u8, input[0 .. max_text_bytes - 1], properties.bytes.items[1..]);
-    try testing.expectError(error.TextTooLong,
-        AriaProperties.writeProperty(testing.allocator, &properties, .{ .name = "", .value = "" }));
-    try testing.expectEqual(@as(usize, max_text_bytes), properties.bytes.items.len);
-    try testing.expect(properties.hasProperties());
-}
-
 fn ariaBoolAllocationFailures(gpa: std.mem.Allocator) !void {
     var properties = AriaProperties.init();
     defer properties.deinit(gpa);
@@ -354,24 +326,11 @@ test "ARIA typed writers fail-N leave an empty builder usable and leak nothing" 
     try testing.checkAllAllocationFailures(testing.allocator, ariaUsizeAllocationFailures, .{});
 }
 
-test "utility bounds and invalid UTF-8 return precise errors" {
+test "toolkit description rejects invalid UTF-8 in name and version" {
     var state: TreeState = .{};
     state.info.toolkit_name = "\xff";
     try testing.expectError(error.InvalidUtf8, toolkitDescription(testing.allocator, &state));
     state.info.toolkit_name = "a";
     state.info.toolkit_version = "\xf0\x9f";
     try testing.expectError(error.InvalidUtf8, toolkitDescription(testing.allocator, &state));
-    const large = try testing.allocator.alloc(u8, max_text_bytes + 1);
-    defer testing.allocator.free(large);
-    @memset(large, 'a');
-    state.info.toolkit_name = large;
-    try testing.expectError(error.TextTooLong, toolkitDescription(testing.allocator, &state));
-    var properties = AriaProperties.init();
-    defer properties.deinit(testing.allocator);
-    try AriaProperties.writeProperty(testing.allocator, &properties, .{ .name = "a", .value = "b" });
-    try testing.expectError(error.TextTooLong,
-        AriaProperties.writeProperty(testing.allocator, &properties,
-            .{ .name = large, .value = "" }));
-    try testing.expectEqualStrings("a=b", properties.bytes.items);
-    try testing.expect(properties.hasProperties());
 }
