@@ -89,7 +89,7 @@
 //! are 8, 2, 2, 21 and 8. Two walks in the exports run over caller-supplied
 //! storage rather than over a domain this file declares, and each is bounded by
 //! the length the caller passed or by the list's own length:
-//! `accesskit_node_set_custom_actions` walks `values[0..length]` and then
+//! `accesskit_node_set_custom_actions` walks the borrowed C array and then
 //! `copies.items`, and `CountingPair.expectOneReleaseEach` walks its own map.
 //!
 //! **What this layer never does.** No `zio`, no `io: std.Io`, no clock, no global
@@ -1047,7 +1047,7 @@ export fn accesskit_node_radio_group(
 /// `include/zaccesskit.h:2331`. Nothing is retained and the caller keeps the
 /// array. `values` may be null when `length` is 0 and must not be null
 /// otherwise, so a null pointer with a non-zero length is a caller precondition
-/// this declaration does not check for.
+/// that `marshal.cArrayToSlice` asserts.
 ///
 /// **A void setter that can fail, which is a port-specific divergence.** The
 /// header says "There is no failure path", and that holds upstream because
@@ -1060,10 +1060,11 @@ export fn accesskit_node_radio_group(
 export fn accesskit_node_set_children(
     node: *handles.accesskit_node,
     length: usize,
-    values: [*]const NodeId,
+    values: [*c]const NodeId,
 ) callconv(.c) void {
     enter();
-    props_ids.setChildren(mutable_properties(node), values[0..length]) catch note_oom();
+    const given = marshal.cArrayToSlice(NodeId, values, length);
+    props_ids.setChildren(mutable_properties(node), given) catch note_oom();
 }
 
 /// Copies `length` identifiers from `values` into the node's `controls`.
@@ -1071,7 +1072,7 @@ export fn accesskit_node_set_children(
 /// `include/zaccesskit.h:2370`. Nothing is retained and the caller keeps the
 /// array. `values` may be null when `length` is 0 and must not be null
 /// otherwise, so a null pointer with a non-zero length is a caller precondition
-/// this declaration does not check for.
+/// that `marshal.cArrayToSlice` asserts.
 ///
 /// **A void setter that can fail, which is a port-specific divergence.** The
 /// header says "There is no failure path", and that holds upstream because
@@ -1084,10 +1085,11 @@ export fn accesskit_node_set_children(
 export fn accesskit_node_set_controls(
     node: *handles.accesskit_node,
     length: usize,
-    values: [*]const NodeId,
+    values: [*c]const NodeId,
 ) callconv(.c) void {
     enter();
-    props_ids.setControls(mutable_properties(node), values[0..length]) catch note_oom();
+    const given = marshal.cArrayToSlice(NodeId, values, length);
+    props_ids.setControls(mutable_properties(node), given) catch note_oom();
 }
 
 /// Copies `length` identifiers from `values` into the node's `described_by`.
@@ -1095,7 +1097,7 @@ export fn accesskit_node_set_controls(
 /// `include/zaccesskit.h:2447`. Nothing is retained and the caller keeps the
 /// array. `values` may be null when `length` is 0 and must not be null
 /// otherwise, so a null pointer with a non-zero length is a caller precondition
-/// this declaration does not check for.
+/// that `marshal.cArrayToSlice` asserts.
 ///
 /// **A void setter that can fail, which is a port-specific divergence.** The
 /// header says "There is no failure path", and that holds upstream because
@@ -1108,10 +1110,11 @@ export fn accesskit_node_set_controls(
 export fn accesskit_node_set_described_by(
     node: *handles.accesskit_node,
     length: usize,
-    values: [*]const NodeId,
+    values: [*c]const NodeId,
 ) callconv(.c) void {
     enter();
-    props_ids.setDescribedBy(mutable_properties(node), values[0..length]) catch note_oom();
+    const given = marshal.cArrayToSlice(NodeId, values, length);
+    props_ids.setDescribedBy(mutable_properties(node), given) catch note_oom();
 }
 
 /// Copies `length` identifiers from `values` into the node's `details`.
@@ -1119,7 +1122,7 @@ export fn accesskit_node_set_described_by(
 /// `include/zaccesskit.h:2409`. Nothing is retained and the caller keeps the
 /// array. `values` may be null when `length` is 0 and must not be null
 /// otherwise, so a null pointer with a non-zero length is a caller precondition
-/// this declaration does not check for.
+/// that `marshal.cArrayToSlice` asserts.
 ///
 /// **A void setter that can fail, which is a port-specific divergence.** The
 /// header says "There is no failure path", and that holds upstream because
@@ -1132,10 +1135,11 @@ export fn accesskit_node_set_described_by(
 export fn accesskit_node_set_details(
     node: *handles.accesskit_node,
     length: usize,
-    values: [*]const NodeId,
+    values: [*c]const NodeId,
 ) callconv(.c) void {
     enter();
-    props_ids.setDetails(mutable_properties(node), values[0..length]) catch note_oom();
+    const given = marshal.cArrayToSlice(NodeId, values, length);
+    props_ids.setDetails(mutable_properties(node), given) catch note_oom();
 }
 
 /// Copies `length` identifiers from `values` into the node's `flow_to`.
@@ -1143,7 +1147,7 @@ export fn accesskit_node_set_details(
 /// `include/zaccesskit.h:2487`. Nothing is retained and the caller keeps the
 /// array. `values` may be null when `length` is 0 and must not be null
 /// otherwise, so a null pointer with a non-zero length is a caller precondition
-/// this declaration does not check for.
+/// that `marshal.cArrayToSlice` asserts.
 ///
 /// **A void setter that can fail, which is a port-specific divergence.** The
 /// header says "There is no failure path", and that holds upstream because
@@ -1156,10 +1160,11 @@ export fn accesskit_node_set_details(
 export fn accesskit_node_set_flow_to(
     node: *handles.accesskit_node,
     length: usize,
-    values: [*]const NodeId,
+    values: [*c]const NodeId,
 ) callconv(.c) void {
     enter();
-    props_ids.setFlowTo(mutable_properties(node), values[0..length]) catch note_oom();
+    const given = marshal.cArrayToSlice(NodeId, values, length);
+    props_ids.setFlowTo(mutable_properties(node), given) catch note_oom();
 }
 
 /// Copies `length` identifiers from `values` into the node's `labelled_by`.
@@ -1167,7 +1172,7 @@ export fn accesskit_node_set_flow_to(
 /// `include/zaccesskit.h:2525`. Nothing is retained and the caller keeps the
 /// array. `values` may be null when `length` is 0 and must not be null
 /// otherwise, so a null pointer with a non-zero length is a caller precondition
-/// this declaration does not check for.
+/// that `marshal.cArrayToSlice` asserts.
 ///
 /// **A void setter that can fail, which is a port-specific divergence.** The
 /// header says "There is no failure path", and that holds upstream because
@@ -1180,10 +1185,11 @@ export fn accesskit_node_set_flow_to(
 export fn accesskit_node_set_labelled_by(
     node: *handles.accesskit_node,
     length: usize,
-    values: [*]const NodeId,
+    values: [*c]const NodeId,
 ) callconv(.c) void {
     enter();
-    props_ids.setLabelledBy(mutable_properties(node), values[0..length]) catch note_oom();
+    const given = marshal.cArrayToSlice(NodeId, values, length);
+    props_ids.setLabelledBy(mutable_properties(node), given) catch note_oom();
 }
 
 /// Copies `length` identifiers from `values` into the node's `owns`.
@@ -1191,7 +1197,7 @@ export fn accesskit_node_set_labelled_by(
 /// `include/zaccesskit.h:2564`. Nothing is retained and the caller keeps the
 /// array. `values` may be null when `length` is 0 and must not be null
 /// otherwise, so a null pointer with a non-zero length is a caller precondition
-/// this declaration does not check for.
+/// that `marshal.cArrayToSlice` asserts.
 ///
 /// **A void setter that can fail, which is a port-specific divergence.** The
 /// header says "There is no failure path", and that holds upstream because
@@ -1204,10 +1210,11 @@ export fn accesskit_node_set_labelled_by(
 export fn accesskit_node_set_owns(
     node: *handles.accesskit_node,
     length: usize,
-    values: [*]const NodeId,
+    values: [*c]const NodeId,
 ) callconv(.c) void {
     enter();
-    props_ids.setOwns(mutable_properties(node), values[0..length]) catch note_oom();
+    const given = marshal.cArrayToSlice(NodeId, values, length);
+    props_ids.setOwns(mutable_properties(node), given) catch note_oom();
 }
 
 /// Copies `length` identifiers from `values` into the node's `radio_group`.
@@ -1215,7 +1222,7 @@ export fn accesskit_node_set_owns(
 /// `include/zaccesskit.h:2602`. Nothing is retained and the caller keeps the
 /// array. `values` may be null when `length` is 0 and must not be null
 /// otherwise, so a null pointer with a non-zero length is a caller precondition
-/// this declaration does not check for.
+/// that `marshal.cArrayToSlice` asserts.
 ///
 /// **A void setter that can fail, which is a port-specific divergence.** The
 /// header says "There is no failure path", and that holds upstream because
@@ -1228,10 +1235,11 @@ export fn accesskit_node_set_owns(
 export fn accesskit_node_set_radio_group(
     node: *handles.accesskit_node,
     length: usize,
-    values: [*]const NodeId,
+    values: [*c]const NodeId,
 ) callconv(.c) void {
     enter();
-    props_ids.setRadioGroup(mutable_properties(node), values[0..length]) catch note_oom();
+    const given = marshal.cArrayToSlice(NodeId, values, length);
+    props_ids.setRadioGroup(mutable_properties(node), given) catch note_oom();
 }
 
 // --- The single node identifiers and the tree identifier --------------------
@@ -4970,7 +4978,7 @@ export fn accesskit_node_clear_word_starts(node: *handles.accesskit_node) callco
 ///
 /// `include/zaccesskit.h:4456`. Nothing is retained. `values` may be null when
 /// `length` is 0 and must not be null otherwise, so a null pointer with a non-
-/// zero length is a caller precondition this declaration does not check for. On
+/// zero length is a caller precondition that `marshal.cArrayToSlice` asserts. On
 /// success `character_lengths` is exactly the copied values.
 ///
 /// **A void setter that can fail, which is a port-specific divergence.** The
@@ -4987,7 +4995,7 @@ export fn accesskit_node_set_character_lengths(
     values: [*c]const u8,
 ) callconv(.c) void {
     enter();
-    const given = values[0..length];
+    const given = marshal.cArrayToSlice(u8, values, length);
     props_vectors.setCharacterLengths(mutable_properties(node), given) catch note_oom();
 }
 
@@ -5013,7 +5021,7 @@ export fn accesskit_node_set_character_positions(
     values: [*c]const f32,
 ) callconv(.c) void {
     enter();
-    const given = values[0..length];
+    const given = marshal.cArrayToSlice(f32, values, length);
     props_vectors.setCharacterPositions(mutable_properties(node), given) catch note_oom();
 }
 
@@ -5039,7 +5047,7 @@ export fn accesskit_node_set_character_widths(
     values: [*c]const f32,
 ) callconv(.c) void {
     enter();
-    const given = values[0..length];
+    const given = marshal.cArrayToSlice(f32, values, length);
     props_vectors.setCharacterWidths(mutable_properties(node), given) catch note_oom();
 }
 
@@ -5047,7 +5055,7 @@ export fn accesskit_node_set_character_widths(
 ///
 /// `include/zaccesskit.h:4488`. Nothing is retained. `values` may be null when
 /// `length` is 0 and must not be null otherwise, so a null pointer with a non-
-/// zero length is a caller precondition this declaration does not check for. On
+/// zero length is a caller precondition that `marshal.cArrayToSlice` asserts. On
 /// success `word_starts` is exactly the copied values.
 ///
 /// **A void setter that can fail, which is a port-specific divergence.** The
@@ -5064,7 +5072,7 @@ export fn accesskit_node_set_word_starts(
     values: [*c]const u8,
 ) callconv(.c) void {
     enter();
-    const given = values[0..length];
+    const given = marshal.cArrayToSlice(u8, values, length);
     props_vectors.setWordStarts(mutable_properties(node), given) catch note_oom();
 }
 
@@ -6147,7 +6155,7 @@ export fn accesskit_node_set_custom_actions(
     // adopting it, so what it stores is never one of these description buffers
     // and none of them moves to the property.
     defer releaseActionCopies(gpa, &copies);
-    for (values[0..length]) |slot| {
+    for (marshal.cArrayToSlice(?*CustomAction, values, length)) |slot| {
         const handle = slot orelse return;
         var fresh = action_request.customActionClone(gpa, handle) catch {
             note_oom();
@@ -6263,7 +6271,7 @@ const export_signatures = .{
         fn (
             node: *handles.accesskit_node,
             length: usize,
-            values: [*]const NodeId,
+            values: [*c]const NodeId,
         ) callconv(.c) void,
     },
     .{
@@ -6271,7 +6279,7 @@ const export_signatures = .{
         fn (
             node: *handles.accesskit_node,
             length: usize,
-            values: [*]const NodeId,
+            values: [*c]const NodeId,
         ) callconv(.c) void,
     },
     .{
@@ -6279,7 +6287,7 @@ const export_signatures = .{
         fn (
             node: *handles.accesskit_node,
             length: usize,
-            values: [*]const NodeId,
+            values: [*c]const NodeId,
         ) callconv(.c) void,
     },
     .{
@@ -6287,7 +6295,7 @@ const export_signatures = .{
         fn (
             node: *handles.accesskit_node,
             length: usize,
-            values: [*]const NodeId,
+            values: [*c]const NodeId,
         ) callconv(.c) void,
     },
     .{
@@ -6295,7 +6303,7 @@ const export_signatures = .{
         fn (
             node: *handles.accesskit_node,
             length: usize,
-            values: [*]const NodeId,
+            values: [*c]const NodeId,
         ) callconv(.c) void,
     },
     .{
@@ -6303,7 +6311,7 @@ const export_signatures = .{
         fn (
             node: *handles.accesskit_node,
             length: usize,
-            values: [*]const NodeId,
+            values: [*c]const NodeId,
         ) callconv(.c) void,
     },
     .{
@@ -6311,7 +6319,7 @@ const export_signatures = .{
         fn (
             node: *handles.accesskit_node,
             length: usize,
-            values: [*]const NodeId,
+            values: [*c]const NodeId,
         ) callconv(.c) void,
     },
     .{
@@ -6319,7 +6327,7 @@ const export_signatures = .{
         fn (
             node: *handles.accesskit_node,
             length: usize,
-            values: [*]const NodeId,
+            values: [*c]const NodeId,
         ) callconv(.c) void,
     },
     .{

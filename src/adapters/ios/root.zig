@@ -85,9 +85,9 @@
 //! thirteen functions have no allocator parameter because `include/zaccesskit.h`
 //! gives them none, and the header's promise at `:6459` is that
 //! `accesskit_set_allocator` runs before any other entry point, so the pair
-//! cannot change under the adapter. A block the C ABI handed this module, which
-//! is the `*CTreeUpdate` a tree-update factory returns, is released with
-//! `allocation.release`, which is what `accesskit_tree_update_free` is.
+//! cannot change under the adapter. Callback updates are opaque owning C handles:
+//! the shared conversion destroys the outer handle with its captured allocator
+//! and retains toolkit metadata while either native tree snapshot borrows it.
 //!
 //! **The thread.** `include/zaccesskit.h:5901` says the library calls each
 //! handler on the main thread, and this module adds no lock of its own. The
@@ -110,6 +110,7 @@ const std = @import("std");
 const boundary = @import("../../capi/boundary.zig");
 const action_request = @import("../../capi/action_request.zig");
 const allocation = @import("../../capi/allocation.zig");
+const c_tree_update = @import("../../capi/tree_update.zig");
 const consumer = @import("../../consumer/root.zig");
 const schema = @import("../../schema/root.zig");
 const affine = @import("../../schema/geometry/affine.zig");
@@ -374,6 +375,8 @@ pub const IosAdapter = struct {
     deactivation_userdata: ?*anyopaque,
     /// Which of the three states the adapter is in.
     state: AdapterState,
+    /// Keeps callback toolkit strings alive for both native tree snapshots.
+    metadata_owners: c_tree_update.LiveMetadataOwners = .{},
     /// The observer registered for the nine notifications at
     /// `AK/ios/src/adapter.rs:373`, and removed at `:511`.
     observer: ?*runtime.AnyObject,
@@ -540,6 +543,7 @@ pub fn iosAdapterFree(adapter: *IosAdapter) void {
         adapter.platform.remove_status_observer(adapter.platform.context, observer);
     }
     releaseState(gpa, &adapter.state);
+    adapter.metadata_owners.deinit();
     adapter.platform.release(adapter.platform.context);
     gpa.destroy(adapter);
 }
@@ -553,14 +557,12 @@ pub fn iosAdapterFree(adapter: *IosAdapter) void {
 /// called. The caller owns a non-null result and must pass it to
 /// `accesskit_ios_queued_events_raise`, which also releases it.
 ///
-/// **The update arrives by transfer.** The factory built it and handed it over,
-/// so this function owns the block: `takeTransferredUpdate` copies the value
-/// out and returns the block to the declared allocator, which is what
-/// `accesskit_tree_update_free` is, and then either a tree takes the value or
-/// this function releases it. A `null` return from the factory is a contract
-/// violation, not an answer, and `src/capi/boundary.zig:44-51` says it
-/// terminates the process, which `terminate` below does. Nothing is built on
-/// the `null` path out of this function.
+/// **The update arrives by transfer.** The shared conversion consumes the actual
+/// C handle, destroys its outer block with its captured allocator, and retains
+/// borrowed toolkit metadata until neither native snapshot names it. The native
+/// update is then consumed by a tree or explicitly discarded after reentry.
+/// A `null` factory answer violates `src/capi/boundary.zig:44-51` and terminates
+/// the process. Nothing is built on that path.
 ///
 /// A tree that cannot hold the update leaves the adapter in the state it was
 /// in, sets `accesskit_last_error` to `out_of_memory`, and returns `null`.
@@ -580,7 +582,11 @@ pub fn iosAdapterUpdateIfActive(
     const block = handed orelse {
         terminate();
     };
-    const update = takeTransferredUpdate(block);
+    defer adapter.metadata_owners.reap(currentTree(adapter));
+    const update = adapter.metadata_owners.consume(adapter.gpa, block, currentTree(adapter)) catch {
+        allocation.failWith(.out_of_memory);
+        return null;
+    };
     switch (adapter.state) {
         .inactive => {
             // A re-entrant call deactivated the adapter while the factory ran.
@@ -1326,8 +1332,17 @@ fn getOrInitContext(adapter: *IosAdapter) ?*Tree {
         .placeholder => |tree| return tree,
         .active => |tree| return tree,
     }
+    defer adapter.metadata_owners.reap(currentTree(adapter));
     if (adapter.activation_handler(adapter.activation_userdata)) |block| {
-        const tree = buildTree(adapter.gpa, takeTransferredUpdate(block)) orelse {
+        const update = adapter.metadata_owners.consume(
+            adapter.gpa,
+            block,
+            currentTree(adapter),
+        ) catch {
+            allocation.failWith(.out_of_memory);
+            return null;
+        };
+        const tree = buildTree(adapter.gpa, update) orelse {
             allocation.failWith(.out_of_memory);
             return null;
         };
@@ -1357,6 +1372,7 @@ fn tryDeactivate(adapter: *IosAdapter) void {
         .placeholder, .active => {},
     }
     releaseState(adapter.gpa, &adapter.state);
+    adapter.metadata_owners.reap(currentTree(adapter));
     adapter.deactivation_handler(adapter.deactivation_userdata);
 }
 
@@ -1376,19 +1392,12 @@ fn releaseTree(gpa: Allocator, tree: *Tree) void {
     gpa.destroy(tree);
 }
 
-/// Takes the update a factory handed over and returns its block.
-///
-/// The factory built the update and transferred it, which
-/// `src/capi/boundary.zig:44-51` states, so the block is this module's to
-/// release. The value is a copy of the struct and not of the storage, so the
-/// nodes and the array survive the release and the caller still owns them.
-/// Releasing the block is what `accesskit_tree_update_free` is, and it reads the
-/// head the block carries, so it must be `allocation.release` and not
-/// `gpa.free`.
-fn takeTransferredUpdate(block: *boundary.CTreeUpdate) boundary.CTreeUpdate {
-    const update = block.*;
-    allocation.release(block);
-    return update;
+/// Returns the tree whose committed and working snapshots can borrow metadata.
+fn currentTree(adapter: *const IosAdapter) ?*const Tree {
+    return switch (adapter.state) {
+        .inactive => null,
+        .placeholder, .active => |tree| tree,
+    };
 }
 
 /// Builds a tree from `update`, which the call consumes on every path.
@@ -1397,7 +1406,7 @@ fn takeTransferredUpdate(block: *boundary.CTreeUpdate) boundary.CTreeUpdate {
 /// which is the contract at `consumer/tree.zig:267-283`, so a caller must not
 /// release it again. `null` means the tree could not be built and the update is
 /// already gone.
-fn buildTree(gpa: Allocator, update: boundary.CTreeUpdate) ?*Tree {
+fn buildTree(gpa: Allocator, update: schema.TreeUpdate) ?*Tree {
     const slot = gpa.create(Tree) catch {
         var owned = update;
         owned.deinit(gpa);
@@ -1415,8 +1424,8 @@ fn buildTree(gpa: Allocator, update: boundary.CTreeUpdate) ?*Tree {
 ///
 /// It is a window with no children, focused on itself, and `error.OutOfMemory`
 /// leaves nothing allocated.
-fn placeholderUpdate(gpa: Allocator) Allocator.Error!boundary.CTreeUpdate {
-    var update: boundary.CTreeUpdate = .{};
+fn placeholderUpdate(gpa: Allocator) Allocator.Error!schema.TreeUpdate {
+    var update: schema.TreeUpdate = .{};
     errdefer update.deinit(gpa);
     var node = schema.Node.init(gpa, .window);
     errdefer node.deinit();
@@ -1440,7 +1449,7 @@ fn treeFocusId(tree: *const Tree) ?FullNodeId {
 ///
 /// `null` when the update carries no tree data, because then the update is not
 /// the first one of a tree and the tree it follows keeps the focus it had.
-fn treeUpdateFocusId(update: boundary.CTreeUpdate) ?FullNodeId {
+fn treeUpdateFocusId(update: schema.TreeUpdate) ?FullNodeId {
     if (update.tree == null) return null;
     return FullNodeId.init(update.focus, consumer.tree_index.TreeIndex.init(0));
 }
@@ -2565,7 +2574,7 @@ const ActivationFixture = struct {
     /// a C caller would use.
     gpa: Allocator,
     /// The update the next call hands over, or `null` for the ordinary "no tree".
-    answer: ?boundary.CTreeUpdate = null,
+    answer: ?schema.TreeUpdate = null,
     /// How many times the handler ran.
     calls: usize = 0,
 };
@@ -2580,10 +2589,10 @@ fn activationHandler() boundary.ActivationHandler {
             const built = fixture.answer orelse return null;
             // A fixture that cannot allocate answers "no tree", and the test
             // then fails on the state it expected rather than on the fixture.
-            const block = allocation.create(boundary.CTreeUpdate) catch return null;
-            block.* = built;
+            const block = fixture.gpa.create(c_tree_update.accesskit_tree_update) catch return null;
+            block.* = .{ .gpa = fixture.gpa, .update = built, .info = null };
             fixture.answer = null;
-            return block;
+            return @ptrCast(block);
         }
     }.call;
 }
@@ -2666,7 +2675,7 @@ const FactoryFixture = struct {
     /// none. The field goes to `null` when a call takes the update, because the
     /// update arrives by transfer and the fixture cannot hand the same one over
     /// twice.
-    answer: ?boundary.CTreeUpdate = null,
+    answer: ?schema.TreeUpdate = null,
     /// How many times the factory ran.
     calls: usize = 0,
 
@@ -2699,10 +2708,10 @@ fn updateFactory() boundary.TreeUpdateFactory {
                 return null));
             fixture.calls += 1;
             const built = fixture.answer orelse return null;
-            const block = allocation.create(boundary.CTreeUpdate) catch return null;
-            block.* = built;
+            const block = fixture.gpa.create(c_tree_update.accesskit_tree_update) catch return null;
+            block.* = .{ .gpa = fixture.gpa, .update = built, .info = null };
             fixture.answer = null;
-            return block;
+            return @ptrCast(block);
         }
     }.call;
 }
@@ -2722,8 +2731,8 @@ fn fixtureUpdate(
     children: []const schema.NodeId,
     focus: schema.NodeId,
     dress_first: bool,
-) Allocator.Error!boundary.CTreeUpdate {
-    var update: boundary.CTreeUpdate = .{};
+) Allocator.Error!schema.TreeUpdate {
+    var update: schema.TreeUpdate = .{};
     errdefer update.deinit(gpa);
     const root = schema.Node.init(gpa, root_role);
     try update.pushNode(gpa, .{ .value = 0 }, root);
@@ -2755,6 +2764,7 @@ fn teardown(adapter: *IosAdapter) void {
         adapter.platform.remove_status_observer(adapter.platform.context, observer);
     }
     releaseState(gpa, &adapter.state);
+    adapter.metadata_owners.deinit();
     adapter.platform_nodes.deinit();
     adapter.platform.release(adapter.platform.context);
     gpa.destroy(adapter);
@@ -3607,19 +3617,80 @@ test "a second subclassing adapter on the same view is refused and changes nothi
     try testing.expectEqual(@as(usize, 1), state.platform_releases);
 }
 
-test "the transferred update survives the release of the block the factory handed over" {
+test "the transferred C handle preserves its native update contents" {
     const gpa = testing.allocator;
-    const built = try fixtureUpdate(gpa, .window, &.{.{ .value = 1 }}, .{ .value = 1 }, true);
-    const block = try allocation.create(boundary.CTreeUpdate);
-    block.* = built;
-    const taken = takeTransferredUpdate(block);
-    // The nodes are still there after the block went back to the declared
-    // allocator, which is what `accesskit_tree_update_free` does.
+    const block = blk: {
+        const handle = try c_tree_update.treeUpdateWithFocus(gpa, 1);
+        errdefer handle.deinit();
+        handle.update = try fixtureUpdate(gpa, .window, &.{.{ .value = 1 }}, .{ .value = 1 }, true);
+        break :blk handle;
+    };
+    var metadata_owners: c_tree_update.LiveMetadataOwners = .{};
+    defer metadata_owners.deinit();
+    var taken = try metadata_owners.consume(gpa, @ptrCast(block), null);
+    defer taken.deinit(gpa);
     try testing.expectEqual(@as(usize, 2), taken.nodes.items.len);
+    try testing.expectEqual(@as(u64, 0), taken.nodes.items[0].node_id.value);
+    try testing.expectEqual(schema.Role.window, taken.nodes.items[0].node.role);
+    try testing.expectEqualSlices(
+        schema.NodeId,
+        &.{.{ .value = 1 }},
+        schema.ids_props.children(&taken.nodes.items[0].node.properties),
+    );
+    try testing.expectEqual(@as(u64, 1), taken.nodes.items[1].node_id.value);
+    try testing.expectEqual(schema.Role.button, taken.nodes.items[1].node.role);
+    try testing.expectEqualStrings(
+        "OK",
+        schema.strings.label(&taken.nodes.items[1].node.properties).?,
+    );
     try testing.expectEqual(@as(u64, 1), taken.focus.value);
     try testing.expect(taken.tree != null);
-    var owned = taken;
-    owned.deinit(gpa);
+    metadata_owners.reap(null);
+}
+
+fn callbackMetadataFixture(gpa: Allocator) !*c_tree_update.accesskit_tree_update {
+    const c_tree_info = @import("../../capi/tree_info.zig");
+    const handle = try c_tree_update.treeUpdateWithFocus(gpa, 0);
+    errdefer handle.deinit();
+    handle.update = try fixtureUpdate(gpa, .window, &.{}, .{ .value = 0 }, false);
+    const info = blk: {
+        const owned_info = try c_tree_info.treeInfoNew(gpa, 0);
+        errdefer owned_info.deinit();
+        try c_tree_info.treeInfoSetToolkitName(owned_info, "ios-toolkit");
+        try c_tree_info.treeInfoSetToolkitVersion(owned_info, "1");
+        break :blk owned_info;
+    };
+    handle.setTreeInfo(info);
+    return handle;
+}
+
+fn callbackMetadataAllocationFailure(gpa: Allocator) !void {
+    const handle = try callbackMetadataFixture(gpa);
+    defer handle.deinit();
+}
+
+test "callback metadata fixture releases partial ownership at every allocation failure" {
+    try testing.checkAllAllocationFailures(
+        testing.allocator,
+        callbackMetadataAllocationFailure,
+        .{},
+    );
+}
+
+test "consuming a real C handle retains toolkit metadata until its native tree dies" {
+    const gpa = testing.allocator;
+    const block = try callbackMetadataFixture(gpa);
+    var metadata_owners: c_tree_update.LiveMetadataOwners = .{};
+    defer metadata_owners.deinit();
+    const update = try metadata_owners.consume(gpa, @ptrCast(block), null);
+    const tree = buildTree(gpa, update) orelse return error.NoTree;
+    defer {
+        releaseTree(gpa, tree);
+        metadata_owners.reap(null);
+    }
+    metadata_owners.reap(tree);
+    try testing.expectEqualStrings("ios-toolkit", tree.state.info.toolkit_name.?);
+    try testing.expectEqualStrings("1", tree.state.info.toolkit_version.?);
 }
 
 test "the queued events handle is released by raising it" {

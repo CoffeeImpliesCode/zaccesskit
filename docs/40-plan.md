@@ -97,6 +97,49 @@ in `docs/31-c-abi-design.md` section 1 apply here too, with one addition: every
 statement about the port's own future behaviour is **advice**, and nothing in
 this document rises above that.
 
+### 1.2 Current build routes
+
+These commands select declared build steps.
+`docs/50-verification.md` records observed results.
+This table does not repeat the house gate command list.
+
+| Command | Contract |
+|---|---|
+| `zig build -Doptimize=ReleaseSafe` | Install the static C library and `zig-out/include/zaccesskit.h`. The native module uses the selected target and mode |
+| `zig build -Doptimize=ReleaseSafe -Dlinkage=dynamic` | Install the dynamic C library and header |
+| `zig build test-c -Doptimize=ReleaseSafe` | Link and run the offline C11 consumer against the selected library |
+| `zig build integration` | Run the pure application-model command-to-Tree update tests in Debug and ReleaseSafe |
+| `zig build integration-run -Doptimize=ReleaseSafe` | Run the exact eight-node offline application scenario |
+| `zig build reference` | Load the pinned, hand-recorded JSON fixtures in Debug and ReleaseSafe |
+| `zig build reference-run -Doptimize=ReleaseSafe` | Check fixture length, SHA-256, provenance, and exact output for all twelve cases |
+| `zig build bench-test` | Run the benchmark harness tests in Debug and ReleaseSafe |
+| `zig build bench-build -Doptimize=ReleaseSafe` | Compile `consumer-bench` without a run. The build reports its cache artifact |
+| `zig build bench -Doptimize=ReleaseSafe -- --workload snapshot --shape balanced --nodes 65536 --work-units 8` | Run the deterministic snapshot workload without internal timing |
+| `zig build test-c -Dtarget=aarch64-linux -Doptimize=ReleaseSafe -fqemu` | Link and run the Linux C consumer through QEMU user mode |
+
+`test` also runs the integration and reference shards.
+On a native target, it runs the linked C consumer.
+`cross-test` also runs that consumer on Linux targets.
+Foreign Linux execution requires the target runner.
+Without a runner, the run fails rather than counts as compile-only evidence.
+`integration-run`, `reference-run`, and `bench` use Zig runner selection with `-fqemu` for foreign targets.
+The native module route is `dep.module("zaccesskit")`.
+The C library route is `dep.artifact("zaccesskit")`, which carries its installed header.
+The C artifact explicitly selects LLVM on Zig 0.16.0.
+The native Zig module keeps its existing backend selection.
+This requirement does not lift the accepted PowerPC64 C boundary limit.
+Neither fixture checks nor offline scenarios execute Rust or a native platform accessibility bus.
+Reference checks cover twelve finite, hand-recorded source-derived cases, not an executed Rust oracle or wire-parity proof.
+The separate external-package probe exercised both dependency routes in Debug and ReleaseSafe.
+Static and dynamic linkage each passed nine steps in both modes, for four executed configurations.
+`docs/50-verification.md` section 10.5 records the outputs and no-bus limits.
+Nogui remains source-only and was not executed.
+The corrected-source gate exited 1 with disclosed checker failures and the unsupported PowerPC64 linked-C boundary.
+Section 10.7 records its actual stage results and strict cross summary.
+[Issue #5](https://github.com/CoffeeImpliesCode/zaccesskit/issues/5) is OPEN and tracks the future Zig 0.17 ABI check.
+It does not establish a Zig 0.17 fix.
+
+
 ---
 
 ## 2. The milestones
@@ -224,8 +267,8 @@ nodes, updated nodes, removed nodes, and the tree info.
 | Zig modules created | `src/capi/`, one module per header region, plus `include/accesskit.h` checked in and installed with `Step.Compile.installHeader`. `docs/31-c-abi-design.md` owns the module split and the header wording |
 | Depends on | M1 for the value types, M3 for `ActionRequest` and `TreeUpdate` |
 | Expected size | about 5500 lines of Zig plus about 3200 lines of header |
-| Entry gate | `zig build binding-check` plus `zig-gate` plus one C conformance program |
-| What the gate must prove | Three separate things. `binding-check` compares the header against the Zig exports and fails naming the missing or extra symbol, so the hand-written header cannot drift from the code. A C program compiled by `zig cc` against the installed header links the shared library and calls across all 18 enums, so every export resolves. `zig build` produces `libzaccesskit.so.0.0.0` with `readelf -d` reporting `SONAME [libzaccesskit.so.0]`. |
+| Entry gate | `zig build capi-parity` plus `zig-gate` plus `zig build test-c` |
+| What the gate must prove | Header parity checks names and guarded exports. The linked C11 consumer checks calls and ownership. `zig build` installs the selected static or dynamic C library and header. |
 
 The header is checked in because `-femit-h` returns
 `error: -femit-h is currently broken, see https://github.com/ziglang/zig/issues/9698`
@@ -453,16 +496,16 @@ that one stage.
 
 ### 3.2 The gate per milestone
 
-Two columns. The first is what `zig-gate` alone proves. The second is what the
-milestone must add, because the gate does not run it.
+This table retains planned milestone checks.
+Section 1.2 names current declared routes. `docs/50-verification.md` records runs, not this table.
 
 | Milestone | What `zig-gate` proves | What the milestone must add, and what it proves |
 |---|---|---|
 | M0 | both dependency hashes resolve, stage 3 prints a count, and stage 9 builds and runs five rows | none |
 | M1 | every schema module compiles, lints and passes its own tests | `zig build layout-test`. It compares `@sizeOf` and every field offset of the five `extern struct` types against the C header, and it compares the 182 role discriminants against `ACCESSKIT_ROLE_`. The gate has no way to know a struct is the wrong size. |
-| M2 | the consumer modules compile and pass | `zig build conformance-test`. It loads `test/fixtures/` through the `test/vectors/` harness and asserts the 12 invariants. The gate runs `zig build test`, not `zig build vectors`, so a fixture file that is not loaded is invisible to it. |
+| M2 | the reached consumer tests run | The reference and integration routes in section 1.2 check finite hand-recorded oracles and the application-model update scenario. They do not execute Rust or prove all possible trees. |
 | M3 | the update and handler modules compile and pass | `zig build action-test`. It drives one `ActionRequest` through the channel and back. |
-| M4 | the C sources lint and the shared library is not built by the gate's plain `zig build` | `zig build binding-check`, `zig build abi-conformance`, and a `zig cc` link of the C program against the installed header. `zig-gate` stage 2 runs `zig build` with no argument, so unless M4 puts the library on the default step the gate never links it. |
+| M4 | the default build installs the selected C library and header. Native tests run the linked consumer | The C and parity routes in section 1.2 separate declarations from linked calls and ownership checks. Foreign Linux runs require a runner. |
 | M5 | the D-Bus modules compile under the static analysers | `zig build atspi-bus-test`. It runs the five-step discovery against a private `dbus-daemon` and against the live a11y bus, and the fake-peer suite from `docs/13-atspi-protocol.md:1005-1047`. Neither needs a display server. |
 | M6 | the AT-SPI modules compile | `zig build atspi-live-test`. It needs the a11y bus, and it skips when `AT_SPI_BUS_ADDRESS` is unset. It is not a gate line, so a skip is not a failure. |
 | M7 | nothing about the adapter, because the gate builds for the host target | `zig build-obj -target x86_64-windows`. It proves the adapter names real symbols. |

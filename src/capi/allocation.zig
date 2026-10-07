@@ -299,6 +299,28 @@ pub fn allocator() std.mem.Allocator {
     return std.heap.c_allocator;
 }
 
+/// Reports a shared release domain only for allocators with known context rules.
+/// Unknown custom allocators require migration, even when their vtables match.
+pub fn sameDomain(options: struct {
+    source: std.mem.Allocator,
+    destination: std.mem.Allocator,
+}) bool {
+    const source = options.source;
+    const destination = options.destination;
+    if (source.vtable != destination.vtable) return false;
+    const vtable = source.vtable;
+    // These allocators have no context. Their pointers can be undefined.
+    if (vtable == std.heap.c_allocator.vtable or
+        vtable == std.heap.page_allocator.vtable or
+        vtable == std.heap.smp_allocator.vtable)
+    {
+        return true;
+    }
+    // Only this provider guarantees an initialized pointer to a Pair.
+    if (vtable == &pair_vtable) return source.ptr == destination.ptr;
+    return false;
+}
+
 /// Allocates one `T` and returns it zeroed.
 ///
 /// The caller owns the result and releases it with `release`. `error.OutOfMemory`
@@ -735,4 +757,44 @@ test "every carved block is large enough for its payload" {
             allocator().free(raw[0..head.bytes]);
         }
     }
+}
+
+test "allocator domain equality does not read stateless or unknown contexts" {
+    // Standard stateless allocators can leave their context pointers undefined.
+    const stateless = [_]std.mem.Allocator{
+        std.heap.c_allocator,
+        std.heap.page_allocator,
+        std.heap.smp_allocator,
+    };
+    for (stateless) |gpa| {
+        try testing.expect(sameDomain(.{ .source = gpa, .destination = gpa }));
+    }
+    try testing.expect(!sameDomain(.{
+        .source = std.heap.c_allocator,
+        .destination = std.heap.page_allocator,
+    }));
+
+    // An unknown vtable must migrate even when both allocator values are identical.
+    var custom_vtable = pair_vtable;
+    const custom: std.mem.Allocator = .{ .ptr = undefined, .vtable = &custom_vtable };
+    try testing.expect(!sameDomain(.{ .source = custom, .destination = custom }));
+    try testing.expect(!sameDomain(.{
+        .source = custom,
+        .destination = std.heap.c_allocator,
+    }));
+}
+
+test "registered allocator domains compare only defined pair contexts" {
+    var counters: Counters = .{};
+    useCounters(&counters);
+    defer installAllocator(null, null, null);
+    const registered = allocator();
+    try testing.expect(sameDomain(.{ .source = registered, .destination = allocator() }));
+    var other_pair: Pair = .{
+        .alloc = Counters.allocThunk,
+        .free = Counters.freeThunk,
+        .context = &counters,
+    };
+    const other: std.mem.Allocator = .{ .ptr = &other_pair, .vtable = &pair_vtable };
+    try testing.expect(!sameDomain(.{ .source = registered, .destination = other }));
 }

@@ -8,7 +8,7 @@
 //! cycle, and a cycle at the seam where `@export` runs at `comptime` is the kind
 //! that fails with an error nobody can act on.
 //!
-//! So the shared types live here, in a file that imports nothing but `schema`.
+//! So the shared types live here, in a file that imports only schema and handles.
 //! `platform.zig` imports this and re-exports every name, which keeps every
 //! existing reference in that file working, and every adapter imports this
 //! directly. **Neither side ever imports the other.**
@@ -20,6 +20,7 @@
 //! them in would make this file a second home for a definition that has one.
 
 const schema = @import("../schema/root.zig");
+const handles = @import("handles.zig");
 const std = @import("std");
 
 /// The box the Unix family passes by value. `accesskit_rect` is four `double`
@@ -32,9 +33,9 @@ pub const CRect = schema.Rect;
 
 /// The tree an activation handler and a tree-update factory return.
 ///
-/// `accesskit_tree_update` is an opaque handle at `include/zaccesskit.h:994`
-/// and `schema.TreeUpdate` is the object behind it.
-pub const CTreeUpdate = schema.TreeUpdate;
+/// `accesskit_tree_update` is an opaque owning handle. Its representation and
+/// consuming conversion belong to `tree_update.zig`, not to the native schema.
+pub const CTreeUpdate = handles.accesskit_tree_update;
 
 /// The request an action handler receives. The port's own `extern struct` form
 /// of `accesskit_action_request` is already written at

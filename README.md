@@ -7,6 +7,20 @@ translates each upstream Rust module and each public function into Zig, module
 by module and function by function. It does not wrap, link or call the Rust
 implementation, and it needs no Rust toolchain at any point.
 
+**PowerPC64 C ABI limit:** this publication does not support the PowerPC64 C consumer boundary.
+The linked C consumer crashes on Zig 0.16.0 aggregate-return lowering.
+Independent compiler-only reproductions fail without zaccesskit.
+Pure Zig PowerPC64 tests, all twelve reference cases, and the offline integration scenario passed through QEMU.
+The user accepted publication with this C boundary limit. No compiler change or speculative wrapper is included.
+All checks remain enabled. See `docs/50-verification.md` sections 10.5 and 10.7 for the failing C receipts.
+The corrected-source gate exited 1. Formatting, build, native tests, and AST checks passed.
+External checker failures and the unsupported PowerPC64 C boundary remain disclosed publication limits.
+[Issue #5](https://github.com/CoffeeImpliesCode/zaccesskit/issues/5) is OPEN and tracks the future Zig 0.17 ABI check.
+It does not establish that Zig 0.17 fixes the defect.
+The C artifact requires the LLVM backend on Zig 0.16.0.
+`build.zig` selects it explicitly. Native Zig consumers retain their existing backend selection.
+The self-hosted x86 Debug backend failed five linked-C geometry result checks. The LLVM Debug C artifact passed all 1676.
+
 The async design runs the other way round from what the name suggests.
 `std.Io` is the interface. `zio` is one implementation behind it, in the place
 `std.Io.Threaded` and `std.Io.Uring` sit. Every library signature takes
@@ -90,14 +104,17 @@ Reproduce the reachability with a walk of the `@import` graph from
 
 ### What the run reports, and what it does not
 
-The integration owner reports `zig build test` exiting 0 with 1371 tests passing
-in Debug and in ReleaseSafe, no leaks. That is the owner's observation. This
-README does not repeat a run it did not perform.
+The corrected-source gate passed its native test stage.
+Its strict x86_64 cross row passed all 1653 library tests and all 1676 linked-C checks.
+The full gate exited 1 because external checker failures and the PowerPC64 C boundary failure remain.
+`docs/50-verification.md` section 10.7 records the final stage results and cross counts.
 
-The census above is a different measurement and the two do not agree exactly:
-1425 `test "` declarations sit in the analysis graph against 1371 reported
-passes. A declaration count and a pass count are not the same measurement, and
-the two disagree. Do not treat either figure as a certificate for the other.
+The census above is a historical source measurement, not the final executed test count.
+A declaration count and a pass count are not the same measurement.
+Neither certifies behavior on a real platform accessibility object.
+The reference checks cover twelve finite, hand-recorded, source-derived cases.
+They do not execute a Rust oracle or establish wire parity.
+The translation ledger remains at 57 open rows.
 
 ## Why a direct translation
 
@@ -116,13 +133,49 @@ Run every command inside the devenv shell.
 
 | Command | What it does |
 |---|---|
-| `devenv shell` | Loads `devenv.nix`. It sets `ZIG_GLOBAL_CACHE_DIR`, `GATE_CACHE_DIR` and `GATE_CROSS_OUTPUT` to local disk, and it links `.zig-cache` and `zig-pkg`. `direnv allow` in this directory does the same. |
-| `zig build` | Builds the default step. The default step publishes the module, and `zig-out/` stays empty because the build declares no artifact. |
-| `zig build test` | Runs the `test` step: one Debug shard and one ReleaseSafe shard, each under `ulimit -v 4194304`. |
-| `zig build cross-test` | Builds and runs the Debug shard for every target in `cross-test.profile.sh`. Each row uses the runner `cross-test` selects. The profile refuses a missing runner, so a broken emulator fails the run instead of reporting build-only coverage. |
+| `devenv shell` | Loads `devenv.nix`. It sets `ZIG_GLOBAL_CACHE_DIR`, `GATE_CACHE_DIR` and `GATE_CROSS_OUTPUT` to local disk. It links the two cache paths and `zig-out` to the selected `cacheRoot`. `direnv allow` loads the same configuration. |
+| `zig build -Doptimize=ReleaseSafe` | Install the static C library and `zig-out/include/zaccesskit.h`. Use `-Dlinkage=dynamic` for the dynamic library. |
+| `zig build test` | Run native Debug and ReleaseSafe library, integration, and reference shards. Run the linked offline C consumer on native targets. |
+| `zig build cross-test -Dtarget=aarch64-linux -fqemu` | Run the Debug library shard and linked Linux C consumer through QEMU. `cross-test.profile.sh` supplies the full matrix. |
 | `zig build capi-parity` | Runs the parity tool's own tests, then the sweep that compares `include/zaccesskit.h` against what `src/capi/` exports, per target, with both the header guards and the Zig `comptime` guards evaluated. Exit 0 is parity, 1 a mismatch, 2 something unreadable, 3 a bad command line. |
-| `test/c_consumer/check.sh` | Compiles the C consumer against the header under C11 with `-Wall -Wextra -Wpedantic`, and checks the declaration census. It stops at `-c` and does not link. |
+| `zig build test-c -Doptimize=ReleaseSafe` | Link and run the offline C11 consumer against the real library. |
 | `zig-gate` | The house gate, and the authority on whether a change is acceptable. `devenv shell -- gate` runs the same script. |
+
+`docs/40-plan.md` section 1.2 lists the integration, reference, and benchmark steps.
+They do not require a live accessibility bus.
+
+For a native Zig consumer, add the published module to the consumer module:
+
+```zig
+const accesskit = b.dependency("zaccesskit", .{
+    .target = target,
+    .optimize = optimize,
+});
+exe.root_module.addImport("zaccesskit", accesskit.module("zaccesskit"));
+```
+
+Import it in Zig with `@import("zaccesskit")`.
+For a C consumer, select linkage and link the published artifact:
+
+```zig
+const accesskit = b.dependency("zaccesskit", .{
+    .target = target,
+    .optimize = optimize,
+    .linkage = .static,
+});
+exe.root_module.linkLibrary(accesskit.artifact("zaccesskit"));
+```
+
+Use `#include <zaccesskit.h>` in C.
+The library carries the installed header.
+The module and library honor the selected target and optimization mode.
+
+A separate external package exercised both routes in Debug and ReleaseSafe.
+Static and dynamic linkage each passed all nine build steps in both modes.
+All four configurations executed the Zig and C consumers.
+Its Unix callback probe used actual owning C payloads without a native bus.
+`docs/50-verification.md` section 10.5 records the outputs and limits.
+Nogui remains source-only and was not executed.
 
 `zig-gate` is `~/.local/bin/zig-gate`, 823 lines. It
 runs ten stages in order: `fmt`, `build`, `test`, `ast-check`, `ziglint`,
@@ -131,16 +184,15 @@ with `--cov`. The script exits 0 when every stage passes, 1 when a stage finds
 an issue, and 2 on a usage or environment error. Stage list at `zig-gate:23-33`,
 exit policy at `zig-gate:1-5`.
 
-Two commands in that table are not wired into `build.zig`. `test/fuzz/` and
-`test/c_consumer/check.sh` have no step, so neither runs when the gate runs.
-`test/fuzz/` is four modules and 19 `test "` declarations that import
-`../../src/schema/` by relative path; `grep` finds no reference to either path
-in `build.zig`. Add a step before treating them as coverage.
+`build.zig` wires the committed decoder corpus through `fuzz_root.zig`.
+The native tests replay that corpus in Debug and ReleaseSafe.
+The linked C consumer also runs in the native test route.
+Corpus replay is not mutation fuzzing or native platform execution.
 
-The `powerpc64-linux` row is the only big-endian execution proof in this project.
-The tree serialisation, the action-channel marshalling and the C ABI structs are
-byte layouts, so a big-endian row is the only thing that shows they are written
-correctly (`cross-test.profile.sh:29-33`).
+The `powerpc64-linux` row provides big-endian execution evidence for the pure Zig tests.
+It does not prove the linked C boundary, which crashes with the known compiler ABI defect.
+The corrected-source strict cross run passed x86_64 and AArch64, but failed PowerPC64.
+No row proves communication with a real platform accessibility object.
 
 ### `zig ast-check` reaches further than `zig build test`
 
@@ -154,12 +206,17 @@ warned you first.
 it is the largest of the four at 532 lines, and no stage above `ast-check`
 looks at it.
 
-### The two cache paths must stay symlinks
+### Cache and install paths must stay symlinks
 
-This checkout is on a network filesystem. Zig 0.16.0 cannot keep a cache there,
-so `.zig-cache` and `zig-pkg` are symlinks to `/tmp/cache/zaccesskit/`,
-which is on local disk. Keep them symlinks. `devenv shell` recreates them, so if
-you delete one, run `devenv shell` and not `mkdir`.
+This checkout is on a network filesystem.
+Keep the two cache paths, `.zig-cache` and `zig-pkg`, as symlinks to local disk.
+Keep the install-output path, `zig-out`, as a symlink to local disk too.
+`devenv shell` links them to `${cacheRoot}/build`, `${cacheRoot}/pkg`, and `${cacheRoot}/install`.
+`ZACCESKIT_CACHE_ROOT` selects `cacheRoot` when set.
+Otherwise, the configuration uses `${XDG_CACHE_HOME}/zaccesskit`, then `${HOME}/.cache/zaccesskit-zig`.
+Select a local-disk root. The root is not fixed to `/home/tmp2`.
+If a link is absent, run `devenv shell`, not `mkdir`.
+The shell reports real directories and leaves them unchanged. It does not automatically delete or move their contents.
 
 A real directory for `zig-pkg` produces this error. It was observed in this
 checkout while the path was still a directory on the network filesystem:
@@ -176,15 +233,17 @@ thread N panic: programmer bug caused syscall error: INVAL
 ... in dirRenamePreserveLinux
 ```
 
-Check both paths:
+Check all three paths:
 
 ```sh
-ls -ld .zig-cache zig-pkg
+ls -ld .zig-cache zig-pkg zig-out
 stat -f -c '%T' .
 ```
 
-The first line must show two symlinks. The second must print `nfs` for the
-checkout and `ext2/ext3` for the cache root.
+The first line must show three symlinks. The second reports the checkout filesystem, not the link targets.
+Check the selected root separately. It must use local disk.
+An actual local-scratch shell smoke test confirmed all three links under UID 33156.
+A populated-directory refusal test preserved its sentinel text. Neither test moved or deleted user files.
 
 ## Dependencies
 
@@ -235,16 +294,11 @@ The last rung needs a named reason, such as a macro, an opaque handle or a
 callback with a type the binding cannot represent. `docs/12-accesskit-adapters.md`
 places each host dependency on that ladder.
 
-### `.paths` omits three directories the build reads
+### Packaged build inputs
 
-`build.zig.zon:36-43` packages `build.zig`, `build.zig.zon`, `src`, `docs`,
-`README.md` and `AGENTS.md`. It does not name `include`, `test` or `tools`.
-
-`tools` is the sharper problem, because `build.zig:149` names
-`tools/capi_parity/main.zig` as a module root. A dependent package that fetches
-this one gets a manifest whose build refers to a file the manifest did not ship.
-`include` is the header the whole C ABI implements, and `test` holds the fuzz
-harness and the C consumer. Add all three, or drop the capi-parity step.
+`build.zig.zon:67-81` includes `src`, `include`, `test`, and `tools`.
+It also includes the library and harness roots.
+A packaged consumer can reach the module, C library, installed header, and declared test steps.
 
 ## Where the record is
 

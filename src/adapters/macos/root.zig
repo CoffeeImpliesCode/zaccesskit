@@ -67,6 +67,7 @@
 const std = @import("std");
 
 const boundary = @import("../../capi/boundary.zig");
+const c_tree_update = @import("../../capi/tree_update.zig");
 const action_request = @import("../../capi/action_request.zig");
 const allocation = @import("../../capi/allocation.zig");
 const consumer = @import("../../consumer/root.zig");
@@ -190,6 +191,8 @@ const Context = struct {
     refs: usize,
     /// The tree an application reads.
     tree: consumer.tree.Tree,
+    /// Metadata strings borrowed by the tree, retained with queued contexts.
+    metadata_owners: c_tree_update.LiveMetadataOwners,
     /// The platform seam.
     host: Host,
     /// The handler an action request reaches.
@@ -213,13 +216,20 @@ const Context = struct {
     fn init(
         allocator: Allocator,
         update: schema.TreeUpdate,
+        owners: c_tree_update.LiveMetadataOwners,
         is_view_focused: bool,
         host: Host,
         action_handler: ActionHandler,
         action_userdata: ?*anyopaque,
         view: ?*anyopaque,
     ) (TreeUpdateError || Allocator.Error)!*Context {
-        var tree = try consumer.tree.Tree.init(allocator, update, is_view_focused);
+        var metadata_owners = owners;
+        errdefer metadata_owners.deinit();
+        var tree = consumer.tree.Tree.init(allocator, update, is_view_focused) catch |err| {
+            metadata_owners.reap(null);
+            return err;
+        };
+        metadata_owners.reap(&tree);
         // Registered before the first fallible allocation, so every path below
         // that fails releases the tree rather than leaking it.
         errdefer tree.deinit();
@@ -231,6 +241,7 @@ const Context = struct {
             .allocator = allocator,
             .refs = 1,
             .tree = tree,
+            .metadata_owners = metadata_owners,
             .host = host,
             .action_handler = action_handler,
             .action_userdata = action_userdata,
@@ -239,6 +250,33 @@ const Context = struct {
             .arena = std.heap.ArenaAllocator.init(allocator),
         };
         return context;
+    }
+
+    /// Consumes an actual C handle into a context with its own metadata owners.
+    fn initOwned(
+        allocator: Allocator,
+        owned: *CTreeUpdate,
+        is_view_focused: bool,
+        host: Host,
+        action_handler: ActionHandler,
+        action_userdata: ?*anyopaque,
+        view: ?*anyopaque,
+    ) (TreeUpdateError || Allocator.Error)!*Context {
+        var owners: c_tree_update.LiveMetadataOwners = .{};
+        const update = owners.consume(allocator, owned, null) catch |err| {
+            owners.deinit();
+            return err;
+        };
+        return init(
+            allocator,
+            update,
+            owners,
+            is_view_focused,
+            host,
+            action_handler,
+            action_userdata,
+            view,
+        );
     }
 
     /// Adds one reference.
@@ -261,6 +299,7 @@ const Context = struct {
         var arena = self.arena;
         arena.deinit();
         self.tree.deinit();
+        self.metadata_owners.deinit();
         allocator.destroy(self);
     }
 
@@ -547,7 +586,7 @@ pub const MacosAdapter = struct {
             .inactive => return null,
             .placeholder => |*placeholder| {
                 const update = treeUpdateFromFactory(factory, factory_userdata);
-                const context = Context.init(
+                const context = Context.initOwned(
                     self.allocator,
                     update,
                     placeholder.common.is_view_focused,
@@ -582,7 +621,13 @@ pub const MacosAdapter = struct {
                 var generator = events_mod.EventGenerator.init(self.allocator);
                 defer generator.deinit();
                 const handler = events_mod.slotsOf(&generator);
-                const update = treeUpdateFromFactory(factory, factory_userdata);
+                const owned = treeUpdateFromFactory(factory, factory_userdata);
+                const update = context.metadata_owners.consume(
+                    self.allocator,
+                    owned,
+                    &context.tree,
+                ) catch return null;
+                defer context.metadata_owners.reap(&context.tree);
                 context.tree.updateAndProcessChanges(update, &handler) catch return null;
                 // A slot that failed leaves a partial list, so the handle is
                 // withheld rather than raised short.
@@ -640,9 +685,9 @@ pub const MacosAdapter = struct {
             .inactive => |inactive| {
                 const boxed = activation_handler(activation_userdata);
                 if (boxed) |initial| {
-                    const context = Context.init(
+                    const context = Context.initOwned(
                         self.allocator,
-                        takeUpdate(initial),
+                        initial,
                         inactive.common.is_view_focused,
                         self.host,
                         inactive.common.action_handler,
@@ -661,6 +706,7 @@ pub const MacosAdapter = struct {
                 const context = Context.init(
                     self.allocator,
                     placeholder,
+                    .{},
                     false,
                     self.host,
                     inactive.common.action_handler,
@@ -868,32 +914,8 @@ fn blankPlaceholderUpdate(allocator: Allocator) !schema.TreeUpdate {
 fn treeUpdateFromFactory(
     factory: TreeUpdateFactory,
     factory_userdata: ?*anyopaque,
-) schema.TreeUpdate {
-    const owned = factory(factory_userdata) orelse @trap();
-    return takeUpdate(owned);
-}
-
-/// Takes the update a factory or activation handler returned.
-///
-/// **Ownership.** The handler's pointer is a box it allocated, and the library
-/// owns it: this call copies the value out and frees the box with `gpa`. It
-/// does **not** call `TreeUpdate.deinit` on the value, because
-/// `consumer.tree.Tree` takes the value by value and consumes its node list, so
-/// a `deinit` here would release nodes the tree now owns.
-///
-/// `boundary.CTreeUpdate` is `schema.TreeUpdate`, so the conversion across the
-/// seam is the identity and neither side writes one.
-fn takeUpdate(owned: *CTreeUpdate) schema.TreeUpdate {
-    // The value is taken out field by field rather than as one struct copy, so
-    // that every field the caller keeps is a copy it owns and not a read of
-    // the box that is about to go. `nodes` carries its own allocation and the
-    // three scalars are values, so nothing below names freed storage.
-    const nodes = owned.nodes;
-    const tree = owned.tree;
-    const tree_id = owned.tree_id;
-    const focus = owned.focus;
-    heap().destroy(owned);
-    return .{ .nodes = nodes, .tree = tree, .tree_id = tree_id, .focus = focus };
+) *CTreeUpdate {
+    return factory(factory_userdata) orelse @trap();
 }
 
 /// One posted notification, as `RecordingHost` sees it.
@@ -1693,7 +1715,7 @@ test "the attribute and role tables are reachable and analysed" {
 const AnsweringActivation = struct {
     /// The tree the handler hands over. `null` means it answers "no tree", which
     /// is an ordinary answer and not a failure.
-    tree: ?*schema.TreeUpdate,
+    tree: ?*c_tree_update.accesskit_tree_update,
     /// How many times the handler ran.
     calls: usize,
 };
@@ -1701,7 +1723,9 @@ const AnsweringActivation = struct {
 fn answeringActivation(context: ?*anyopaque) callconv(.c) ?*CTreeUpdate {
     const self: *AnsweringActivation = @ptrCast(@alignCast(context orelse return null));
     self.calls += 1;
-    return self.tree;
+    const owned = self.tree orelse return null;
+    self.tree = null;
+    return @ptrCast(owned);
 }
 
 /// An action handler that counts the requests it received and reads none of
@@ -1793,21 +1817,28 @@ const RequestProbe = struct {
 ///
 /// The update is transferred to the caller, which owns it. **Returns.**
 /// `error.OutOfMemory` from `pushNode` and from `box`.
-fn boxTwoNodeTree(allocator: Allocator, focus: schema.NodeId) !*schema.TreeUpdate {
-    const update = try allocator.create(schema.TreeUpdate);
-    errdefer allocator.destroy(update);
-    update.* = .{};
+fn boxTwoNodeTree(
+    allocator: Allocator,
+    focus: schema.NodeId,
+) !*c_tree_update.accesskit_tree_update {
+    const owned = try allocator.create(c_tree_update.accesskit_tree_update);
+    errdefer allocator.destroy(owned);
+    owned.* = .{ .gpa = allocator, .update = .{}, .info = null };
+    const update = &owned.update;
     errdefer update.deinit(allocator);
     // The child goes in first, and the root declares it, because
     // `consumer.tree_apply` rejects an update that leaves a node unattached.
     try update.pushNode(allocator, child_id, schema.Node.init(allocator, .button));
-    var root_data = schema.Node.init(allocator, .window);
-    errdefer root_data.deinit();
-    try schema.ids_props.setChildren(&root_data.properties, &.{child_id});
+    const root_data = blk: {
+        var node = schema.Node.init(allocator, .window);
+        errdefer node.deinit();
+        try schema.ids_props.setChildren(&node.properties, &.{child_id});
+        break :blk node;
+    };
     try update.pushNode(allocator, root_id, root_data);
     update.tree = schema.TreeInfo.init(root_id);
     update.focus = focus;
-    return update;
+    return owned;
 }
 
 /// A tree update holding an excluded root and `child_count` children under it.
@@ -1828,10 +1859,14 @@ fn boxTwoNodeTree(allocator: Allocator, focus: schema.NodeId) !*schema.TreeUpdat
 ///
 /// The update is transferred to the caller, which owns it. **Returns.**
 /// `error.OutOfMemory` from `pushNode` and from `box`.
-fn boxExcludedRootTree(allocator: Allocator, child_count: usize) !*schema.TreeUpdate {
-    const update = try allocator.create(schema.TreeUpdate);
-    errdefer allocator.destroy(update);
-    update.* = .{};
+fn boxExcludedRootTree(
+    allocator: Allocator,
+    child_count: usize,
+) !*c_tree_update.accesskit_tree_update {
+    const owned = try allocator.create(c_tree_update.accesskit_tree_update);
+    errdefer allocator.destroy(owned);
+    owned.* = .{ .gpa = allocator, .update = .{}, .info = null };
+    const update = &owned.update;
     errdefer update.deinit(allocator);
 
     // The ids are built in place and then handed to `setChildren`, which copies
@@ -1846,13 +1881,31 @@ fn boxExcludedRootTree(allocator: Allocator, child_count: usize) !*schema.TreeUp
         try update.pushNode(allocator, id.*, schema.Node.init(allocator, .button));
     }
 
-    var root_data = schema.Node.init(allocator, .generic_container);
-    errdefer root_data.deinit();
-    try schema.ids_props.setChildren(&root_data.properties, children);
+    const root_data = blk: {
+        var node = schema.Node.init(allocator, .generic_container);
+        errdefer node.deinit();
+        try schema.ids_props.setChildren(&node.properties, children);
+        break :blk node;
+    };
     try update.pushNode(allocator, root_id, root_data);
     update.tree = schema.TreeInfo.init(root_id);
     update.focus = children[0];
-    return update;
+    return owned;
+}
+
+fn callbackFixtureAllocationFailure(allocator: Allocator) !void {
+    const included = try boxTwoNodeTree(allocator, child_id);
+    defer included.deinit();
+    const excluded = try boxExcludedRootTree(allocator, 16);
+    defer excluded.deinit();
+}
+
+test "callback fixture construction releases partial nodes at every allocation failure" {
+    try testing.checkAllAllocationFailures(
+        testing.allocator,
+        callbackFixtureAllocationFailure,
+        .{},
+    );
 }
 
 /// The root identifier the tests build their trees with.
@@ -1863,7 +1916,9 @@ const child_id: schema.NodeId = .{ .value = 2 };
 
 /// A tree update factory that answers with the update it was given.
 fn oneShotFactory(context: ?*anyopaque) callconv(.c) ?*CTreeUpdate {
-    return @ptrCast(@alignCast(context orelse return null));
+    const owned: *c_tree_update.accesskit_tree_update =
+        @ptrCast(@alignCast(context orelse return null));
+    return @ptrCast(owned);
 }
 
 test "an inactive adapter produces no events and no tree" {
@@ -2017,6 +2072,40 @@ test "dropping a context posts one destroyed notification per live node" {
     try testing.expectEqualStrings(
         events_mod.notificationFor(.node_destroyed) orelse return error.NoSuchNotification,
         recorder.posts.items[recorder.count() - 1].notification,
+    );
+}
+
+test "queued events retain callback metadata after the adapter is freed" {
+    const tree_info = @import("../../capi/tree_info.zig");
+    var recorder = RecordingHost.init(std.testing.allocator);
+    defer recorder.deinit();
+    var action: RecordingAction = .{};
+    const adapter = newAdapter(null, true, recordingAction, &action, recorder.host()) orelse
+        return error.NoAdapter;
+    var adapter_live = true;
+    defer if (adapter_live) macosAdapterFree(adapter);
+
+    const owned = try boxTwoNodeTree(std.testing.allocator, child_id);
+    var pending: ?*c_tree_update.accesskit_tree_update = owned;
+    defer if (pending) |update| c_tree_update.treeUpdateFree(update);
+    const info = try tree_info.treeInfoNew(std.testing.allocator, root_id.value);
+    {
+        errdefer info.deinit();
+        try tree_info.treeInfoSetToolkitName(info, "queued toolkit");
+    }
+    owned.setTreeInfo(info);
+    var activation: AnsweringActivation = .{ .tree = owned, .calls = 0 };
+    pending = null;
+    try testing.expect(macosAdapterFocus(adapter, answeringActivation, &activation) != null);
+    const queued = macosAdapterUpdateViewFocusState(adapter, false) orelse
+        return error.NoQueuedEvents;
+    defer macosQueuedEventsRaise(queued);
+    macosAdapterFree(adapter);
+    adapter_live = false;
+    const metadata = queued.context.tree.state.info;
+    try testing.expectEqualStrings(
+        "queued toolkit",
+        metadata.toolkit_name orelse return error.NoToolkitName,
     );
 }
 

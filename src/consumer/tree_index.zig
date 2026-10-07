@@ -33,9 +33,10 @@
 //!
 //! **Ownership.** A `TreeIndexMap` owns its two maps and their backing arrays.
 //! One `deinit` releases both, and the allocator it takes must be the one that
-//! grew them. `cloneInto` builds both copies in scratch and swaps on success,
-//! so a failed copy leaves the destination as the caller passed it. There is no
-//! copy operation: two owners of one pair of maps release it twice.
+//! grew them. `cloneInto` keeps equal assignments in place. For changed
+//! assignments it builds both copies in scratch and swaps on success, so a
+//! failed copy leaves the destination as the caller passed it. There is no
+//! byte-copy operation: two owners of one pair of maps release it twice.
 //!
 //! **Why `TreeIndex.init` takes a `u32` and not a `TreeIndex`-shaped name.**
 //! A Zig type may not carry a member and a method of one name, so a
@@ -250,17 +251,21 @@ pub const TreeIndexMap = struct {
     /// replaces and never merges: a tree `self` held and `source` does not name
     /// is gone when this returns.
     ///
-    /// Both copies are built before `self` is touched, so `error.OutOfMemory`
-    /// leaves `self` as the caller passed it and the caller may retry. On
-    /// success `self` releases its old maps and holds the copies. `gpa` must be
-    /// the allocator both maps were built with. This is upstream's `clone` at
-    /// `tree.rs:25-31` and its `clone_from` at `tree.rs:33-37`, which the
-    /// caller at `tree.rs:705` drives by naming the committed map as `self`.
+    /// Equal assignments in both directions with the same next index need no
+    /// allocation or copy, even when their insertion orders differ. Otherwise
+    /// both copies are built before `self` is touched, so `error.OutOfMemory`
+    /// leaves `self` as the caller passed it and the caller may retry. On a
+    /// changed assignment, success releases the old maps and holds the copies.
+    /// `gpa` must be the allocator both maps were built with. This is upstream's
+    /// `clone` at `tree.rs:25-31` and its `clone_from` at `tree.rs:33-37`, which
+    /// the caller at `tree.rs:705` drives by naming the committed map as `self`.
     pub fn cloneInto(
         self: *TreeIndexMap,
         gpa: std.mem.Allocator,
         source: *const TreeIndexMap,
     ) std.mem.Allocator.Error!void {
+        if (cloneIntoMatches(.{ .destination = self, .source = source })) return;
+
         var id_to_index = try source.id_to_index.clone(gpa);
         errdefer id_to_index.deinit(gpa);
         var index_to_id = try source.index_to_id.clone(gpa);
@@ -271,6 +276,43 @@ pub const TreeIndexMap = struct {
         self.id_to_index = id_to_index;
         self.index_to_id = index_to_id;
         self.next = source.next;
+    }
+
+    fn cloneIntoMatches(options: struct {
+        destination: *const TreeIndexMap,
+        source: *const TreeIndexMap,
+    }) bool {
+        const destination = options.destination;
+        const source = options.source;
+        if (destination.next != source.next) return false;
+
+        const forward_mapping_count = source.id_to_index.count();
+        const reverse_mapping_count = source.index_to_id.count();
+        if (destination.id_to_index.count() != forward_mapping_count) return false;
+        if (destination.index_to_id.count() != reverse_mapping_count) return false;
+
+        // Registration is bounded by the u32 index space. Each scan is bounded
+        // by its own map's validated count; neither direction stands for both.
+        assert(forward_mapping_count <= std.math.maxInt(u32));
+        assert(reverse_mapping_count <= std.math.maxInt(u32));
+        const ids = source.id_to_index.keys();
+        const indices = source.id_to_index.values();
+        assert(ids.len == forward_mapping_count);
+        assert(indices.len == forward_mapping_count);
+        for (0..forward_mapping_count) |position| {
+            const index = destination.getIndex(ids[position]) orelse return false;
+            if (index != indices[position]) return false;
+        }
+
+        const reverse_indices = source.index_to_id.keys();
+        const reverse_ids = source.index_to_id.values();
+        assert(reverse_indices.len == reverse_mapping_count);
+        assert(reverse_ids.len == reverse_mapping_count);
+        for (0..reverse_mapping_count) |position| {
+            const id = destination.getId(reverse_indices[position]) orelse return false;
+            if (!std.meta.eql(id, reverse_ids[position])) return false;
+        }
+        return true;
     }
 };
 
@@ -460,6 +502,108 @@ test "a copy replaces what the destination held" {
     try testing.expect(out.getIndex(treeIdFromBytes(.{8} ** 16)) == null);
 }
 
+test "an equal registry copy needs no allocation and keeps exact lookup results" {
+    // Equal assignments can have different insertion orders and unused indices.
+    // The public copy must still work when no allocation can succeed.
+    const gpa = testing.allocator;
+    const ids = [_]TreeId{
+        treeIdFromBytes(.{1} ** 16),
+        treeIdFromBytes(.{2} ** 16),
+    };
+    const indices = [_]TreeIndex{ .init(2), .init(7) };
+    var source: TreeIndexMap = .empty;
+    defer source.deinit(gpa);
+    var out: TreeIndexMap = .empty;
+    defer out.deinit(gpa);
+    for (ids, indices) |id, index| {
+        try source.id_to_index.put(gpa, id, index);
+        try source.index_to_id.put(gpa, index, id);
+    }
+    const mapping_count = ids.len;
+    for (0..mapping_count) |offset| {
+        const position = mapping_count - 1 - offset;
+        try out.id_to_index.put(gpa, ids[position], indices[position]);
+        try out.index_to_id.put(gpa, indices[position], ids[position]);
+    }
+    source.next = 9;
+    out.next = 9;
+
+    var failing = testing.FailingAllocator.init(gpa, .{ .fail_index = 0 });
+    try out.cloneInto(failing.allocator(), &source);
+
+    for (ids, indices) |id, index| {
+        try testing.expectEqual(index, out.getIndex(id).?);
+        try testing.expectEqual(id, out.getId(index).?);
+        try testing.expectEqual(index, try out.getOrCreateIndex(failing.allocator(), id));
+    }
+    try testing.expect(out.getId(.init(0)) == null);
+    try testing.expect(out.getId(.init(8)) == null);
+    const added_id = treeIdFromBytes(.{3} ** 16);
+    const added = try out.getOrCreateIndex(gpa, added_id);
+    try testing.expectEqual(TreeIndex.init(9), added);
+    try testing.expectEqual(added_id, out.getId(added).?);
+    try testing.expect(source.getIndex(added_id) == null);
+    try testing.expect(source.getId(added) == null);
+}
+
+test "a copy detects each changed direction even when registry counts match" {
+    // Fields are reachable in Zig. Copying must repair either changed direction,
+    // rather than treating matching counts or the other direction as equality.
+    const gpa = testing.allocator;
+    const id = treeIdFromBytes(.{1} ** 16);
+    const stale_id = treeIdFromBytes(.{9} ** 16);
+    var source: TreeIndexMap = .empty;
+    defer source.deinit(gpa);
+    const index = try source.getOrCreateIndex(gpa, id);
+
+    const direction_count = 2;
+    for (0..direction_count) |direction| {
+        var out: TreeIndexMap = .empty;
+        defer out.deinit(gpa);
+        _ = try out.getOrCreateIndex(gpa, id);
+        if (direction == 0) {
+            try out.id_to_index.put(gpa, id, .init(7));
+        } else {
+            try out.index_to_id.put(gpa, index, stale_id);
+        }
+
+        try out.cloneInto(gpa, &source);
+        try testing.expectEqual(index, out.getIndex(id).?);
+        try testing.expectEqual(id, out.getId(index).?);
+        try testing.expect(out.getIndex(stale_id) == null);
+        try testing.expect(out.getId(.init(7)) == null);
+    }
+}
+
+test "a copy replaces stale same-count assignments and a changed next index" {
+    // A matching cardinality is not a matching assignment, and the counter
+    // remains part of the copied state even when both maps already match.
+    const gpa = testing.allocator;
+    const id = treeIdFromBytes(.{1} ** 16);
+    const stale_id = treeIdFromBytes(.{9} ** 16);
+    const added_id = treeIdFromBytes(.{2} ** 16);
+    var source: TreeIndexMap = .empty;
+    defer source.deinit(gpa);
+    const index = try source.getOrCreateIndex(gpa, id);
+    source.next = 7;
+
+    var out: TreeIndexMap = .empty;
+    defer out.deinit(gpa);
+    _ = try out.getOrCreateIndex(gpa, stale_id);
+    out.next = 7;
+    try out.cloneInto(gpa, &source);
+    try testing.expect(out.getIndex(stale_id) == null);
+    try testing.expectEqual(index, out.getIndex(id).?);
+    try testing.expectEqual(id, out.getId(index).?);
+
+    out.next = 3;
+    try out.cloneInto(gpa, &source);
+    try testing.expect(out.getId(.init(3)) == null);
+    try testing.expectEqual(TreeIndex.init(7), try out.getOrCreateIndex(gpa, added_id));
+    try testing.expectEqual(added_id, out.getId(.init(7)).?);
+    try testing.expect(source.getIndex(added_id) == null);
+}
+
 test "a failed copy leaves the destination as the caller passed it" {
     // `docs/33-consumer-interface-contract.md` section 4 states this rule for
     // `cloneInto`. A port that deinitialises the destination first loses the
@@ -471,16 +615,32 @@ test "a failed copy leaves the destination as the caller passed it" {
     defer source.deinit(gpa);
     _ = try source.getOrCreateIndex(gpa, treeIdFromBytes(.{1} ** 16));
 
-    var out: TreeIndexMap = .empty;
-    defer out.deinit(gpa);
-    const held = try out.getOrCreateIndex(gpa, held_id);
-
-    var failing = std.testing.FailingAllocator.init(gpa, .{ .fail_index = 0 });
-    const failing_gpa = failing.allocator();
-    try testing.expectError(error.OutOfMemory, out.cloneInto(failing_gpa, &source));
-
-    try testing.expectEqual(held, out.getIndex(held_id).?);
-    try testing.expect(out.getIndex(treeIdFromBytes(.{1} ** 16)) == null);
+    // The small nonempty maps need two clones. Sweep beyond both allocation
+    // sites and require success before the explicit bound is exhausted.
+    const allocation_bound: usize = 8;
+    var succeeded = false;
+    for (0..allocation_bound) |fail_index| {
+        var out: TreeIndexMap = .empty;
+        defer out.deinit(gpa);
+        const held = try out.getOrCreateIndex(gpa, held_id);
+        var failing = testing.FailingAllocator.init(gpa, .{ .fail_index = fail_index });
+        if (out.cloneInto(failing.allocator(), &source)) |_| {
+            try testing.expect(out.getIndex(held_id) == null);
+            try testing.expectEqual(TreeIndex.init(0), out.getIndex(treeIdFromBytes(.{1} ** 16)).?);
+            try testing.expectEqual(treeIdFromBytes(.{1} ** 16), out.getId(.init(0)).?);
+            succeeded = true;
+            break;
+        } else |failure| {
+            try testing.expectEqual(error.OutOfMemory, failure);
+            try testing.expectEqual(held, out.getIndex(held_id).?);
+            try testing.expectEqual(held_id, out.getId(held).?);
+            try testing.expect(out.getIndex(treeIdFromBytes(.{1} ** 16)) == null);
+            const added = try out.getOrCreateIndex(gpa, treeIdFromBytes(.{8} ** 16));
+            try testing.expectEqual(TreeIndex.init(1), added);
+            try testing.expectEqual(treeIdFromBytes(.{8} ** 16), out.getId(added).?);
+        }
+    }
+    if (!succeeded) return error.AllocationSweepExhausted;
 }
 
 test "a failed registration leaves the map as it was" {

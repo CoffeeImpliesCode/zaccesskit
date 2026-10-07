@@ -74,6 +74,7 @@ const std = @import("std");
 
 const allocation = @import("../../capi/allocation.zig");
 const boundary = @import("../../capi/boundary.zig");
+const c_tree_update = @import("../../capi/tree_update.zig");
 const schema = @import("../../schema/root.zig");
 
 const adapter_module = @import("adapter.zig");
@@ -644,11 +645,8 @@ comptime {
 /// travel through it; a closure would capture it, and `AGENTS.md` section 3
 /// requires state to be a parameter rather than a capture.
 ///
-/// **The update is built the way the C ABI builds one**: the block comes from
-/// `allocation.create` and the nodes inside it come from `gpa`. A real factory
-/// is `accesskit_tree_update_new` followed by `accesskit_tree_update_set_*`, and
-/// the adapter releases the block through `allocation.release`, which refuses a
-/// block this library never returned.
+/// The callback returns the concrete C owner through its opaque handle, so the
+/// adapter consumes both the native update and the wrapper's captured allocator.
 const Probe = struct {
     /// The allocator a built update is allocated from.
     gpa: Allocator,
@@ -662,21 +660,23 @@ const Probe = struct {
     /// Counts this call and answers `answer`, building a root update when asked.
     fn take(self: *Probe) ?*CTreeUpdate {
         self.calls += 1;
-        if (self.answer) |answer| return answer;
+        if (self.answer) |answer| {
+            self.answer = null;
+            return answer;
+        }
         if (!self.build_root) return null;
-        const update = allocation.create(CTreeUpdate) catch return null;
-        var owned: CTreeUpdate = .{
-            .nodes = .empty,
-            .tree = schema.TreeInfo.init(.{ .value = 1 }),
-            .tree_id = schema.tree_id_root,
-            .focus = .{ .value = 1 },
-        };
-        owned.pushNode(self.gpa, .{ .value = 1 }, schema.Node.init(self.gpa, .button)) catch {
-            allocation.release(update);
+        const update = c_tree_update.treeUpdateWithFocus(self.gpa, 1) catch
+            return null;
+        update.update.tree = schema.TreeInfo.init(.{ .value = 1 });
+        update.update.pushNode(
+            self.gpa,
+            .{ .value = 1 },
+            schema.Node.init(self.gpa, .button),
+        ) catch {
+            update.deinit();
             return null;
         };
-        update.* = owned;
-        return update;
+        return @ptrCast(update);
     }
 };
 
@@ -719,6 +719,7 @@ const ActiveAdapter = struct {
     /// inert environment, and that is the honest answer.
     fn init(gpa: Allocator) !ActiveAdapter {
         const adapter = try AndroidAdapter.create(gpa) orelse return error.NoAdapterBuilt;
+        errdefer androidAdapterFree(adapter);
         var probe: Probe = .{ .gpa = gpa, .build_root = true };
         _ = androidAdapterCreateAccessibilityNodeInfo(
             adapter,

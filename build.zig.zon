@@ -58,19 +58,9 @@
     },
     // Only these paths are packaged and hashed. Keep it to what a build needs.
     //
-    // `test`, `include` and `tools` are here because three declared steps read
-    // them, and `.paths` is the only place that says so. The `test` step
-    // compiles `fuzz_root.zig`, which reaches `test/fuzz/` and embeds
-    // `include/zaccesskit.h`, so a copy without either of them cannot run its
-    // own gate. The `capi-parity` step is rooted at
-    // `tools/capi_parity/main.zig`. `fuzz_root.zig` is its own entry because a
-    // file at the repository root is named by itself and not by a directory
-    // that holds it.
-    //
-    // What a consumer receives grows by about 0.6 megabytes: the harness and
-    // its corpus, the header the harness measures, and the parity tool. A
-    // dependent that imports the module compiles none of it, so the cost is
-    // download size and nothing else.
+    // Tests, the C consumer and tools must also work from a packaged copy.
+    // Repository-level roots keep their relative src/ imports inside the package.
+    // A dependent that imports only the Zig module compiles none of the harnesses.
     //
     // `.paths` is not the package fingerprint, which is the name and the
     // version, so widening it breaks no existing dependent.
@@ -85,6 +75,10 @@
         "README.md",
         "AGENTS.md",
         "fuzz_root.zig",
+        "capi_root.zig",
+        "integration_root.zig",
+        "reference_root.zig",
+        "consumer_bench_root.zig",
         // `.ziglint.zon` is here because a packaged copy runs the same gate.
         // Without it the copy has Z001 enabled and reports all 498 C ABI
         // exports, so the exemption would hold for this checkout and not for

@@ -574,18 +574,19 @@ mechanism:
 
 ### 4.3 Which paths must be symlinks
 
-Two paths in the project root must be symlinks to local disk:
+The two cache paths and the install-output path must be symlinks to local disk:
 
 | Path | Must point at | Confirmed by |
 |---|---|---|
-| `.zig-cache` | `${cacheRoot}/build` | `devenv.nix:56-63` |
-| `zig-pkg` | `${cacheRoot}/pkg` | `devenv.nix:56-63` |
+| `.zig-cache` | `${cacheRoot}/build` | `devenv.nix:62` |
+| `zig-pkg` | `${cacheRoot}/pkg` | `devenv.nix:63` |
+| `zig-out` | `${cacheRoot}/install` | `devenv.nix:64` |
 
 `zig-gate:413` names `./zig-pkg/*` as a path it excludes from the source list, and
 `zig-gate:795` names `zig-pkg` again as a coverage exclude. Both confirm that
 `zig-pkg` is the package extraction directory in the project root.
 
-Current state, observed:
+Historical cache-link observation from October 4:
 
 ```sh
 $ ls -ld .zig-cache zig-pkg
@@ -596,10 +597,18 @@ $ readlink -f .zig-cache zig-pkg
 /tmp/cache/zaccesskit/pkg
 ```
 
-Both targets are under `/home/tmp2`, which `stat -f -c '%T'` reports as
-`ext2/ext3`. A real directory in either place is the failure. `devenv.nix:53-60`
-prints a message and refuses to move a populated directory. The fix is
-`devenv shell`, not `mkdir` (`zomp/AGENTS.md:24`).
+Both historical targets were under `/home/tmp2`, where `stat -f -c '%T'` reported `ext2/ext3`.
+The current configuration uses the selected `cacheRoot`, not a fixed `/home/tmp2` path.
+`ZACCESKIT_CACHE_ROOT` takes priority, then `${XDG_CACHE_HOME}/zaccesskit`, then `${HOME}/.cache/zaccesskit-zig`.
+The selected root must use local disk.
+`devenv.nix:53-67` reports real directories and leaves their contents unchanged.
+It does not automatically delete or move a populated directory.
+For an absent link, use `devenv shell`, not `mkdir`.
+
+An actual local-scratch `devenv shell` smoke test passed under UID 33156.
+It confirmed `.zig-cache` to local build storage, `zig-pkg` to local package storage, and `zig-out` to local install storage.
+An actual populated-directory refusal test preserved its sentinel text.
+This adds an install-output link. The existing two-cache-path rules remain unchanged.
 
 ### 4.4 Which environment variables carry the caches
 

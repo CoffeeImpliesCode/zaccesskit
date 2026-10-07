@@ -41,6 +41,7 @@ const std = @import("std");
 const action_request = @import("../../capi/action_request.zig");
 const allocation = @import("../../capi/allocation.zig");
 const boundary = @import("../../capi/boundary.zig");
+const c_tree_update = @import("../../capi/tree_update.zig");
 const change_handler = @import("change_handler.zig");
 const consumer = @import("../../consumer/root.zig");
 const elements = @import("elements.zig");
@@ -51,7 +52,6 @@ const syscalls = @import("syscalls.zig");
 const ActionHandler = boundary.ActionHandler;
 const ActivationHandler = boundary.ActivationHandler;
 const COptLResult = boundary.COptLResult;
-const CTreeUpdate = boundary.CTreeUpdate;
 const Hwnd = boundary.Hwnd;
 const LParam = boundary.LParam;
 const LResult = syscalls.LResult;
@@ -125,6 +125,8 @@ pub const WindowsAdapter = struct {
     /// Which of the three states the adapter holds.
     state: State = .inactive,
 
+    metadata_owners: c_tree_update.LiveMetadataOwners = .{},
+
     /// The providers the adapter has published.
     registry: elements.Registry,
 
@@ -180,6 +182,7 @@ pub const WindowsAdapter = struct {
             .active => |*held| held.deinit(),
         }
         self.state = .inactive;
+        self.metadata_owners.deinit();
         self.registry.deinit(self.platform);
         gpa.destroy(self);
     }
@@ -231,25 +234,30 @@ pub const WindowsAdapter = struct {
                 return null;
             },
             .placeholder => {
-                const update = WindowsAdapter.takeUpdate(
+                var update = self.takeUpdate(
                     update_factory,
                     update_factory_userdata,
                 ) catch |err| {
                     self.last_error = err;
                     return err;
                 };
-                // `.placeholder` is entered with a tree in hand, so the absent
-                // case is a branch the switch answers rather than a claim.
-                const was_focused = (self.tree() orelse return null).stateOf().isHostFocused();
+                defer self.metadata_owners.reap(self.tree());
+                const previous_tree = self.tree() orelse {
+                    update.deinit(self.gpa);
+                    return null;
+                };
+                const was_focused = previous_tree.stateOf().isHostFocused();
                 // The real tree is built before the placeholder is released, so
                 // an allocation failure leaves the placeholder in the state
                 // rather than leaving the adapter inactive.
                 const real = Tree.init(self.gpa, update, was_focused) catch |err| {
                     self.last_error = err;
+                    self.metadata_owners.reap(self.tree());
                     return err;
                 };
                 self.destroyCurrentTree();
                 self.state = .{ .active = real };
+                self.metadata_owners.reap(self.tree());
 
                 var queue = QueuedEventsHolder.init(self);
                 const focused = (self.tree() orelse return queue).stateOf().focus();
@@ -271,13 +279,14 @@ pub const WindowsAdapter = struct {
                 return queue;
             },
             .active => {
-                const update = WindowsAdapter.takeUpdate(
+                var update = self.takeUpdate(
                     update_factory,
                     update_factory_userdata,
                 ) catch |err| {
                     self.last_error = err;
                     return err;
                 };
+                defer self.metadata_owners.reap(self.tree());
                 var queue = QueuedEventsHolder.init(self);
                 errdefer queue.deinit();
 
@@ -289,11 +298,17 @@ pub const WindowsAdapter = struct {
                 );
                 defer handler.deinit();
 
-                const held = self.tree() orelse return null;
+                const held = self.tree() orelse {
+                    update.deinit(self.gpa);
+                    queue.deinit();
+                    return null;
+                };
                 held.updateAndProcessChanges(update, &handler.changeHandler()) catch |err| {
                     self.last_error = err;
+                    self.metadata_owners.reap(self.tree());
                     return err;
                 };
+                self.metadata_owners.reap(self.tree());
                 // The detailed `QueryError` reaches the handler's own
                 // `Failure`, and this arm reports the single tag the C ABI has.
                 handler.enqueueSelectionChanges(held.stateOf()) catch {
@@ -476,11 +491,16 @@ pub const WindowsAdapter = struct {
     ) ?*const ProviderSlot {
         const produced = activation_handler(activation_handler_userdata);
         if (produced) |tree_update| {
-            const update = takeOwnedUpdate(tree_update);
+            const update = self.metadata_owners.consume(self.gpa, tree_update, self.tree()) catch {
+                self.metadata_owners.reap(self.tree());
+                return null;
+            };
             const real = Tree.init(self.gpa, update, self.is_window_focused) catch {
+                self.metadata_owners.reap(self.tree());
                 return null;
             };
             self.state = .{ .active = real };
+            self.metadata_owners.reap(self.tree());
             const active_tree = self.tree() orelse return null;
             const root_id = active_tree.stateOf().rootId();
             const built = self.registry.slotFor(self.platform, root_id) catch {
@@ -495,9 +515,11 @@ pub const WindowsAdapter = struct {
             return null;
         };
         const real = Tree.init(self.gpa, placeholder, self.is_window_focused) catch {
+            self.metadata_owners.reap(self.tree());
             return null;
         };
         self.state = .{ .placeholder = real };
+        self.metadata_owners.reap(self.tree());
         return self.registry.placeholderSlot();
     }
 
@@ -517,18 +539,18 @@ pub const WindowsAdapter = struct {
         return update;
     }
 
-    /// Asks the factory for an update and takes ownership of the box.
+    /// Asks the factory for an owned C handle and consumes it.
     ///
-    /// **Errors.** `error.NullTreeUpdate` and `error.OutOfMemory`. Nothing
-    /// survives either path: a `null` factory answer has no box, and the box is
-    /// released before this returns.
+    /// **Errors.** `error.NullTreeUpdate` and `error.OutOfMemory`. The handle
+    /// is consumed on every path; borrowed metadata follows the live tree.
     fn takeUpdate(
+        self: *WindowsAdapter,
         update_factory: boundary.TreeUpdateFactory,
         update_factory_userdata: ?*anyopaque,
     ) !schema.TreeUpdate {
         const produced = update_factory(update_factory_userdata) orelse
             return error.NullTreeUpdate;
-        return takeOwnedUpdate(produced);
+        return self.metadata_owners.consume(self.gpa, produced, self.tree());
     }
 
     /// Releases the tree the state holds and answers an empty one.
@@ -542,17 +564,6 @@ pub const WindowsAdapter = struct {
         std.debug.assert(self.state == .inactive);
     }
 };
-
-/// Moves the tree out of the box the factory returned and releases the box.
-///
-/// The box holds the update by value, so moving the value out and releasing
-/// the box is the whole of the ownership transfer. Nothing here allocates, so
-/// this call cannot fail.
-fn takeOwnedUpdate(box: *CTreeUpdate) schema.TreeUpdate {
-    const owned = box;
-    defer allocation.release(owned);
-    return owned.*;
-}
 
 /// The `accesskit_opt_lresult` that tells the window procedure to pass the
 /// message to `DefWindowProc`.
@@ -672,10 +683,8 @@ fn fixtureOf(context: ?*anyopaque) ?*Fixture {
 
 /// One whole tree: a window that is its own root and holds the focus.
 ///
-/// The nodes come from `gpa`, the allocator the adapter releases the tree
-/// with, and the box comes from the declared allocator, which is the only one
-/// `WindowsAdapter.takeOwnedUpdate` releases. Every failing path releases what
-/// it built, so the allocation sweep below runs no leak.
+/// The concrete C handle captures the allocator that owns its native update.
+/// Every failing path releases what it built.
 fn buildWholeTree(gpa: std.mem.Allocator) ?*boundary.CTreeUpdate {
     var update: schema.TreeUpdate = .{};
     const node = schema.Node.init(gpa, .window);
@@ -685,12 +694,12 @@ fn buildWholeTree(gpa: std.mem.Allocator) ?*boundary.CTreeUpdate {
     };
     update.tree = schema.TreeInfo.init(.{ .value = 1 });
     update.focus = .{ .value = 1 };
-    const boxed = allocation.create(schema.TreeUpdate) catch {
+    const boxed = gpa.create(c_tree_update.accesskit_tree_update) catch {
         update.deinit(gpa);
         return null;
     };
-    boxed.* = update;
-    return boxed;
+    boxed.* = .{ .gpa = gpa, .update = update, .info = null };
+    return @ptrCast(boxed);
 }
 
 /// An activation handler that answers one whole tree.

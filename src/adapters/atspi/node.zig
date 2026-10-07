@@ -105,9 +105,9 @@ pub const NodeError = util.UtilError ||
     window_bounds.GeometryError ||
     error{NoActionSink};
 
-/// The failures `notifyChanges` reports. It builds the same values the members
-/// build and allocates for them, so the set is the same one.
-pub const NotifyError = NodeError;
+/// Failures from tree queries, text copies, geometry conversion and queue growth.
+/// Notification delivery does not invoke an action sink.
+pub const NotifyError = QueryError || std.Io.Writer.Error || window_bounds.GeometryError;
 
 // --- signal names -------------------------------------------------------------
 // These four are the ones `bus.rs:270-281` and `bus.rs:430` spell. They live
@@ -285,7 +285,7 @@ fn takeText(gpa: std.mem.Allocator, text: ?std.ArrayList(u8)) std.mem.Allocator.
 /// and at `node.rs:648-650`.
 ///
 /// **Errors.** `error.TreeCycle` from the climb to the root.
-pub fn parentOrRootOf(node: NodeRef) NodeError!NodeIdOrRoot {
+pub fn parentOrRootOf(node: NodeRef) QueryError!NodeIdOrRoot {
     const parent = try consumer.node_ref.hierarchy.filteredParent(
         node,
         node_state.node_filter,
@@ -303,7 +303,10 @@ pub fn parentOrRootOf(node: NodeRef) NodeError!NodeIdOrRoot {
 ///
 /// **Errors.** `error.TreeCycle` and `error.OutOfMemory` from the label walk,
 /// which follows the labelled-by chain.
-pub fn nodeName(gpa: std.mem.Allocator, node: NodeRef) NodeError!?std.ArrayList(u8) {
+pub fn nodeName(
+    gpa: std.mem.Allocator,
+    node: NodeRef,
+) (QueryError || std.Io.Writer.Error)!?std.ArrayList(u8) {
     if (consumer.node_ref.strings.labelComesFromValue(node)) {
         return consumer.node_ref.set_state.value(gpa, node);
     }
@@ -317,7 +320,10 @@ pub fn nodeName(gpa: std.mem.Allocator, node: NodeRef) NodeError!?std.ArrayList(
 /// is not the node's own text alone.
 ///
 /// **Errors.** `error.OutOfMemory` from the copy.
-pub fn nodeDescription(gpa: std.mem.Allocator, node: NodeRef) NodeError!?std.ArrayList(u8) {
+pub fn nodeDescription(
+    gpa: std.mem.Allocator,
+    node: NodeRef,
+) std.mem.Allocator.Error!?std.ArrayList(u8) {
     return consumer.node_ref.strings.description(gpa, node);
 }
 
@@ -2448,8 +2454,8 @@ fn collectCacheDescendants(
 /// Step 4 walks each of the two child lists and scans the other, so the cost is
 /// the product of two lengths, both of which the tree fixes for the duration.
 ///
-/// **Errors.** Every error the value members report, plus `error.OutOfMemory`
-/// from the queue and from the copies of the two texts.
+/// **Errors.** `NotifyError`. The queue retains each completed event on error.
+/// The failing event is not appended. The caller releases the retained prefix.
 pub fn notifyChanges(
     gpa: std.mem.Allocator,
     queue: *events.EventQueue,
@@ -2481,7 +2487,7 @@ fn notifyStateChanges(
     new_node: NodeRef,
     old_node: NodeRef,
     adapter_id: usize,
-) NodeError!void {
+) QueryError!void {
     // `node.rs:607-608`. Both sets are read with the window focused, because a
     // state that depends on focus must not report a change when only the focus
     // moved.
@@ -2519,7 +2525,7 @@ fn notifyPropertyChanges(
     new_node: NodeRef,
     old_node: NodeRef,
     adapter_id: usize,
-) NodeError!void {
+) (QueryError || std.Io.Writer.Error)!void {
     const id = nodeObjectId(new_node.id(), adapter_id);
 
     var name = (try nodeName(gpa, new_node)) orelse std.ArrayList(u8).empty;
@@ -2527,14 +2533,12 @@ fn notifyPropertyChanges(
     var old_name = (try nodeName(gpa, old_node)) orelse std.ArrayList(u8).empty;
     defer old_name.deinit(gpa);
     if (!std.mem.eql(u8, name.items, old_name.items)) {
-        const text = try gpa.dupe(u8, name.items);
-        errdefer gpa.free(text);
         try queue.push(gpa, .{
             .kind = .object,
             .member = member_property_change,
             .id = id,
             .detail1 = key_accessible_name,
-            .any_data = .{ .text = text },
+            .any_data = .{ .text = name.items },
         });
 
         // `node.rs:631-634`. A live region announces its new name and a region
@@ -2546,7 +2550,7 @@ fn notifyPropertyChanges(
                 .member = events.member_announcement,
                 .id = id,
                 .detail2 = @intFromEnum(live),
-                .any_data = .{ .text = text },
+                .any_data = .{ .text = name.items },
             });
         }
     }
@@ -2556,13 +2560,12 @@ fn notifyPropertyChanges(
     var old_description = (try nodeDescription(gpa, old_node)) orelse std.ArrayList(u8).empty;
     defer old_description.deinit(gpa);
     if (!std.mem.eql(u8, description.items, old_description.items)) {
-        const text = try gpa.dupe(u8, description.items);
         try queue.push(gpa, .{
             .kind = .object,
             .member = member_property_change,
             .id = id,
             .detail1 = key_accessible_description,
-            .any_data = .{ .text = text },
+            .any_data = .{ .text = description.items },
         });
     }
 
@@ -2621,7 +2624,7 @@ fn notifyBoundsChanges(
     old_node: NodeRef,
     bounds: window_bounds.WindowBounds,
     adapter_id: usize,
-) NodeError!void {
+) (QueryError || window_bounds.GeometryError)!void {
     const before = consumer.node_ref.geometry.rawBounds(old_node);
     const after = consumer.node_ref.geometry.rawBounds(new_node);
     const same_box = if (before) |held| (if (after) |now| std.meta.eql(held, now) else false) else after == null;
@@ -2656,7 +2659,7 @@ fn notifyChildrenChanges(
     new_node: NodeRef,
     old_node: NodeRef,
     adapter_id: usize,
-) NodeError!void {
+) QueryError!void {
     const id = nodeObjectId(new_node.id(), adapter_id);
     var before = try childIdsOf(gpa, old_node);
     defer before.deinit(gpa);
@@ -2703,7 +2706,7 @@ fn notifyDocumentChanges(
     new_node: NodeRef,
     old_node: NodeRef,
     adapter_id: usize,
-) NodeError!void {
+) std.mem.Allocator.Error!void {
     if (!node_interfaces.supportsDocument(new_node)) return;
     if (!consumer.node_ref.properties.isBusy(old_node)) return;
     if (consumer.node_ref.properties.isBusy(new_node)) return;
@@ -2726,7 +2729,7 @@ fn nodeObjectId(id: FullNodeId, adapter_id: usize) ObjectId {
 /// **Bound.** The filtered child cursor, which visits each child once.
 ///
 /// **Errors.** `error.TreeCycle` and `error.OutOfMemory`.
-fn childIdsOf(gpa: std.mem.Allocator, node: NodeRef) NodeError!std.ArrayList(FullNodeId) {
+fn childIdsOf(gpa: std.mem.Allocator, node: NodeRef) QueryError!std.ArrayList(FullNodeId) {
     var children = try consumer.node_ref.hierarchy.filteredChildren(
         node,
         node_state.node_filter,

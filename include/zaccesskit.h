@@ -5461,7 +5461,7 @@ bool accesskit_affine_is_finite(const struct accesskit_affine *affine);
 bool accesskit_affine_is_nan(const struct accesskit_affine *affine);
 
 /**
- * Returns the transform that applies `a` and then `b`.
+ * Returns the transform that applies `b` and then `a`.
  *
  * Both arguments and the result are 48-byte aggregates. On the x86-64 System
  * V convention the result travels through a hidden pointer, so a caller built
@@ -5592,8 +5592,8 @@ accesskit_rect_origin(const struct accesskit_rect *rect);
 struct accesskit_size accesskit_rect_size(const struct accesskit_rect *rect);
 
 /**
- * Returns `rect` with every negative edge moved to the other side, so the
- * result has no negative width or height.
+ * Returns `rect` with its horizontal and vertical edges ordered so the
+ * result has nonnegative width and height. Negative coordinates remain valid.
  *
  * Passing `null` returns the zero rectangle rather than reading the pointer.
  */

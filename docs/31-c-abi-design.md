@@ -1,13 +1,11 @@
 # 31 — The C ABI of `zaccesskit`
 
-**Branch: shape.** The contract is new. The header `include/zaccesskit.h` exists and
-ships with the package, because `build.zig.zon:53-64` names `include` in `.paths`.
-No consumer links a `zaccesskit` symbol and no artefact carries a `zaccesskit` ABI
-version, because `build.zig` declares no library step. This document was written
-before the header existed and read: "No `zaccesskit` header is published, no
-consumer links a `zaccesskit` symbol, and no artefact carries a `zaccesskit` ABI
-version." The first clause is false now. Every decision below is an offer, not a
-migration.
+The package installs `include/zaccesskit.h` and the `zaccesskit` library.
+`build.zig:86-102` selects static linkage by default.
+`-Dlinkage=dynamic` selects dynamic linkage.
+Both routes honor the selected target and optimization mode.
+`zig build test-c` links and runs the offline C11 consumer.
+This step checks runtime calls and ownership, not declarations alone.
 
 **Scope.** The exported C surface, its ownership contract, the header artefact and the verification that backs both. The Zig module layout, the adapter interface and the milestone order belong to `docs/30-port-design.md` and `docs/40-plan.md`.
 
@@ -26,7 +24,11 @@ migration.
 
 `accesskit-c/Cargo.toml` pins `accesskit = "0.25.1"` by version, so the header was generated against that core (source reading at a pinned revision, `Cargo.toml` at the accesskit-c revision). **The ABI is `accesskit-c/include/accesskit.h` at the second revision.** The core supplies the types; the header also holds three entry points the core crate lacks, so it is not a subset of the core.
 
-**Artefact kind: both. This document covers the C ABI only.** The C surface is `include/zaccesskit.h` plus the exported symbols. The native Zig surface is `dep.module("zaccesskit")`, already registered by `build.zig:37-44` through `b.addModule`, and owned by `docs/30-port-design.md`. The two are not spellings of each other: a Zig consumer gets optional types, typed error sets, allocators as parameters and `deinit`; a C consumer gets flat functions, sentinels and a declared allocator.
+**Artifact kind: both.** The C surface consists of `include/zaccesskit.h` and the exported library symbols.
+The native Zig surface is `dep.module("zaccesskit")`, registered at `build.zig:75-84`.
+`docs/30-port-design.md` owns the native contract.
+Zig consumers use typed errors, explicit allocators, optional values, and `deinit`.
+C consumers use flat functions, sentinels, and the boundary allocator.
 
 **The supported consumer surface**, bounded by what a C consumer reaches through the shipped header: **496** function declarations, **444** on a Linux target and 52 behind a platform guard; **18** enums carrying **270** variants; **40** laid-out structs; **18** forward-declared opaque structs; **4** function-pointer typedefs; **2** scalar typedefs; **1** exported data object. The two function counts came two ways that agree: `grep -oE 'accesskit_[a-z_0-9]+\(' include/accesskit.h | sort -u | wc -l` returns 496 directly, and a C preprocessor declaration count returns 444. The four function-pointer typedefs never enter that grep, because each is written with the name inside parentheses, as `typedef struct accesskit_tree_update *(*accesskit_tree_update_factory)(`.
 
@@ -140,8 +142,8 @@ One row per ownership category. The last column carries the sentence identifier 
 | 9 | `accesskit_node` passed to `accesskit_tree_update_push_node` | The tree update | Nobody. `accesskit_tree_update_free` releases it and every node still held | Once per node | Releasing it after the push frees memory the update owns |
 | 10 | The `accesskit_tree_info` passed to `accesskit_tree_update_set_tree_info` | The tree update | Nobody, and the caller must not release it | Once per tree info | A second call with the same pointer dereferences consumed storage |
 | 11 | A tree info already on an update, when `set_tree_info` runs twice or `clear_tree_info` runs | The update, until it is released | Nobody | n/a | Both calls are valid; the first tree info goes with the update or the second set |
-| 12 | The `accesskit_tree_update` the tree-update factory returns | The library | Nobody. Released after delivery | Once | Not reachable; the factory must not return `null` or repeat a pointer |
-| 13 | The `accesskit_tree_update` the activation handler returns | The library, when not `null` | Nobody. `null` means "no tree" | Once | Not reachable; `null` is a valid answer, not an error |
+| 12 | The opaque `accesskit_tree_update` that the tree-update factory returns | The library owns the transferred handle | Nobody. Conversion consumes it on success and error | Once | Never return the same owning pointer twice. Existing platform null-factory behavior remains unchanged |
+| 13 | The opaque `accesskit_tree_update` that the activation handler returns | The library owns each nonnull transferred handle | Nobody. `null` means "no tree". An unused nonnull payload is discarded | Once | Never return the same owning pointer twice |
 | 14 | The `accesskit_action_request` the action handler receives | The callback, by transfer | `accesskit_action_request_free`, before returning | Once | Double free |
 | 15 | The `char *` at `request->data.value.value` when the tag is `ACCESSKIT_ACTION_DATA_VALUE` | The request | Nobody separately | Once, with row 14 | Double free of the string |
 | 16 | Every `*_free`: 17, counted at `8b6ed37` — 1 node, 1 tree-info, 1 tree-update, 2 custom-action, 1 action-request, 1 string, 10 platform | Nobody, after the call | The matching free function | Once | Double free. `null` terminates the process |
@@ -157,6 +159,51 @@ Subject:  AccessKit/accesskit-c @ 8b6ed37c20ed4c59390e253407983333053662ba
 Source:   include/accesskit.h, src/common.rs, src/lib.rs
 Reads as: A source reading of the header comments and of five declarations in two bindings files, at one revision. It establishes the documentation gaps and what those declarations do to memory. It establishes no thread safety, no other target, no claim about what a caller observes after an abort, and no promise that upstream keeps these bodies.
 ```
+
+### 3.1 Callback handle conversion and metadata
+
+`boundary.CTreeUpdate` names the opaque C handle, not `schema.TreeUpdate`.
+All five adapters consume this handle through `tree_update.LiveMetadataOwners.consume`.
+Conversion releases the outer handle through its captured allocator on success and error.
+Native adapter apply methods receive `schema.TreeUpdate` after conversion.
+
+Conversion moves the `NodeEntry` array without allocation or copying only when the allocator-domain helper proves the same domain.
+Known stateless standard allocators and C ABI registered allocator pairs permit that proof.
+The known stateless providers in Zig 0.16.0 are `c_allocator`, `page_allocator`, and `smp_allocator`.
+`allocation.sameDomain` takes one options struct with source and destination allocators.
+Conversion must not compare an undefined allocator context pointer.
+For unknown custom vtables, conversion migrates the array without reading the context pointer.
+Different initialized stateful contexts also require array migration.
+Migration changes only the array allocator, not each node's property allocator.
+Conversion retains the owning tree-info storage while the native tree borrows it.
+
+Three fixed owner slots cover committed, working, and incoming metadata.
+`TreeState.info` and `next_state.info` are the two possible native borrowers.
+`SubtreeState` has only root and focus fields. It has no metadata borrower.
+After each update attempt, including errors, the adapter prunes owners by nonempty storage identity.
+Equal text does not imply equal storage.
+The adapter destroys the native tree before the retained metadata owners.
+
+Unix keeps factory-before-activation order.
+It discards a nonnull activation payload that does not replace the committed tree.
+macOS retains metadata in its reference-counted `Context`.
+Queued events keep that context alive after adapter destruction.
+These contracts do not claim native platform execution or Unix bus delivery.
+
+The C artifact requires LLVM on Zig 0.16.0. `build.zig` sets `.use_llvm = true` for that artifact only.
+The self-hosted x86 Debug backend failed five linked-C geometry result checks.
+The LLVM Debug C artifact passed all 1676 checks with zero failures.
+This backend selection does not fix the PowerPC64 C ABI limit.
+[Issue #5](https://github.com/CoffeeImpliesCode/zaccesskit/issues/5) records the Zig 0.17 migration check before that limit can change.
+
+### 3.2 Empty C arrays
+
+`marshal.cArrayToSlice` returns an empty slice before it dereferences a zero-length C pointer.
+Eligible setters accept `NULL, 0`.
+This rule covers eight node-id lists, two byte lists, two coordinate lists, and custom actions.
+The setter still copies nonempty input.
+This rule does not permit a null pointer with a nonzero length.
+An owning custom-action getter result needs its matching free, including an empty result.
 
 ---
 
@@ -513,38 +560,22 @@ A C consumer recompiles when a struct field is added, removed, reordered or rety
 
 ## 6. Verification
 
-Five checks. Each states what it proves and what it does not. **This record reports
-no outcome for any of them.** It read: "**None of them has run**: the port has no
-`src/root.zig` declaration, no test tree, no C artefact and no configured CI, so no
-rung above declared target has been reached." Three of those four grounds are false
-now. The fourth still holds.
-
-The four grounds it gave, and what a count over the tree says about each on
-2026-10-05:
-
-- **`src/root.zig` declaration: false.** The root declares five names, `schema` at
-  `src/root.zig:36`, `consumer` at `:49`, `capi` at `:57`, `version` at `:68` and
-  `minimum_zig_version` at `:74`. Each namespace carries a `refAllDecls` test.
-- **Test tree: false.** `test/` holds the C consumer at
-  `test/c_consumer/consumer.c`, the committed corpus at `test/fuzz/corpus/` and
-  the harness at `test/fuzz/property_table.zig`. `build.zig:74` wires four native
-  shards: `test-Debug` at `build.zig:76`, `test-ReleaseSafe` at `:82`, `fuzz-Debug`
-  at `:158` and `fuzz-ReleaseSafe` at `:174`. Check 1 now has a step of its own,
-  `capi-parity` at `build.zig:203`.
-- **C artefact: half false.** `src/capi/` holds 14 modules, 22294 lines and 220
-  `test "` declarations, and all 14 are in the import graph from `src/root.zig`.
-  No library is still produced. `build.zig` declares no library step and no install
-  step, and `build.zig:5-6` says the same. So the C ABI has a source and no
-  binary.
-- **Configured CI: true, and still.** The repository root holds no `.github`
-  directory, no `.gitlab-ci.yml` and no other CI configuration file.
+Five checks separate declarations, layout, linked calls, callback ownership, and target calling conventions.
+`docs/50-verification.md` records their observed results and limits.
+`build.zig` installs the selected C library and header.
+The `test-c` step links the real offline C11 consumer.
+The native `test` step also runs that consumer.
+The Linux `cross-test` step runs it through the selected target runner.
+The module and library honor target and optimization options.
+Native Debug and ReleaseSafe test shards keep their fixed modes.
+No check in this section claims native platform object attachment or bus delivery.
 
 | # | Check | Proves | Does not prove |
 |---|---|---|---|
 | 1 | Header-parity sweep, name-paired, in the test module only | the Zig declarations and the shipped header agree, by name and offset, over the sweep list, on the target and mode that ran | execution, analysis of unreferenced declarations, the calling convention, other targets |
 | 2 | The comptime layout floor | the geometry and action-data numbers hold at compile time in every mode that builds | any other layout, any other target |
-| 3 | A C fixture linking the shared library | the C compiler's own answers agree with the Zig ones, and one call of each shape crosses the boundary | completeness, correctness of the logic behind the call |
-| 4 | The opaque handle across a callback | that handle identity and alignment survive a round trip | which fields the C side promises to keep, which nothing checks |
+| 3 | The linked offline C11 consumer with selected static or dynamic linkage | the compiled C calls reach the real library and check results and release counts | native platform object attachment or untested targets |
+| 4 | An owning opaque handle across a callback | conversion consumes the captured allocator handle and retains borrowed metadata for the native tree | native accessibility object behavior |
 | 5 | The aggregate convention, native and under `qemu_user` for `powerpc64-linux` | that Zig and C agree on how each aggregate class is passed and returned, on an x86-64 and a big-endian row | any other ABI, or that a defect outside these classes is absent |
 
 **Checks 1 and 2.** Check 1 is the sweep of record H, section 4.3, with its four exclusions and its four hazard counts pinned at zero. Check 2 is the `comptime` block of section 4.0 plus the six geometry assertions `docs/19` records. A `comptime` assertion is evaluated in every optimize mode, so check 2 covers Debug, ReleaseSafe, ReleaseFast and ReleaseSmall at once, which no run-time `std.debug.assert` does. Both are **exercised compilation** once they run. What they will not establish, restated because it is the point of the exclusions: not that the foreign code ran, and not that a declaration no reached path references was ever analysed.

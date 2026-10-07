@@ -41,6 +41,7 @@ const std = @import("std");
 
 const allocation = @import("../../capi/allocation.zig");
 const boundary = @import("../../capi/boundary.zig");
+const c_tree_update = @import("../../capi/tree_update.zig");
 
 const adapter = @import("adapter.zig");
 const bindings_mod = @import("bindings.zig");
@@ -343,15 +344,21 @@ const testing = std.testing;
 /// A factory that answers one whole tree, so a test can activate an adapter.
 fn wholeTreeFactory(context: ?*anyopaque) callconv(.c) ?*boundary.CTreeUpdate {
     _ = context;
-    // The nodes must be built with the allocator the adapter releases them with.
+    // The handle captures the allocator that owns the native update.
     const gpa = allocation.allocator();
     var update: schema.TreeUpdate = .{};
-    update.pushNode(gpa, .{ .value = 1 }, schema.Node.init(gpa, .window)) catch return null;
+    update.pushNode(gpa, .{ .value = 1 }, schema.Node.init(gpa, .window)) catch {
+        update.deinit(gpa);
+        return null;
+    };
     update.tree = schema.TreeInfo.init(.{ .value = 1 });
     update.focus = .{ .value = 1 };
-    const boxed = allocation.create(schema.TreeUpdate) catch return null;
-    boxed.* = update;
-    return boxed;
+    const boxed = gpa.create(c_tree_update.accesskit_tree_update) catch {
+        update.deinit(gpa);
+        return null;
+    };
+    boxed.* = .{ .gpa = gpa, .update = update, .info = null };
+    return @ptrCast(boxed);
 }
 
 /// A factory that answers `null`, which is a contract violation upstream.
@@ -362,15 +369,7 @@ fn nullFactory(context: ?*anyopaque) callconv(.c) ?*boundary.CTreeUpdate {
 
 /// An activation handler that answers one whole tree.
 fn activateWithTree(context: ?*anyopaque) callconv(.c) ?*boundary.CTreeUpdate {
-    _ = context;
-    var update: schema.TreeUpdate = .{};
-    const gpa = allocation.allocator();
-    update.pushNode(gpa, .{ .value = 1 }, schema.Node.init(gpa, .window)) catch return null;
-    update.tree = schema.TreeInfo.init(.{ .value = 1 });
-    update.focus = .{ .value = 1 };
-    const boxed = allocation.create(schema.TreeUpdate) catch return null;
-    boxed.* = update;
-    return boxed;
+    return wholeTreeFactory(context);
 }
 
 /// An activation handler that answers `null`, which means "no tree".

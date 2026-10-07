@@ -52,6 +52,7 @@ const std = @import("std");
 const action_request = @import("../../capi/action_request.zig");
 const allocation = @import("../../capi/allocation.zig");
 const boundary = @import("../../capi/boundary.zig");
+const c_tree_update = @import("../../capi/tree_update.zig");
 const classes = @import("classes.zig");
 const consumer = @import("../../consumer/root.zig");
 const java_call = @import("java_call.zig");
@@ -182,14 +183,14 @@ fn androidFilterCall(
 /// needs them. `create` and `free` are the two halves a C handle uses, and
 /// `init` and `deinit` are the same two halves for a value a caller owns.
 pub const AndroidAdapter = struct {
-    /// The allocator that grew the tree and both maps of the id map, and the
-    /// only one any release goes through. It is `allocation.allocator()` in
-    /// every case, because the C header releases the adapter and every block
-    /// that leaves through a `CActionRequest` through the declared allocator.
+    /// The allocator that grows the native tree and both maps of the id map.
+    /// Callback handles and retained metadata use their own captured allocators.
     gpa: Allocator,
 
     /// The tree, or `null` while the adapter has not been activated.
     tree: ?Tree,
+    /// Owns the toolkit strings borrowed by both native tree snapshots.
+    metadata_owners: c_tree_update.LiveMetadataOwners = .{},
 
     /// Whether an activation handler has already been asked.
     ///
@@ -258,6 +259,7 @@ pub const AndroidAdapter = struct {
     /// that a read of undefined memory.
     pub fn deinit(self: *AndroidAdapter) void {
         if (self.tree) |*tree| tree.deinit();
+        self.metadata_owners.deinit();
         self.id_map.deinit(self.gpa);
         // SAFETY: every release this value owns has run above, so the reset is
         // the empty adapter a stale read sees. `gpa` keeps its value because the
@@ -307,11 +309,9 @@ pub const AndroidAdapter = struct {
         self.activation_asked = true;
 
         const produced = activation_handler(activation_handler_userdata) orelse return;
-        // `Tree.init` takes the update by value and releases the value's own
-        // nodes on every path, and the block the callback allocated stays this
-        // function's to release. Both are one `defer`, so neither can be skipped.
-        defer allocation.release(produced);
-        const built = Tree.init(self.gpa, produced.*, false) catch |err| switch (err) {
+        defer self.metadata_owners.reap(self.treeOf());
+        const update = try self.metadata_owners.consume(self.gpa, produced, self.treeOf());
+        const built = Tree.init(self.gpa, update, false) catch |err| switch (err) {
             error.OutOfMemory => return error.OutOfMemory,
             else => return error.TreeRejected,
         };
@@ -340,10 +340,8 @@ pub const AndroidAdapter = struct {
 
         const produced = update_factory(update_factory_userdata) orelse
             return error.NullTreeUpdate;
-        // The block the factory allocated is this function's to release, exactly
-        // as in `ensureActive`; the update value inside it is consumed by the
-        // commit below.
-        defer allocation.release(produced);
+        defer self.metadata_owners.reap(self.treeOf());
+        const update = try self.metadata_owners.consume(self.gpa, produced, self.treeOf());
 
         var events = QueuedEvents.init(self.gpa, self);
         errdefer events.deinit();
@@ -356,7 +354,7 @@ pub const AndroidAdapter = struct {
             .node_removed = nodeRemovedSlot,
             .focus_moved = focusMovedSlot,
         };
-        active_tree.updateAndProcessChanges(produced.*, &handler) catch |err| {
+        active_tree.updateAndProcessChanges(update, &handler) catch |err| {
             // A slot that ran out of memory leaves the committed state as it
             // stands; the update is already consumed and cannot be replayed.
             if (context.append_error != null) return error.OutOfMemory;
@@ -900,8 +898,8 @@ const ActionProbe = struct {
 };
 
 /// A one-node tree update, which is the smallest `consumer.tree.Tree` accepts.
-fn rootUpdate(gpa: Allocator) std.mem.Allocator.Error!CTreeUpdate {
-    var update: CTreeUpdate = .{
+fn rootUpdate(gpa: Allocator) std.mem.Allocator.Error!schema.TreeUpdate {
+    var update: schema.TreeUpdate = .{
         .nodes = .empty,
         .tree = schema.TreeInfo.init(.{ .value = 1 }),
         .tree_id = schema.tree_id_root,

@@ -19,26 +19,13 @@
 //! | Consumer report | Event raised |
 //! |---|---|
 //! | node added | `Cache.AddAccessible` on the cache object, naming the node |
-//! | node updated | `Object.BoundsChanged` on the node, when the box moved |
+//! | node updated | ordered state, property, bounds, children and document events |
 //! | node removed | `Cache.RemoveAccessible` on the cache object, naming the node |
 //! | focus moved | `Object.Focus` on the new node and on the old one |
 //!
-//! **The gaps, written down rather than hidden.** Three, and a reader of this
-//! file must not have to guess at them.
-//!
-//! 1. **No `StateChanged`.** The role and state map is ported, at
-//!    `node_role.roleOf` and `node_state.stateOf`, so both sets exist. Missing
-//!    is `notify_state_changes` at `node.rs:606-620`, which compares the old
-//!    set with the new one and raises one signal per member that differs. It
-//!    needs the old node as well as the new one, and `node_updated` carries both.
-//! 2. **No `ChildrenChanged`, `Announcement` or `TextChanged`.** The map those
-//!    need is ported, at `node_role.roleOf` and `node_interfaces.live`; the
-//!    comparison is not, at `node.rs:622-671` and `node.rs:692-705`.
-//! 3. **No inbound member dispatch.** `Accessible.GetRole`,
-//!    `Component.GetExtents` and the other answers live in `interfaces/*.zig`
-//!    upstream and are **not ported**. The values they would answer from are
-//!    ported and tested, so the dispatch is the only half left, and it needs
-//!    the same D-Bus connection the events need.
+//! Node updates use `node.notifyChanges`, in the order defined by
+//! `node.rs:606-705`. Focus remains in its own slot, so an update does not
+//! duplicate focus notifications. Text-change diffing is not implemented here.
 //!
 //! **Why the events are collected rather than raised.** Upstream raises each
 //! event the moment it produces it. This module has no connection to raise it
@@ -78,24 +65,22 @@ const consumer = @import("../../consumer/root.zig");
 const tree_index = @import("../../consumer/tree_index.zig");
 const schema = @import("../../schema/root.zig");
 const events = @import("events.zig");
+const node_notifications = @import("node.zig");
 const object_id = @import("object_id.zig");
 const window_bounds = @import("window_bounds.zig");
 
 const CRect = boundary.CRect;
-const CTreeUpdate = boundary.CTreeUpdate;
 const FullNodeId = tree_index.FullNodeId;
 const NodeRef = consumer.node_id.NodeRef;
-const Rect = schema.Rect;
 const Tree = consumer.tree.Tree;
 const TreeChangeHandler = consumer.tree.TreeChangeHandler;
 const ObjectId = object_id.ObjectId;
 
 /// The failures a tree operation on this adapter reports.
 ///
-/// It is the consumer layer's own set merged with the geometry conversion's,
-/// and it is declared here rather than in either module because the set a
-/// caller of this module catches is not either module's set alone.
-pub const AdapterError = consumer.tree.UpdateError || window_bounds.GeometryError;
+/// Consumer update failures and the closed notification failure set.
+/// `last_event_error` preserves the first notification error after tree commit.
+pub const AdapterError = consumer.tree.UpdateError || node_notifications.NotifyError;
 
 /// One AT-SPI window's tree, its focus flag, its boxes and the events its last
 /// update produced.
@@ -239,7 +224,7 @@ pub const PlatformAdapter = struct {
     /// **Errors.** `error.OutOfMemory` and the consumer layer's `UpdateError`
     /// set. `last_event_error` carries a failure one of the four change slots
     /// hit, which the caller reads after this returns.
-    pub fn apply(self: *PlatformAdapter, update: CTreeUpdate) !void {
+    pub fn apply(self: *PlatformAdapter, update: schema.TreeUpdate) !void {
         self.slot_error = null;
         self.last_event_error = null;
         if (self.tree == null) {
@@ -391,72 +376,17 @@ fn onNodeRemoved(ptr: *anyopaque, node: NodeRef) void {
     });
 }
 
-/// One node was rewritten, which raises `BoundsChanged` and only when the box
-/// moved.
+/// Reports the rewritten node through the upstream ordered notification pipeline.
 fn onNodeUpdated(ptr: *anyopaque, old: NodeRef, new: NodeRef) void {
     const self = PlatformAdapter.adapterOf(ptr);
-    const before = schema.option.bounds(&old.data().properties);
-    const after = schema.option.bounds(&new.data().properties);
-    const reason = reasonFor(before, after);
-    if (reason == .unchanged) return;
-    var members: events.AnyData = .none;
-    if (after) |box| {
-        const extent = window_bounds.toWire(box) catch |err| {
-            self.noteSlotFailure(err);
-            return;
-        };
-        members = events.AnyData{ .extent = extent };
-    }
-    self.record(.{
-        .kind = .object,
-        .member = events.member_bounds_changed,
-        .id = self.objectId(new.id()),
-        // The reference declares this argument as a string and a client matches
-        // it against "1" and "2", so it is decimal text and not an integer.
-        .detail1 = reason.text(),
-        .any_data = members,
-    });
-}
-
-/// Why a box moved, which is what the first argument of `BoundsChanged` names.
-pub const BoundsReason = enum {
-    /// Nothing moved. The consumer layer reported the node because something
-    /// else about it changed, and `BoundsChanged` is not the signal for that.
-    unchanged,
-    /// Only the extents moved.
-    size,
-    /// Only the origin moved.
-    location,
-    /// Both moved. The reference has no single reason for this, so the port
-    /// reports the one a client acts on first, which is the size.
-    both,
-
-    /// The decimal text the reference spells this reason with.
-    ///
-    /// **Errors.** This function does not fail.
-    pub fn text(self: BoundsReason) []const u8 {
-        return switch (self) {
-            .unchanged, .size, .both => events.bounds_reason_size,
-            .location => events.bounds_reason_location,
-        };
-    }
-};
-
-/// Why the box moved from `before` to `after`, or `.unchanged` when it did not.
-///
-/// **Errors.** This function does not fail.
-pub fn reasonFor(before: ?Rect, after: ?Rect) BoundsReason {
-    const was = before orelse return if (after == null) .unchanged else .size;
-    const now = after orelse return .size;
-    const origin_moved = was.x0 != now.x0 or was.y0 != now.y0;
-    const size_moved = was.width() != now.width() or was.height() != now.height();
-    // The four cases are written out rather than taken from a two-object switch
-    // on a pair of booleans, because Zig 0.16.0 no longer parses one and a
-    // reader of this function should be able to see the four combinations
-    // without knowing that.
-    if (origin_moved) return if (size_moved) .both else .location;
-    if (size_moved) return .size;
-    return .unchanged;
+    node_notifications.notifyChanges(
+        self.gpa,
+        &self.raised,
+        new,
+        old,
+        self.bounds,
+        self.id,
+    ) catch |err| self.noteSlotFailure(err);
 }
 
 /// The focus moved, which raises `Focus` on the new node and on the old one.
@@ -496,8 +426,8 @@ const testing = std.testing;
 ///
 /// The root node's id is `1` and every child follows it, which is the shape a
 /// tree takes when an application pushes one button.
-fn chainUpdate(gpa: std.mem.Allocator, count: u64) !CTreeUpdate {
-    var update: CTreeUpdate = .{
+fn chainUpdate(gpa: std.mem.Allocator, count: u64) !schema.TreeUpdate {
+    var update: schema.TreeUpdate = .{
         .tree = schema.TreeInfo.init(.{ .value = 1 }),
         .focus = .{ .value = 1 },
     };
@@ -563,21 +493,28 @@ test "a second update is folded into the tree the first one built" {
 
     try testing.expectEqual(@as(u64, 2), adapter.applied_updates);
     try testing.expectEqual(@as(usize, 3), adapter.nodeCount());
-    // The second update added one node and rewrote the two it already held, so
-    // the cache event is the only one it raises.
-    try testing.expectEqual(@as(usize, 1), adapter.raised.count());
-    try testing.expectEqualStrings(
-        events.member_add_accessible,
-        adapter.raised.items.items[0].member,
-    );
+    const raised = adapter.raised.items.items;
+    try testing.expectEqual(@as(usize, 2), raised.len);
+    try testing.expectEqualStrings(events.member_add_accessible, raised[0].member);
+    try testing.expectEqualStrings("ChildrenChanged", raised[1].member);
+    try testing.expectEqualStrings("add", raised[1].detail1);
+    try testing.expectEqual(@as(i32, 0), raised[1].detail2);
+    try testing.expect(std.meta.eql(
+        adapter.objectId(FullNodeId.init(.{ .value = 2 }, .init(0))),
+        raised[1].id,
+    ));
+    try testing.expect(std.meta.eql(
+        adapter.objectId(FullNodeId.init(.{ .value = 3 }, .init(0))),
+        raised[1].any_data.address,
+    ));
 }
 
-test "a node whose box moved raises BoundsChanged and names the reason" {
+test "a node whose box moved raises the upstream BoundsChanged payload" {
     const gpa = std.testing.allocator;
     var adapter = PlatformAdapter.init(gpa, 1, false);
     defer adapter.deinit();
 
-    var update: CTreeUpdate = .{
+    var update: schema.TreeUpdate = .{
         .tree = schema.TreeInfo.init(.{ .value = 1 }),
         .focus = .{ .value = 1 },
     };
@@ -591,7 +528,7 @@ test "a node whose box moved raises BoundsChanged and names the reason" {
 
     // The same box under a different node is an update that moves nothing, and
     // a `BoundsChanged` for it would make a client repaint for no reason.
-    var still: CTreeUpdate = .{ .focus = .{ .value = 1 } };
+    var still: schema.TreeUpdate = .{ .focus = .{ .value = 1 } };
     var same = schema.Node.init(gpa, .button);
     try schema.option.setBounds(&same.properties, schema.rectInit(0, 0, 10, 10));
     try still.pushNode(gpa, .{ .value = 1 }, same);
@@ -600,7 +537,7 @@ test "a node whose box moved raises BoundsChanged and names the reason" {
 
     // A different extent is a size change, and the new box rides in the variant
     // because `siiva{sv}` has no argument of type `(iiii)`.
-    var moved: CTreeUpdate = .{ .focus = .{ .value = 1 } };
+    var moved: schema.TreeUpdate = .{ .focus = .{ .value = 1 } };
     var wider = schema.Node.init(gpa, .button);
     try schema.option.setBounds(&wider.properties, schema.rectInit(0, 0, 20, 10));
     try moved.pushNode(gpa, .{ .value = 1 }, wider);
@@ -609,39 +546,10 @@ test "a node whose box moved raises BoundsChanged and names the reason" {
     try testing.expectEqual(@as(usize, 1), adapter.raised.count());
     const raised = adapter.raised.items.items[0];
     try testing.expectEqualStrings(events.member_bounds_changed, raised.member);
-    try testing.expectEqualStrings(events.bounds_reason_size, raised.detail1);
+    try testing.expectEqualStrings("", raised.detail1);
     try testing.expectEqualStrings("(iiii)", raised.any_data.signature());
     const extent = raised.any_data.extent;
     try testing.expectEqual(@as(i32, 20), extent[2]);
-}
-
-test "a node that only moved raises the location reason" {
-    try testing.expectEqual(BoundsReason.unchanged, reasonFor(null, null));
-    try testing.expectEqual(BoundsReason.size, reasonFor(null, schema.rectInit(0, 0, 1, 1)));
-    try testing.expectEqual(BoundsReason.size, reasonFor(schema.rectInit(0, 0, 1, 1), null));
-    try testing.expectEqual(
-        BoundsReason.unchanged,
-        reasonFor(schema.rectInit(0, 0, 4, 4), schema.rectInit(0, 0, 4, 4)),
-    );
-    try testing.expectEqual(
-        BoundsReason.size,
-        reasonFor(schema.rectInit(0, 0, 4, 4), schema.rectInit(0, 0, 8, 4)),
-    );
-    try testing.expectEqual(
-        BoundsReason.location,
-        reasonFor(schema.rectInit(0, 0, 4, 4), schema.rectInit(5, 0, 9, 4)),
-    );
-    try testing.expectEqual(
-        BoundsReason.both,
-        reasonFor(schema.rectInit(0, 0, 4, 4), schema.rectInit(5, 6, 9, 9)),
-    );
-}
-
-test "the reason text is the decimal the reference spells" {
-    try testing.expectEqualStrings("1", BoundsReason.size.text());
-    try testing.expectEqualStrings("2", BoundsReason.location.text());
-    try testing.expectEqualStrings("1", BoundsReason.both.text());
-    try testing.expectEqualStrings("1", BoundsReason.unchanged.text());
 }
 
 test "the window focus flag raises Focus on the node that holds it" {
@@ -719,4 +627,277 @@ test "releasing twice releases nothing the second time" {
     adapter.deinit();
 
     try testing.expect(!adapter.hasTree());
+}
+
+fn notificationUpdate(
+    gpa: std.mem.Allocator,
+    options: struct {
+        initial: bool,
+        role: schema.Role,
+        busy: bool,
+        changed: bool = false,
+        child: ?u64 = null,
+        live: bool = false,
+    },
+) !schema.TreeUpdate {
+    var update: schema.TreeUpdate = .{ .focus = .{ .value = 1 } };
+    errdefer update.deinit(gpa);
+    if (options.initial) update.tree = schema.TreeInfo.init(.{ .value = 1 });
+    const built_root = build_root: {
+        var root = schema.Node.init(gpa, options.role);
+        errdefer root.deinit();
+        schema.flags.setBusy(&root.flags, options.busy);
+        try schema.strings.setLabel(&root.properties, if (options.changed) "After" else "Before");
+        try schema.numbers.setNumericValue(&root.properties, if (options.changed) 2.5 else 1.5);
+        if (options.live) {
+            try schema.strings.setDescription(
+                &root.properties,
+                if (options.changed) "New description" else "Old description",
+            );
+            try schema.enums.setLive(&root.properties, .polite);
+        }
+        if (options.child) |child| {
+            try schema.ids_props.setChildren(&root.properties, &.{.{ .value = child }});
+        }
+        break :build_root root;
+    };
+    try update.pushNode(gpa, .{ .value = 1 }, built_root);
+    if (options.child) |child| {
+        try update.pushNode(gpa, .{ .value = child }, schema.Node.init(gpa, .button));
+    }
+    return update;
+}
+
+fn clearNotificationEvents(adapter: *PlatformAdapter) void {
+    adapter.raised.deinit(adapter.gpa);
+    adapter.raised = events.EventQueue.empty();
+}
+
+fn expectNotification(
+    event: events.Event,
+    options: struct {
+        kind: events.Kind = .object,
+        member: []const u8,
+        node: u64 = 1,
+        detail1: []const u8 = "",
+        detail2: i32 = 0,
+    },
+) !void {
+    try testing.expectEqual(options.kind, event.kind);
+    try testing.expectEqualStrings(options.member, event.member);
+    try testing.expectEqualStrings(options.detail1, event.detail1);
+    try testing.expectEqual(options.detail2, event.detail2);
+    try testing.expectEqual(@as(i32, 0), event.detail3);
+    try testing.expectEqual(@as(usize, 0), event.properties.count());
+    const id = FullNodeId.init(.{ .value = options.node }, .init(0));
+    const expected: ObjectId = .{ .node = .{ .adapter = 9, .node = id } };
+    try testing.expect(std.meta.eql(expected, event.id));
+}
+
+test "adapter document busy completion follows state notification" {
+    const gpa = testing.allocator;
+    var adapter = PlatformAdapter.init(gpa, 9, false);
+    defer adapter.deinit();
+    try adapter.apply(try notificationUpdate(gpa, .{
+        .initial = true,
+        .role = .root_web_area,
+        .busy = true,
+    }));
+    clearNotificationEvents(&adapter);
+    try adapter.apply(try notificationUpdate(gpa, .{
+        .initial = false,
+        .role = .root_web_area,
+        .busy = false,
+    }));
+    try testing.expect(adapter.last_event_error == null);
+    try testing.expectEqual(@as(usize, 2), adapter.raised.count());
+    try expectNotification(adapter.raised.items.items[0], .{
+        .member = "StateChanged",
+        .detail1 = "busy",
+        .detail2 = 0,
+    });
+    try testing.expectEqual(events.AnyData.none, adapter.raised.items.items[0].any_data);
+    try expectNotification(adapter.raised.items.items[1], .{
+        .kind = .document,
+        .member = "LoadComplete",
+    });
+    try testing.expectEqual(events.AnyData.none, adapter.raised.items.items[1].any_data);
+}
+
+test "adapter non-document busy completion has no document event" {
+    const gpa = testing.allocator;
+    var adapter = PlatformAdapter.init(gpa, 9, false);
+    defer adapter.deinit();
+    try adapter.apply(try notificationUpdate(gpa, .{
+        .initial = true,
+        .role = .button,
+        .busy = true,
+    }));
+    clearNotificationEvents(&adapter);
+    try adapter.apply(try notificationUpdate(gpa, .{
+        .initial = false,
+        .role = .button,
+        .busy = false,
+    }));
+    try testing.expectEqual(@as(usize, 1), adapter.raised.count());
+    try expectNotification(adapter.raised.items.items[0], .{
+        .member = "StateChanged",
+        .detail1 = "busy",
+    });
+}
+
+test "adapter unchanged busy state emits nothing" {
+    const gpa = testing.allocator;
+    var adapter = PlatformAdapter.init(gpa, 9, false);
+    defer adapter.deinit();
+    try adapter.apply(try notificationUpdate(gpa, .{
+        .initial = true,
+        .role = .root_web_area,
+        .busy = true,
+    }));
+    clearNotificationEvents(&adapter);
+    try adapter.apply(try notificationUpdate(gpa, .{
+        .initial = false,
+        .role = .root_web_area,
+        .busy = true,
+    }));
+    try testing.expectEqual(@as(usize, 0), adapter.raised.count());
+}
+
+test "adapter orders state name value children and document notifications" {
+    const gpa = testing.allocator;
+    var adapter = PlatformAdapter.init(gpa, 9, false);
+    defer adapter.deinit();
+    try adapter.apply(try notificationUpdate(gpa, .{
+        .initial = true,
+        .role = .root_web_area,
+        .busy = true,
+        .child = 2,
+    }));
+    clearNotificationEvents(&adapter);
+    try adapter.apply(try notificationUpdate(gpa, .{
+        .initial = false,
+        .role = .root_web_area,
+        .busy = false,
+        .changed = true,
+        .child = 3,
+    }));
+    const raised = adapter.raised.items.items;
+    try testing.expect(adapter.last_event_error == null);
+    try testing.expectEqual(@as(usize, 8), raised.len);
+    try testing.expectEqualStrings("AddAccessible", raised[0].member);
+    try testing.expect(std.meta.eql(ObjectId.cache, raised[0].id));
+    try expectNotification(raised[1], .{ .member = "StateChanged", .detail1 = "busy" });
+    try expectNotification(raised[2], .{
+        .member = "PropertyChange",
+        .detail1 = "accessible-name",
+    });
+    try testing.expectEqualStrings("After", raised[2].any_data.text);
+    try expectNotification(raised[3], .{
+        .member = "PropertyChange",
+        .detail1 = "accessible-value",
+    });
+    try testing.expectEqual(@as(f64, 2.5), raised[3].any_data.number);
+    try expectNotification(raised[4], .{
+        .member = "ChildrenChanged",
+        .detail1 = "add",
+        .detail2 = 0,
+    });
+    try expectNotification(raised[5], .{
+        .member = "ChildrenChanged",
+        .detail1 = "remove",
+        .detail2 = -1,
+    });
+    try expectNotification(raised[6], .{ .kind = .document, .member = "LoadComplete" });
+    try testing.expectEqualStrings("RemoveAccessible", raised[7].member);
+    try testing.expect(std.meta.eql(ObjectId.cache, raised[7].id));
+    const added = adapter.objectId(FullNodeId.init(.{ .value = 3 }, .init(0)));
+    const removed = adapter.objectId(FullNodeId.init(.{ .value = 2 }, .init(0)));
+    try testing.expect(std.meta.eql(added, raised[0].any_data.address));
+    try testing.expect(std.meta.eql(added, raised[4].any_data.address));
+    try testing.expect(std.meta.eql(removed, raised[5].any_data.address));
+    try testing.expect(std.meta.eql(removed, raised[7].any_data.address));
+}
+
+test "adapter notification fail-N retains owned event prefix after tree commit" {
+    const gpa = testing.allocator;
+    const allocation_attempt_bound = 128;
+    var saw_partial = false;
+    for (0..allocation_attempt_bound) |fail_index| {
+        var failing = testing.FailingAllocator.init(gpa, .{ .fail_index = fail_index });
+        var adapter = PlatformAdapter.init(gpa, 9, false);
+        defer adapter.deinit();
+        try adapter.apply(try notificationUpdate(gpa, .{
+            .initial = true,
+            .role = .root_web_area,
+            .busy = true,
+            .live = true,
+        }));
+        clearNotificationEvents(&adapter);
+        const update = try notificationUpdate(gpa, .{
+            .initial = false,
+            .role = .root_web_area,
+            .busy = false,
+            .changed = true,
+            .live = true,
+        });
+        adapter.gpa = failing.allocator();
+        try adapter.apply(update);
+        try testing.expectEqual(@as(u64, 2), adapter.applied_updates);
+        const root = adapter.tree.?.stateOf().root();
+        try testing.expectEqualStrings("After", schema.strings.label(&root.data().properties).?);
+        const raised = adapter.raised.items.items;
+        const expected_members = [_][]const u8{
+            "StateChanged",   "PropertyChange", "Announcement",
+            "PropertyChange", "PropertyChange", "LoadComplete",
+        };
+        try testing.expect(raised.len <= expected_members.len);
+        for (raised, 0..) |event, index| {
+            try testing.expectEqualStrings(expected_members[index], event.member);
+            if (index == 1 or index == 2) {
+                try testing.expectEqualStrings("After", event.any_data.text);
+            }
+            if (index == 3) {
+                try testing.expectEqualStrings("New description", event.any_data.text);
+            }
+        }
+        if (adapter.last_event_error) |failure| {
+            try testing.expectEqual(error.OutOfMemory, failure);
+            if (raised.len != 0) saw_partial = true;
+            continue;
+        }
+        try testing.expectEqual(expected_members.len, raised.len);
+        try testing.expect(saw_partial);
+        return;
+    }
+    return error.AllocationAttemptBoundExceeded;
+}
+
+test "adapter node updates do not duplicate the focus slot" {
+    const gpa = testing.allocator;
+    var adapter = PlatformAdapter.init(gpa, 9, true);
+    defer adapter.deinit();
+    try adapter.apply(try chainUpdate(gpa, 2));
+    clearNotificationEvents(&adapter);
+    var update: schema.TreeUpdate = .{ .focus = .{ .value = 2 } };
+    try update.pushNode(gpa, .{ .value = 2 }, schema.Node.init(gpa, .button));
+    try adapter.apply(update);
+    const raised = adapter.raised.items.items;
+    const expected_focus_nodes = [_]u64{ 2, 1 };
+    const target = adapter.objectId(FullNodeId.init(.{ .value = 2 }, .init(0)));
+    var focus_index: usize = 0;
+    for (raised) |event| {
+        if (std.mem.eql(u8, event.member, "StateChanged")) {
+            try testing.expect(!std.mem.eql(u8, event.detail1, "focused"));
+        }
+        if (!std.mem.eql(u8, event.member, "Focus")) continue;
+        try testing.expect(focus_index < expected_focus_nodes.len);
+        try expectNotification(event, .{
+            .member = "Focus",
+            .node = expected_focus_nodes[focus_index],
+        });
+        try testing.expect(std.meta.eql(target, event.any_data.address));
+        focus_index += 1;
+    }
+    try testing.expectEqual(expected_focus_nodes.len, focus_index);
 }

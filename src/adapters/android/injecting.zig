@@ -45,7 +45,6 @@ const std = @import("std");
 const allocation = @import("../../capi/allocation.zig");
 const boundary = @import("../../capi/boundary.zig");
 const classes = @import("classes.zig");
-const schema = @import("../../schema/root.zig");
 const java_call = @import("java_call.zig");
 const jni = @import("jni_table.zig");
 const methods = @import("methods.zig");
@@ -964,7 +963,7 @@ fn recordingTable(recorder: *Recorder) JniTable {
 
 /// An activation handler that answers no tree, which is the ordinary answer
 /// meaning: `include/zaccesskit.h:5795-5796` says the adapter treats it as data.
-fn noActivation(_: ?*anyopaque) callconv(.c) ?*schema.TreeUpdate {
+fn noActivation(_: ?*anyopaque) callconv(.c) ?*boundary.CTreeUpdate {
     return null;
 }
 
@@ -1199,6 +1198,6 @@ test "an update on an inactive adapter posts nothing" {
 }
 
 /// A tree-update factory that answers `null`, which is a contract violation.
-fn noFactory(_: ?*anyopaque) callconv(.c) ?*schema.TreeUpdate {
+fn noFactory(_: ?*anyopaque) callconv(.c) ?*boundary.CTreeUpdate {
     return null;
 }

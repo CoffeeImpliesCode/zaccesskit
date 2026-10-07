@@ -2,10 +2,10 @@
 //!
 //! **What this file is.** `src/capi/platform.zig` owns the six declarations
 //! `include/zaccesskit.h:6267-6329` puts behind the Linux and BSD guard, and it
-//! forwards each one to a function here. Nothing in `src/capi/**` imports this
-//! module back: the shared types come from `src/capi/boundary.zig`, which is a
-//! leaf, and this module imports only that. Every type the C ABI and an adapter
-//! both name is declared exactly once, in `boundary.zig`.
+//! forwards each one to a function here. Shared callback types come from
+//! `src/capi/boundary.zig`. `src/capi/tree_update.zig` consumes the opaque C
+//! update handles and retains the metadata storage that native snapshots borrow.
+//! Neither module imports the platform export dispatcher.
 //!
 //! ## What is compiled and tested on this host
 //!
@@ -122,6 +122,7 @@ const wire = @import("wire.zig");
 const wire_action = @import("wire/action.zig");
 const wire_rect = @import("wire/rect.zig");
 const schema = @import("../../schema/root.zig");
+const c_tree_update = @import("../../capi/tree_update.zig");
 
 const ActivationHandler = boundary.ActivationHandler;
 const ActionHandler = boundary.ActionHandler;
@@ -156,6 +157,8 @@ pub const UnixAdapter = struct {
     gpa: std.mem.Allocator,
     /// The tree, the boxes, the focus flag and the events an update produced.
     platform: PlatformAdapter,
+    /// Owns toolkit storage borrowed by the committed and working tree snapshots.
+    metadata_owners: c_tree_update.LiveMetadataOwners = .{},
     /// Called once, the first time the adapter holds a tree. A `null` answer
     /// is ordinary and means the application had nothing to add.
     activation_handler: ActivationHandler,
@@ -187,6 +190,7 @@ pub const UnixAdapter = struct {
     /// **Errors.** This function does not fail.
     pub fn deinit(self: *UnixAdapter) void {
         self.platform.deinit();
+        self.metadata_owners.deinit();
         const gpa = self.gpa;
         gpa.destroy(self);
     }
@@ -307,14 +311,25 @@ pub fn unixAdapterUpdateIfActive(
     // A failure here leaves the committed tree as `docs/33` section 1 describes
     // and the caller sees it on the next update, which is why the C ABI's `void`
     // return is not hiding one.
-    adapter.platform.apply(update.*) catch return;
+    const native = adapter.metadata_owners.consume(
+        adapter.gpa,
+        update,
+        if (adapter.platform.tree) |*tree| tree else null,
+    ) catch return;
+    defer adapter.metadata_owners.reap(
+        if (adapter.platform.tree) |*tree| tree else null,
+    );
+    adapter.platform.apply(native) catch return;
 
     if (!was_active) {
         adapter.activated = true;
         // A `null` answer is an ordinary answer and means the application had
         // no tree of its own to add, so it is recorded and not raised.
-        adapter.application_declined_activation =
-            adapter.activation_handler(adapter.activation_userdata) == null;
+        const initial = adapter.activation_handler(adapter.activation_userdata);
+        adapter.application_declined_activation = initial == null;
+        // This port already committed the factory update before activation.
+        // A non-null activation payload is unused, but still transferred to us.
+        if (initial) |handle| c_tree_update.discard(handle);
     }
 }
 /// `accesskit_unix_adapter_update_window_focus_state`,
@@ -430,8 +445,8 @@ const testing = std.testing;
 /// The node has no children. A fixture that named itself as a child would be a
 /// cycle, and the consumer layer's validator rejects a cyclic tree, so a test
 /// built on one would measure the validator rather than the adapter.
-fn oneNodeUpdate(gpa: std.mem.Allocator) !CTreeUpdate {
-    var update: CTreeUpdate = .{
+fn oneNodeUpdate(gpa: std.mem.Allocator) !schema.TreeUpdate {
+    var update: schema.TreeUpdate = .{
         .tree = schema.TreeInfo.init(.{ .value = 1 }),
         .focus = .{ .value = 1 },
     };
@@ -450,12 +465,14 @@ const Probe = struct {
         probe.calls += 1;
         probe.last_userdata = context;
         if (!probe.answers_tree) return null;
-        const update = adapter_allocator.create(CTreeUpdate) catch return null;
-        update.* = oneNodeUpdate(adapter_allocator) catch {
+        const update = adapter_allocator.create(c_tree_update.accesskit_tree_update) catch
+            return null;
+        const native = oneNodeUpdate(adapter_allocator) catch {
             adapter_allocator.destroy(update);
             return null;
         };
-        return update;
+        update.* = .{ .gpa = adapter_allocator, .update = native, .info = null };
+        return @ptrCast(update);
     }
 
     fn action(request: *boundary.CActionRequest, context: ?*anyopaque) callconv(.c) void {
@@ -475,12 +492,14 @@ const Probe = struct {
         const probe: *Probe = @ptrCast(@alignCast(context orelse return null));
         probe.calls += 1;
         probe.last_userdata = context;
-        const update = adapter_allocator.create(CTreeUpdate) catch return null;
-        update.* = oneNodeUpdate(adapter_allocator) catch {
+        const update = adapter_allocator.create(c_tree_update.accesskit_tree_update) catch
+            return null;
+        const native = oneNodeUpdate(adapter_allocator) catch {
             adapter_allocator.destroy(update);
             return null;
         };
-        return update;
+        update.* = .{ .gpa = adapter_allocator, .update = native, .info = null };
+        return @ptrCast(update);
     }
 };
 
@@ -496,6 +515,245 @@ fn adapterFor(probe: *Probe) !*UnixAdapter {
         Probe.deactivation,
         probe,
     ) orelse error.AdapterAllocationFailed;
+}
+
+test "public C update factory commits a real handle and toolkit metadata without a bus" {
+    // The factory returns the opaque object C consumers create, not a native fixture.
+    const C = struct {
+        extern fn accesskit_tree_update_with_focus(u64) ?*anyopaque;
+        extern fn accesskit_tree_update_free(*anyopaque) void;
+        extern fn accesskit_node_new(u8) ?*anyopaque;
+        extern fn accesskit_tree_update_push_node(*anyopaque, u64, *anyopaque) void;
+        extern fn accesskit_tree_info_new(u64) ?*anyopaque;
+        extern fn accesskit_tree_info_set_toolkit_name(*anyopaque, [*:0]const u8) void;
+        extern fn accesskit_tree_info_set_toolkit_version(*anyopaque, [*:0]const u8) void;
+        extern fn accesskit_tree_update_set_tree_info(*anyopaque, *anyopaque) void;
+    };
+    const Factory = struct {
+        handle: ?*anyopaque,
+        fn factory(context: ?*anyopaque) callconv(.c) ?*CTreeUpdate {
+            const self: *@This() = @ptrCast(@alignCast(context.?));
+            const handle = self.handle.?;
+            self.handle = null;
+            return @ptrCast(handle);
+        }
+    };
+    const handle = C.accesskit_tree_update_with_focus(41) orelse
+        return error.UpdateAllocationFailed;
+    var factory: Factory = .{ .handle = handle };
+    defer if (factory.handle) |unconsumed| C.accesskit_tree_update_free(unconsumed);
+    const root = C.accesskit_node_new(@intFromEnum(schema.Role.window)) orelse
+        return error.NodeAllocationFailed;
+    C.accesskit_tree_update_push_node(handle, 41, root);
+    const info = C.accesskit_tree_info_new(41) orelse return error.InfoAllocationFailed;
+    C.accesskit_tree_info_set_toolkit_name(info, "Real C Toolkit");
+    C.accesskit_tree_info_set_toolkit_version(info, "7.3-owned");
+    C.accesskit_tree_update_set_tree_info(handle, info);
+    var probe: Probe = .{};
+    const adapter = try adapterFor(&probe);
+    defer adapter.deinit();
+
+    unixAdapterUpdateIfActive(adapter, Factory.factory, &factory);
+
+    try testing.expect(adapter.platform.hasTree());
+    const state = adapter.platform.tree.?.stateOf();
+    try testing.expectEqual(@as(u64, 41), state.root().id().local.value);
+    try testing.expectEqual(schema.Role.window, state.root().data().role);
+    try testing.expectEqual(@as(usize, 1), state.nodes.count());
+    try testing.expectEqualStrings("Real C Toolkit", state.toolkitName());
+    try testing.expectEqualStrings("7.3-owned", state.toolkitVersion().?);
+    try testing.expectEqual(@as(u64, 1), adapter.platform.applied_updates);
+    try testing.expect(adapter.activated);
+    try testing.expect(adapter.application_declined_activation);
+    try testing.expectEqual(@as(usize, 1), probe.calls);
+}
+
+const OwnershipTestC = struct {
+    extern fn accesskit_tree_update_with_focus(u64) ?*anyopaque;
+    extern fn accesskit_tree_update_free(*anyopaque) void;
+    extern fn accesskit_node_new(u8) ?*anyopaque;
+    extern fn accesskit_tree_update_push_node(*anyopaque, u64, *anyopaque) void;
+    extern fn accesskit_tree_info_new(u64) ?*anyopaque;
+    extern fn accesskit_tree_info_set_toolkit_name(*anyopaque, [*:0]const u8) void;
+    extern fn accesskit_tree_info_set_toolkit_version(*anyopaque, [*:0]const u8) void;
+    extern fn accesskit_tree_update_set_tree_info(*anyopaque, *anyopaque) void;
+
+    fn update(root_id: u64, name: [*:0]const u8, version: [*:0]const u8) !*anyopaque {
+        const handle = accesskit_tree_update_with_focus(root_id) orelse
+            return error.UpdateAllocationFailed;
+        errdefer accesskit_tree_update_free(handle);
+        const root = accesskit_node_new(@intFromEnum(schema.Role.window)) orelse
+            return error.NodeAllocationFailed;
+        accesskit_tree_update_push_node(handle, root_id, root);
+        const info = accesskit_tree_info_new(root_id) orelse return error.InfoAllocationFailed;
+        accesskit_tree_info_set_toolkit_name(info, name);
+        accesskit_tree_info_set_toolkit_version(info, version);
+        accesskit_tree_update_set_tree_info(handle, info);
+        return handle;
+    }
+};
+
+const OwnershipTestCallback = struct {
+    handle: ?*anyopaque = null,
+    calls: usize = 0,
+
+    fn take(context: ?*anyopaque) callconv(.c) ?*CTreeUpdate {
+        const self: *@This() = @ptrCast(@alignCast(context.?));
+        self.calls += 1;
+        const handle = self.handle;
+        self.handle = null;
+        return if (handle) |owned| @ptrCast(owned) else null;
+    }
+
+    fn deinit(self: *@This()) void {
+        if (self.handle) |handle| OwnershipTestC.accesskit_tree_update_free(handle);
+    }
+};
+
+test "public C toolkit metadata survives consumed payload and metadata-free update" {
+    var probe: Probe = .{};
+    const adapter = try adapterFor(&probe);
+    defer adapter.deinit();
+    var factory: OwnershipTestCallback = .{
+        .handle = try OwnershipTestC.update(51, "Retained C Toolkit", "8.1-retained"),
+    };
+    defer factory.deinit();
+    unixAdapterUpdateIfActive(adapter, OwnershipTestCallback.take, &factory);
+    try testing.expect(factory.handle == null);
+    try testing.expectEqualStrings(
+        "Retained C Toolkit",
+        adapter.platform.tree.?.stateOf().toolkitName(),
+    );
+    try testing.expectEqualStrings(
+        "8.1-retained",
+        adapter.platform.tree.?.stateOf().toolkitVersion().?,
+    );
+
+    factory.handle = OwnershipTestC.accesskit_tree_update_with_focus(51) orelse
+        return error.UpdateAllocationFailed;
+    const root = OwnershipTestC.accesskit_node_new(@intFromEnum(schema.Role.dialog)) orelse
+        return error.NodeAllocationFailed;
+    OwnershipTestC.accesskit_tree_update_push_node(factory.handle.?, 51, root);
+    unixAdapterUpdateIfActive(adapter, OwnershipTestCallback.take, &factory);
+
+    const state = adapter.platform.tree.?.stateOf();
+    try testing.expectEqual(schema.Role.dialog, state.root().data().role);
+    try testing.expectEqual(@as(u64, 51), state.root().id().local.value);
+    try testing.expectEqualStrings("Retained C Toolkit", state.toolkitName());
+    try testing.expectEqualStrings("8.1-retained", state.toolkitVersion().?);
+    try testing.expectEqual(@as(u64, 2), adapter.platform.applied_updates);
+    try testing.expect(factory.handle == null);
+}
+
+test "public C failed root metadata retains both borrows and corrected update prunes owners" {
+    var probe: Probe = .{};
+    const adapter = try adapterFor(&probe);
+    defer adapter.deinit();
+    var factory: OwnershipTestCallback = .{
+        .handle = try OwnershipTestC.update(61, "Committed C Toolkit", "1.0-committed"),
+    };
+    defer factory.deinit();
+    unixAdapterUpdateIfActive(adapter, OwnershipTestCallback.take, &factory);
+
+    factory.handle = OwnershipTestC.accesskit_tree_update_with_focus(62) orelse
+        return error.UpdateAllocationFailed;
+    const rejected_info = OwnershipTestC.accesskit_tree_info_new(62) orelse
+        return error.InfoAllocationFailed;
+    OwnershipTestC.accesskit_tree_info_set_toolkit_name(rejected_info, "Working C Toolkit");
+    OwnershipTestC.accesskit_tree_info_set_toolkit_version(rejected_info, "2.0-working");
+    OwnershipTestC.accesskit_tree_update_set_tree_info(factory.handle.?, rejected_info);
+    // No node 62 exists: validation fails after the working metadata has changed.
+    unixAdapterUpdateIfActive(adapter, OwnershipTestCallback.take, &factory);
+
+    const committed = adapter.platform.tree.?.stateOf();
+    try testing.expectEqual(@as(u64, 61), committed.root().id().local.value);
+    try testing.expectEqualStrings("Committed C Toolkit", committed.toolkitName());
+    try testing.expectEqualStrings("1.0-committed", committed.toolkitVersion().?);
+    try testing.expectEqualStrings(
+        "Working C Toolkit",
+        adapter.platform.tree.?.next_state.info.toolkit_name.?,
+    );
+    try testing.expectEqualStrings(
+        "2.0-working",
+        adapter.platform.tree.?.next_state.info.toolkit_version.?,
+    );
+    try testing.expectEqual(@as(u64, 1), adapter.platform.applied_updates);
+    try testing.expect(factory.handle == null);
+
+    factory.handle = try OwnershipTestC.update(62, "Corrected C Toolkit", "3.0-corrected");
+    unixAdapterUpdateIfActive(adapter, OwnershipTestCallback.take, &factory);
+    const corrected = adapter.platform.tree.?.stateOf();
+    try testing.expectEqual(@as(u64, 62), corrected.root().id().local.value);
+    try testing.expectEqualStrings("Corrected C Toolkit", corrected.toolkitName());
+    try testing.expectEqualStrings("3.0-corrected", corrected.toolkitVersion().?);
+    try testing.expectEqual(@as(u64, 2), adapter.platform.applied_updates);
+
+    factory.handle = try OwnershipTestC.update(62, "Replacement C Toolkit", "4.0-replaced");
+    unixAdapterUpdateIfActive(adapter, OwnershipTestCallback.take, &factory);
+    const replaced = adapter.platform.tree.?.stateOf();
+    try testing.expectEqualStrings("Replacement C Toolkit", replaced.toolkitName());
+    try testing.expectEqualStrings("4.0-replaced", replaced.toolkitVersion().?);
+    try testing.expectEqual(@as(u64, 3), adapter.platform.applied_updates);
+}
+
+test "nonnull C activation payload is discarded once without replacing committed tree" {
+    const c_tree_info = @import("../../capi/tree_info.zig");
+    var captured: testing.FailingAllocator = .init(testing.allocator, .{});
+    const activation_handle = try c_tree_update.treeUpdateWithCapacityAndFocus(
+        captured.allocator(),
+        1,
+        999,
+    );
+    var activation: OwnershipTestCallback = .{ .handle = @ptrCast(activation_handle) };
+    defer activation.deinit();
+    const activation_info = build_info: {
+        const info = try c_tree_info.treeInfoNew(captured.allocator(), 999);
+        errdefer c_tree_info.treeInfoFree(info);
+        try c_tree_info.treeInfoSetToolkitName(info, "Unused Activation Toolkit");
+        try c_tree_info.treeInfoSetToolkitVersion(info, "discard-once");
+        break :build_info info;
+    };
+    c_tree_update.treeUpdateSetTreeInfo(activation_handle, activation_info);
+    const allocated_bytes = captured.allocated_bytes;
+    try testing.expect(allocated_bytes > 0);
+
+    var probe: Probe = .{};
+    const adapter = unixAdapterNew(
+        OwnershipTestCallback.take,
+        &activation,
+        Probe.action,
+        &probe,
+        Probe.deactivation,
+        &probe,
+    ) orelse return error.AdapterAllocationFailed;
+    defer adapter.deinit();
+    var factory: OwnershipTestCallback = .{
+        .handle = try OwnershipTestC.update(71, "Factory C Toolkit", "5.0-factory"),
+    };
+    defer factory.deinit();
+    unixAdapterUpdateIfActive(adapter, OwnershipTestCallback.take, &factory);
+
+    try testing.expect(activation.handle == null);
+    try testing.expectEqual(@as(usize, 1), activation.calls);
+    try testing.expectEqual(allocated_bytes, captured.freed_bytes);
+    try testing.expect(adapter.activated);
+    try testing.expect(!adapter.application_declined_activation);
+    const committed = adapter.platform.tree.?.stateOf();
+    try testing.expectEqual(@as(u64, 71), committed.root().id().local.value);
+    try testing.expectEqualStrings("Factory C Toolkit", committed.toolkitName());
+    try testing.expectEqualStrings("5.0-factory", committed.toolkitVersion().?);
+
+    factory.handle = OwnershipTestC.accesskit_tree_update_with_focus(71) orelse
+        return error.UpdateAllocationFailed;
+    unixAdapterUpdateIfActive(adapter, OwnershipTestCallback.take, &factory);
+    try testing.expectEqual(@as(usize, 1), activation.calls);
+    try testing.expectEqual(allocated_bytes, captured.freed_bytes);
+    try testing.expect(!adapter.application_declined_activation);
+    try testing.expectEqualStrings(
+        "Factory C Toolkit",
+        adapter.platform.tree.?.stateOf().toolkitName(),
+    );
+    try testing.expectEqual(@as(u64, 2), adapter.platform.applied_updates);
 }
 
 test "a new adapter holds no tree and raises nothing" {
