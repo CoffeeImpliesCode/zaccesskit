@@ -23,12 +23,12 @@
 //! `ensureActive` treats `null` as data and `updateIfActive` reports
 //! `error.NullTreeUpdate`.
 //!
-//! **What an update produces.** Three of the consumer half's four change slots
-//! raise one `EVENT_WINDOW_CONTENT_CHANGED` with
-//! `CONTENT_CHANGE_TYPE_SUBTREE`, and `focus_moved` raises the one focus event
-//! for the new endpoint. That is the whole of Android's event vocabulary here:
-//! `docs/42` section 4.4 records that `AK/android/src/adapter.rs:197` closes
-//! with a `TODO` marker asking whether other events exist, and that this is it.
+//! **What an update produces.** Node changes preserve subtree content events.
+//! An included node whose existing scroll offsets change also produces one
+//! value-owned scroll payload; each changed axis keeps its current offset,
+//! checked delta and optional maximum. Root scrolls name the host view, while
+//! nonroot scrolls mint their virtual id before enqueue. Focus changes preserve
+//! the focus event for the new endpoint. `AK/android/src/adapter.rs:143-197`.
 //!
 //! **The host focus flag.** `Tree.init` takes one and this adapter always passes
 //! `false`. **Nothing in this C surface reports host focus**, and
@@ -62,12 +62,10 @@ const node_id_map = @import("node_id_map.zig");
 const platform_action = @import("platform_action.zig");
 const queued_events = @import("queued_events.zig");
 const schema = @import("../../schema/root.zig");
-const update_schema = @import("../../schema/update.zig");
 const values = @import("values.zig");
 
 const ActionHandler = boundary.ActionHandler;
 const ActivationHandler = boundary.ActivationHandler;
-const CActionRequest = boundary.CActionRequest;
 const CTreeUpdate = boundary.CTreeUpdate;
 const TreeUpdateFactory = boundary.TreeUpdateFactory;
 
@@ -98,11 +96,10 @@ const Position = text_position.Position;
 
 /// Everything an adapter call can fail with.
 ///
-/// `FillError` is `node.zig`'s set, which already carries the query failures,
-/// the narrowing failures, the two JNI failures and the id map's own. The four
-/// tags this module adds are the ones only this layer can produce.
-pub const Error = consumer.tree.UpdateError || node_mod.FillError ||
-    update_schema.ActionDataToCError || error{
+/// `FillError` carries JNI, query, narrowing and id-map failures. `SlotError`
+/// preserves the exact change-slot cause after a consumed update commits.
+pub const Error = consumer.tree.UpdateError || node_mod.FillError || SlotError ||
+    schema.ActionDataToCError || error{
     /// The tree-update factory answered `null`. Upstream unwraps the same
     /// value at `AK/android/src/adapter.rs:554`, so a `null` here is a
     /// contract violation and **not** "no tree". `ActivationHandler`
@@ -113,12 +110,6 @@ pub const Error = consumer.tree.UpdateError || node_mod.FillError ||
     /// It reaches here through `Tree.init` and carries one of the
     /// `UpdateError` tags, so it is listed rather than named separately.
     TreeRejected,
-
-    /// A change slot could not append its event, so the queue the caller
-    /// receives is missing one. The update still committed: the consumer
-    /// half commits after the last slot returns and this module cannot
-    /// un-commit it.
-    TreeEventQueueFailed,
 };
 
 /// One simple action: the Android id and the AccessKit action it means.
@@ -331,6 +322,10 @@ pub const AndroidAdapter = struct {
     /// both, because that is what the header promises for this function, so the
     /// distinction lives in `last_error` and in this signature rather than in
     /// the return value.
+    ///
+    /// A change-slot failure returns its first exact `SlotError` after the
+    /// update commits and releases the incomplete event queue. The factory's
+    /// update is consumed on every path and must not be replayed.
     pub fn updateIfActive(
         self: *AndroidAdapter,
         update_factory: TreeUpdateFactory,
@@ -355,12 +350,12 @@ pub const AndroidAdapter = struct {
             .focus_moved = focusMovedSlot,
         };
         active_tree.updateAndProcessChanges(update, &handler) catch |err| {
-            // A slot that ran out of memory leaves the committed state as it
-            // stands; the update is already consumed and cannot be replayed.
-            if (context.append_error != null) return error.OutOfMemory;
+            // Preserve an earlier slot cause even if the subsequent commit
+            // also fails. The consumed update cannot be replayed.
+            if (context.append_error) |failure| return failure;
             return err;
         };
-        if (context.append_error != null) return error.TreeEventQueueFailed;
+        if (context.append_error) |failure| return failure;
         return events;
     }
 
@@ -635,31 +630,24 @@ pub const AndroidAdapter = struct {
     /// releases it twice has a double free. Nothing after this call releases the
     /// request.
     ///
-    /// The block comes from `allocation.create` and the payload from
-    /// `schema.actionDataToC`, both through `self.gpa`, which is the C ABI's
-    /// declared allocator — the same one `accesskit_action_request_free` uses.
+    /// The borrowed input remains owned by its caller. The boundary creates an
+    /// independent request and payload through `allocation.allocator()`, matching
+    /// `accesskit_action_request_free`. Failure calls no handler and leaks nothing.
     fn dispatch(
         self: *AndroidAdapter,
         request: schema.ActionRequest,
         action_handler: ActionHandler,
         action_handler_userdata: ?*anyopaque,
     ) Error!void {
-        var payload: ?schema.CActionData = null;
-        if (request.data) |data| payload = try schema.actionDataToC(self.gpa, data);
-
-        const built = try allocation.create(CActionRequest);
-        built.* = .{
-            .action = request.action,
-            .target_tree = request.target_tree,
-            .target_node = request.target_node,
-            .data = .{
-                .has_value = payload != null,
-                .value = payload orelse std.mem.zeroes(schema.CActionData),
-            },
-        };
+        _ = self;
+        const built = try boundary.createActionRequest(allocation.allocator(), request);
         action_request.callActionHandler(action_handler, built, action_handler_userdata);
     }
 };
+
+/// Failures a change slot can retain without an error return path.
+pub const SlotError = Allocator.Error || schema.NarrowError ||
+    node_id_map.Error || consumer.tree.QueryError;
 
 /// The context the four change slots share.
 ///
@@ -669,25 +657,65 @@ pub const AndroidAdapter = struct {
 const ChangeContext = struct {
     /// Where the slots append.
     events: *QueuedEvents,
-    /// The error the first failing append raised, or `null` while every append
-    /// has succeeded. A slot cannot return an error, so it records the one it
-    /// was given here and the caller turns it into a tag.
-    append_error: ?Allocator.Error = null,
+    /// First exact slot failure. Later slots do no queue work after it is set.
+    append_error: ?SlotError = null,
 };
 
-/// One node the update added.
-///
-/// `docs/42` section 4.4 records that Android names no node in its events, so
-/// the node is not read here; the slot exists because the consumer half offers
-/// one and a `null` slot would be the port choosing to observe less than
-/// upstream does.
+/// A newly added node preserves the subtree event.
 fn nodeAddedSlot(ptr: *anyopaque, _: NodeRef) void {
     appendContentChanged(ptr);
 }
 
-/// One node the update rewrote.
-fn nodeUpdatedSlot(ptr: *anyopaque, _: NodeRef, _: NodeRef) void {
+/// A changed included node reports its scroll payload before the subtree event.
+fn nodeUpdatedSlot(ptr: *anyopaque, old: NodeRef, new: NodeRef) void {
+    const context: *ChangeContext = @ptrCast(@alignCast(ptr));
+    if (context.append_error != null) return;
+    appendScrollChanged(context, old, new) catch |err| {
+        context.append_error = err;
+        return;
+    };
     appendContentChanged(ptr);
+}
+
+/// Owns no node reference: only scalar ids and dimensions reach the queue.
+fn appendScrollChanged(context: *ChangeContext, old: NodeRef, new: NodeRef) SlotError!void {
+    if (try android_filter.call(old) != .include) return;
+    if (try android_filter.call(new) != .include) return;
+
+    const old_x = try node_mod.scrollX(old);
+    const new_x = try node_mod.scrollX(new);
+    const old_y = try node_mod.scrollY(old);
+    const new_y = try node_mod.scrollY(new);
+    var x: ?queued_events.ScrollDimension = null;
+    var y: ?queued_events.ScrollDimension = null;
+    if (old_x) |previous| {
+        if (new_x) |current| {
+            if (current != previous) x = .{
+                .current = current,
+                .delta = try scrollDelta(previous, current),
+                .max = try node_mod.maxScrollX(new),
+            };
+        }
+    }
+    if (old_y) |previous| {
+        if (new_y) |current| {
+            if (current != previous) y = .{
+                .current = current,
+                .delta = try scrollDelta(previous, current),
+                .max = try node_mod.maxScrollY(new),
+            };
+        }
+    }
+    if (x == null and y == null) return;
+    const node = if (consumer.node_ref.hierarchy.isRoot(new)) null else new.id();
+    if (node != null) _ = try context.events.adapter.idMap().getOrCreateJavaId(new);
+    try context.events.append(.{ .scrolled = .{ .node = node, .x = x, .y = y } });
+}
+
+/// Two `JInt` offsets may have a delta outside `JInt`, but never outside `i64`.
+fn scrollDelta(previous: JInt, current: JInt) schema.NarrowError!JInt {
+    const delta = @as(i64, current) - @as(i64, previous);
+    return std.math.cast(JInt, delta) orelse error.OutOfRange;
 }
 
 /// One node the update removed, which is the site `AK/android/src/adapter.rs:196`
@@ -703,6 +731,7 @@ fn nodeRemovedSlot(ptr: *anyopaque, _: NodeRef) void {
 /// queues nothing.
 fn focusMovedSlot(ptr: *anyopaque, _: ?NodeRef, new: ?NodeRef) void {
     const context: *ChangeContext = @ptrCast(@alignCast(ptr));
+    if (context.append_error != null) return;
     const node = new orelse return;
     const event = QueuedEvent.simple(values.EVENT_VIEW_ACCESSIBILITY_FOCUSED, node.id());
     context.events.append(event) catch |err| {
@@ -713,6 +742,7 @@ fn focusMovedSlot(ptr: *anyopaque, _: ?NodeRef, new: ?NodeRef) void {
 /// Appends the one subtree content change every node slot shares.
 fn appendContentChanged(ptr: *anyopaque) void {
     const context: *ChangeContext = @ptrCast(@alignCast(ptr));
+    if (context.append_error != null) return;
     const event = QueuedEvent.contentChanged(null, values.CONTENT_CHANGE_TYPE_SUBTREE);
     context.events.append(event) catch |err| {
         context.append_error = err;
@@ -840,14 +870,97 @@ comptime {
 }
 // --- Tests --------------------------------------------------------------------
 
+const CallbackRequestFixture = struct {
+    store: [512]u8 align(8) = undefined,
+    used: usize = 0,
+    starts: [4]?*anyopaque = @splat(null),
+    allocs: usize = 0,
+    frees: usize = 0,
+    calls: usize = 0,
+    source: []u8,
+    independent: bool = false,
+
+    fn alloc(size: usize, context: ?*anyopaque) callconv(.c) ?*anyopaque {
+        const self: *CallbackRequestFixture = @ptrCast(@alignCast(context.?));
+        if (self.allocs == self.starts.len) return null;
+        const start = std.mem.alignForward(usize, self.used, 8);
+        if (size > self.store.len -| start) return null;
+        const ptr: *anyopaque = self.store[start..][0..size].ptr;
+        self.used = start + size;
+        self.starts[self.allocs] = ptr;
+        self.allocs += 1;
+        return ptr;
+    }
+
+    fn free(ptr: ?*anyopaque, context: ?*anyopaque) callconv(.c) void {
+        const self: *CallbackRequestFixture = @ptrCast(@alignCast(context.?));
+        for (&self.starts) |*start| {
+            if (start.* == ptr and ptr != null) {
+                start.* = null;
+                self.frees += 1;
+                return;
+            }
+        }
+    }
+
+    fn call(request: *boundary.CActionRequest, context: ?*anyopaque) callconv(.c) void {
+        const self: *CallbackRequestFixture = @ptrCast(@alignCast(context.?));
+        self.calls += 1;
+        const text = request.data.value.payload.value.?;
+        self.source[0] = 'X';
+        self.independent = @intFromPtr(text) != @intFromPtr(self.source.ptr) and
+            std.mem.eql(u8, std.mem.span(text), "value") and
+            request.action == .set_value and request.target_node.value == 73;
+        schema.cActionRequestDeinit(allocation.allocator(), request);
+        allocation.allocator().destroy(request);
+    }
+};
+
+test "Android producer callback owns an independent value in the configured C domain" {
+    // Drive the actual producer; the pair observes raw-pointer teardown without
+    // freeing invalid pointers, so the old header recipe fails an assertion.
+    var adapter = try AndroidAdapter.init(allocation.allocator());
+    defer adapter.deinit();
+    var source: [5]u8 = "value".*;
+    var fixture: CallbackRequestFixture = .{ .source = &source };
+    allocation.installAllocator(CallbackRequestFixture.alloc, CallbackRequestFixture.free, &fixture);
+    defer allocation.installAllocator(null, null, null);
+    try adapter.dispatch(.{
+        .action = .set_value,
+        .target_tree = schema.tree_id_root,
+        .target_node = .{ .value = 73 },
+        .data = .{ .value = &source },
+    }, CallbackRequestFixture.call, &fixture);
+    try testing.expectEqual(@as(usize, 1), fixture.calls);
+    try testing.expect(fixture.independent);
+    try testing.expectEqual(fixture.allocs, fixture.frees);
+    try testing.expectEqualSlices(u8, "Xalue", &source);
+}
+
+test "Android producer InteriorNul preserves borrowed bytes and leaves no live C allocation" {
+    var adapter = try AndroidAdapter.init(allocation.allocator());
+    defer adapter.deinit();
+    var source: [5]u8 = "va\x00ue".*;
+    var fixture: CallbackRequestFixture = .{ .source = &source };
+    allocation.installAllocator(CallbackRequestFixture.alloc, CallbackRequestFixture.free, &fixture);
+    defer allocation.installAllocator(null, null, null);
+    try testing.expectError(error.InteriorNul, adapter.dispatch(.{
+        .action = .set_value,
+        .target_tree = schema.tree_id_root,
+        .target_node = .{ .value = 73 },
+        .data = .{ .value = &source },
+    }, CallbackRequestFixture.call, &fixture));
+    try testing.expectEqual(@as(usize, 0), fixture.calls);
+    try testing.expectEqual(fixture.allocs, fixture.frees);
+    try testing.expectEqualSlices(u8, "va\x00ue", &source);
+}
+
 /// What one dispatched request carried, reached through the handler's userdata.
 ///
 /// `boundary.ActionHandler` takes one `?*anyopaque`, so a recorder travels
 /// through it rather than being captured. The handler releases the request it is
 /// handed, which is the rule the type states and the only release there is.
 const ActionProbe = struct {
-    /// The allocator the request's payload came from.
-    gpa: Allocator,
     /// How many requests arrived.
     calls: usize = 0,
     /// The action of the last request.
@@ -869,10 +982,11 @@ const ActionProbe = struct {
         .focus = .{ .node_id = .{ .value = 0 }, .character_index = 0 },
     },
 
-    /// Reads one request, then releases it the way `boundary.ActionHandler`
-    /// requires: `schema.cActionRequestDeinit` for the payload and
-    /// `allocation.release` for the block `allocation.create` made.
+    /// Reads one request, then releases its payload and raw outer allocation
+    /// through the configured C allocator, including payload-free requests.
     fn take(self: *ActionProbe, request: *boundary.CActionRequest) void {
+        defer allocation.allocator().destroy(request);
+        defer schema.cActionRequestDeinit(allocation.allocator(), request);
         self.calls += 1;
         self.action = request.action;
         self.target = request.target_node;
@@ -892,8 +1006,6 @@ const ActionProbe = struct {
             },
             else => {},
         }
-        var owned = request.*;
-        schema.cActionRequestDeinit(self.gpa, &owned);
     }
 };
 
@@ -1018,7 +1130,7 @@ test "a scroll action carries the page unit the platform means" {
     const gpa = testing.allocator;
     var adapter = try activeAdapter(gpa);
     defer adapter.deinit();
-    var probe: ActionProbe = .{ .gpa = gpa };
+    var probe: ActionProbe = .{};
     const state = try activeState(&adapter);
     const node = state.root();
     _ = try adapter.idMap().getOrCreateJavaId(node);
@@ -1041,7 +1153,7 @@ test "a set-progress action becomes a numeric value on the target node" {
     const gpa = testing.allocator;
     var adapter = try activeAdapter(gpa);
     defer adapter.deinit();
-    var probe: ActionProbe = .{ .gpa = gpa };
+    var probe: ActionProbe = .{};
     const state = try activeState(&adapter);
     const node = state.root();
     _ = try adapter.idMap().getOrCreateJavaId(node);
@@ -1063,7 +1175,7 @@ test "a selection action carries the two endpoints the bundle named" {
     const gpa = testing.allocator;
     var adapter = try activeAdapter(gpa);
     defer adapter.deinit();
-    var probe: ActionProbe = .{ .gpa = gpa };
+    var probe: ActionProbe = .{};
     const state = try activeState(&adapter);
     const node = state.root();
     _ = try adapter.idMap().getOrCreateJavaId(node);
@@ -1085,7 +1197,7 @@ test "a collapse becomes a caret at the start of the document" {
     const gpa = testing.allocator;
     var adapter = try activeAdapter(gpa);
     defer adapter.deinit();
-    var probe: ActionProbe = .{ .gpa = gpa };
+    var probe: ActionProbe = .{};
     const state = try activeState(&adapter);
     const node = state.root();
     _ = try adapter.idMap().getOrCreateJavaId(node);
@@ -1119,7 +1231,7 @@ test "a traversal on a node that states no value raises nothing" {
     const gpa = testing.allocator;
     var adapter = try activeAdapter(gpa);
     defer adapter.deinit();
-    var probe: ActionProbe = .{ .gpa = gpa };
+    var probe: ActionProbe = .{};
     const state = try activeState(&adapter);
     const node = state.root();
     _ = try adapter.idMap().getOrCreateJavaId(node);
@@ -1143,7 +1255,7 @@ test "an action on a node the map never named raises nothing" {
     const gpa = testing.allocator;
     var adapter = try activeAdapter(gpa);
     defer adapter.deinit();
-    var probe: ActionProbe = .{ .gpa = gpa };
+    var probe: ActionProbe = .{};
 
     var events = try queueOrFail(try adapter.performAction(
         recordingActionHandler,
@@ -1192,11 +1304,11 @@ test "a hover exit raises one event about the host view" {
     try testing.expectEqual(@as(usize, 1), events.len());
     try testing.expectEqual(
         values.EVENT_VIEW_HOVER_EXIT,
-        events.events.items[0].event_type,
+        events.events.items[0].simple_event.event_type,
     );
     // The exit names the host view, because the platform is leaving the whole
     // view rather than one node of it.
-    try testing.expect(events.events.items[0].node == null);
+    try testing.expect(events.events.items[0].simple_event.node == null);
 }
 
 test "an inactive adapter refuses an action and a hover without asking for a tree" {
@@ -1271,3 +1383,278 @@ fn unreachableActivation(_: ?*anyopaque) callconv(.c) ?*CTreeUpdate {
 /// It does not release the request because it is never given one; see
 /// `ActionProbe.handler` for the handler that does.
 fn unusedAction(_: *boundary.CActionRequest, _: ?*anyopaque) callconv(.c) void {}
+
+const ScrollSpec = struct {
+    x: ?f64 = null,
+    y: ?f64 = null,
+    max_x: ?f64 = null,
+    max_y: ?f64 = null,
+    hidden: bool = false,
+};
+
+fn scrollNode(gpa: Allocator, spec: ScrollSpec) Allocator.Error!schema.Node {
+    var node = schema.Node.init(gpa, .button);
+    errdefer node.deinit();
+    if (spec.x) |value| try schema.numbers.setScrollX(&node.properties, value);
+    if (spec.y) |value| try schema.numbers.setScrollY(&node.properties, value);
+    if (spec.max_x) |value| try schema.numbers.setScrollXMax(&node.properties, value);
+    if (spec.max_y) |value| try schema.numbers.setScrollYMax(&node.properties, value);
+    schema.flags.setHidden(&node.flags, spec.hidden);
+    return node;
+}
+
+fn scrollTreeUpdate(gpa: Allocator, spec: ScrollSpec, child: bool) Allocator.Error!schema.TreeUpdate {
+    var update: schema.TreeUpdate = .{
+        .tree = schema.TreeInfo.init(.{ .value = 1 }),
+        .focus = .{ .value = 1 },
+    };
+    errdefer update.deinit(gpa);
+    if (child) {
+        var root = schema.Node.init(gpa, .button);
+        schema.ids_props.setChildren(&root.properties, &.{.{ .value = 2 }}) catch |err| {
+            root.deinit();
+            return err;
+        };
+        try update.pushNode(gpa, .{ .value = 1 }, root);
+        try update.pushNode(gpa, .{ .value = 2 }, try scrollNode(gpa, spec));
+    } else {
+        try update.pushNode(gpa, .{ .value = 1 }, try scrollNode(gpa, spec));
+    }
+    return update;
+}
+
+const ScrollFactory = struct {
+    handle: ?*c_tree_update.accesskit_tree_update,
+    calls: usize = 0,
+
+    fn init(gpa: Allocator, spec: ScrollSpec, child: bool) !ScrollFactory {
+        const handle = try c_tree_update.treeUpdateWithFocus(gpa, 1);
+        errdefer handle.deinit();
+        handle.update = try scrollTreeUpdate(gpa, spec, child);
+        return .{ .handle = handle };
+    }
+
+    fn deinit(self: *ScrollFactory) void {
+        if (self.handle) |handle| handle.deinit();
+        self.handle = null;
+    }
+
+    fn take(ptr: ?*anyopaque) callconv(.c) ?*CTreeUpdate {
+        const self: *ScrollFactory = @ptrCast(@alignCast(ptr orelse return null));
+        self.calls += 1;
+        const handle = self.handle orelse return null;
+        self.handle = null;
+        return @ptrCast(handle);
+    }
+};
+
+fn scrollingAdapter(gpa: Allocator, spec: ScrollSpec, child: bool) !AndroidAdapter {
+    var adapter = try AndroidAdapter.init(gpa);
+    errdefer adapter.deinit();
+    adapter.tree = try Tree.init(gpa, try scrollTreeUpdate(gpa, spec, child), false);
+    return adapter;
+}
+
+test "scroll updates preserve independent axes maxima absence and subtree events" {
+    const Case = struct {
+        old: ScrollSpec,
+        new: ScrollSpec,
+        x: ?queued_events.ScrollDimension,
+        y: ?queued_events.ScrollDimension,
+    };
+    const cases = [_]Case{
+        .{ .old = .{ .x = 10 }, .new = .{ .x = 17, .max_x = 90 },
+            .x = .{ .current = 17, .delta = 7, .max = 90 }, .y = null },
+        .{ .old = .{ .y = 12 }, .new = .{ .y = 3 },
+            .x = null, .y = .{ .current = 3, .delta = -9, .max = null } },
+        .{ .old = .{ .x = -2, .y = 4 }, .new = .{ .x = 0, .y = 9, .max_x = 0, .max_y = 30 },
+            .x = .{ .current = 0, .delta = 2, .max = 0 },
+            .y = .{ .current = 9, .delta = 5, .max = 30 } },
+        .{ .old = .{ .x = 5, .y = 7 }, .new = .{ .x = 5, .y = 7, .max_y = 99 },
+            .x = null, .y = null },
+        .{ .old = .{}, .new = .{ .x = 4, .y = 6 }, .x = null, .y = null },
+        .{ .old = .{ .x = 4, .y = 6 }, .new = .{}, .x = null, .y = null },
+        .{ .old = .{ .x = 1 }, .new = .{ .x = 2, .hidden = true }, .x = null, .y = null },
+        .{ .old = .{ .x = 1, .hidden = true }, .new = .{ .x = 2 }, .x = null, .y = null },
+    };
+    for (cases) |case| {
+        var adapter = try scrollingAdapter(testing.allocator, case.old, false);
+        defer adapter.deinit();
+        var factory = try ScrollFactory.init(testing.allocator, case.new, false);
+        defer factory.deinit();
+        var events = try queueOrFail(try adapter.updateIfActive(ScrollFactory.take, &factory));
+        defer events.deinit();
+        var scrolled: usize = 0;
+        var subtree: usize = 0;
+        for (events.events.items) |event| switch (event) {
+            .scrolled => |payload| {
+                scrolled += 1;
+                try testing.expect(payload.node == null);
+                try testing.expectEqualDeep(case.x, payload.x);
+                try testing.expectEqualDeep(case.y, payload.y);
+            },
+            .content_changed => |payload| {
+                subtree += 1;
+                try testing.expect(payload.node == null);
+                try testing.expectEqual(values.CONTENT_CHANGE_TYPE_SUBTREE, payload.content_change_types);
+            },
+            else => return error.UnexpectedEvent,
+        };
+        try testing.expectEqual(@as(usize, if (case.x != null or case.y != null) 1 else 0), scrolled);
+        try testing.expectEqual(@as(usize, 1), subtree);
+        try testing.expectEqual(@as(usize, 1), factory.calls);
+        try testing.expectEqual(@as(usize, 0), adapter.idMap().count());
+    }
+}
+
+test "nonroot scroll update mints its virtual id before any node info fill" {
+    var adapter = try scrollingAdapter(testing.allocator, .{ .x = 2 }, true);
+    defer adapter.deinit();
+    var factory = try ScrollFactory.init(testing.allocator, .{ .x = 9 }, true);
+    defer factory.deinit();
+    var events = try queueOrFail(try adapter.updateIfActive(ScrollFactory.take, &factory));
+    defer events.deinit();
+    const state = try activeState(&adapter);
+    const id = consumer.tree_index.FullNodeId.init(.{ .value = 2 }, .init(0));
+    var saw_scroll = false;
+    for (events.events.items) |event| switch (event) {
+        .scrolled => |payload| {
+            saw_scroll = true;
+            try testing.expectEqualDeep(@as(?consumer.tree_index.FullNodeId, id), payload.node);
+            try testing.expect(adapter.idMap().getJavaId(id) != null);
+        },
+        else => {},
+    };
+    try testing.expect(saw_scroll);
+    try testing.expectEqual(@as(usize, 1), adapter.idMap().count());
+    try testing.expectEqual(@as(?f64, 9), properties.scrollX(state.nodeById(id).?));
+}
+
+test "checked scroll delta and maxima failures return exact OutOfRange after commit" {
+    const cases = [_][2]ScrollSpec{
+        .{ .{ .x = -2147483648.0 }, .{ .x = 2147483647.0 } },
+        .{ .{ .y = 2147483647.0 }, .{ .y = -2147483648.0 } },
+        .{ .{ .x = 1 }, .{ .x = 2, .max_x = 2147483648.0 } },
+        .{ .{ .y = 1 }, .{ .y = 2, .max_y = 2147483648.0 } },
+    };
+    for (cases) |case| {
+        var adapter = try scrollingAdapter(testing.allocator, case[0], false);
+        defer adapter.deinit();
+        var factory = try ScrollFactory.init(testing.allocator, case[1], false);
+        defer factory.deinit();
+        try testing.expectError(error.OutOfRange, adapter.updateIfActive(ScrollFactory.take, &factory));
+        const node = (try activeState(&adapter)).root();
+        try testing.expectEqual(case[1].x, properties.scrollX(node));
+        try testing.expectEqual(case[1].y, properties.scrollY(node));
+        try testing.expectEqual(@as(usize, 1), factory.calls);
+        try testing.expect(factory.handle == null);
+    }
+}
+
+test "exhausted nonroot ids return exact VirtualIdsExhausted after committed scroll" {
+    var adapter = try scrollingAdapter(testing.allocator, .{ .x = 1 }, true);
+    defer adapter.deinit();
+    adapter.idMap().next_virtual_id = @as(i64, node_id_map.largest_virtual_id) + 1;
+    var factory = try ScrollFactory.init(testing.allocator, .{ .x = 3 }, true);
+    defer factory.deinit();
+    try testing.expectError(error.VirtualIdsExhausted, adapter.updateIfActive(ScrollFactory.take, &factory));
+    const id = consumer.tree_index.FullNodeId.init(.{ .value = 2 }, .init(0));
+    try testing.expectEqual(@as(?f64, 3), properties.scrollX((try activeState(&adapter)).nodeById(id).?));
+    try testing.expectEqual(@as(usize, 0), adapter.idMap().count());
+}
+
+test "a filter cycle preserves exact TreeCycle after the update commits" {
+    var adapter = try scrollingAdapter(testing.allocator, .{ .x = 1 }, false);
+    defer adapter.deinit();
+    // Corrupt only the previous snapshot: the working update remains valid.
+    // The producer must filter the old node, retain TreeCycle, then return it
+    // after the valid new snapshot has committed.
+    if (adapter.tree) |*tree| {
+        tree.state.nodes.getPtr(tree.state.root_id).?.parent_and_index = .{
+            .parent_id = tree.state.root_id,
+            .index = 0,
+        };
+    }
+    var factory = try ScrollFactory.init(testing.allocator, .{ .x = 4 }, false);
+    defer factory.deinit();
+    try testing.expectError(error.TreeCycle, adapter.updateIfActive(ScrollFactory.take, &factory));
+    try testing.expectEqual(@as(?f64, 4), properties.scrollX((try activeState(&adapter)).root()));
+    try testing.expectEqual(@as(usize, 1), factory.calls);
+}
+
+test "queue allocation failure retains OutOfMemory after committed scroll update" {
+    var failing: testing.FailingAllocator = .init(testing.allocator, .{});
+    const gpa = failing.allocator();
+    var adapter = try scrollingAdapter(testing.allocator, .{ .x = 1 }, false);
+    defer adapter.deinit();
+    var factory = try ScrollFactory.init(testing.allocator, .{ .x = 5 }, false);
+    defer factory.deinit();
+    adapter.gpa = gpa;
+    // Unknown allocator domains require one node-array migration before the slots.
+    // The tree keeps testing.allocator; fail the next allocation, the root event queue.
+    failing.fail_index = failing.alloc_index + 1;
+    try testing.expectError(error.OutOfMemory, adapter.updateIfActive(ScrollFactory.take, &factory));
+    try testing.expectEqual(@as(?f64, 5), properties.scrollX((try activeState(&adapter)).root()));
+    try testing.expectEqual(@as(usize, 1), factory.calls);
+    try testing.expect(factory.handle == null);
+}
+
+test "the first slot failure stops later queue allocation and keeps its exact tag" {
+    var old = try scrollingAdapter(testing.allocator, .{ .x = -2147483648.0 }, false);
+    defer old.deinit();
+    var new = try scrollingAdapter(testing.allocator, .{ .x = 2147483647.0 }, false);
+    defer new.deinit();
+    var failing: testing.FailingAllocator = .init(testing.allocator, .{ .fail_index = 0 });
+    var events = QueuedEvents.init(failing.allocator(), &new);
+    defer events.deinit();
+    var context: ChangeContext = .{ .events = &events };
+    const old_node = (try activeState(&old)).root();
+    const new_node = (try activeState(&new)).root();
+
+    nodeUpdatedSlot(&context, old_node, new_node);
+    nodeAddedSlot(&context, new_node);
+    nodeRemovedSlot(&context, old_node);
+    focusMovedSlot(&context, old_node, new_node);
+    try testing.expectEqual(error.OutOfRange, context.append_error.?);
+    try testing.expectEqual(@as(usize, 0), events.len());
+    try testing.expectEqual(@as(usize, 0), failing.alloc_index);
+}
+
+test "root scroll remains a host event when virtual ids are exhausted" {
+    var adapter = try scrollingAdapter(testing.allocator, .{ .x = 1 }, false);
+    defer adapter.deinit();
+    adapter.idMap().next_virtual_id = @as(i64, node_id_map.largest_virtual_id) + 1;
+    var factory = try ScrollFactory.init(testing.allocator, .{ .x = 7 }, false);
+    defer factory.deinit();
+    var events = try queueOrFail(try adapter.updateIfActive(ScrollFactory.take, &factory));
+    defer events.deinit();
+    var found = false;
+    for (events.events.items) |event| switch (event) {
+        .scrolled => |payload| {
+            found = true;
+            try testing.expect(payload.node == null);
+        },
+        else => {},
+    };
+    try testing.expect(found);
+    try testing.expectEqual(@as(usize, 0), adapter.idMap().count());
+}
+
+test "an exact scroll failure disposes earlier subtree events after the full update commits" {
+    var adapter = try scrollingAdapter(testing.allocator, .{ .x = -2147483648.0 }, true);
+    defer adapter.deinit();
+    var factory = try ScrollFactory.init(testing.allocator, .{ .x = 2147483647.0 }, true);
+    defer factory.deinit();
+    // The first updated node produces a subtree event before the child fails.
+    // The testing allocator detects retaining that incomplete queue buffer.
+    try schema.numbers.setNumericValue(
+        &factory.handle.?.update.nodes.items[0].node.properties,
+        42,
+    );
+    try testing.expectError(error.OutOfRange, adapter.updateIfActive(ScrollFactory.take, &factory));
+    const state = try activeState(&adapter);
+    try testing.expectEqual(@as(?f64, 42), properties.numericValue(state.root()));
+    const id = consumer.tree_index.FullNodeId.init(.{ .value = 2 }, .init(0));
+    try testing.expectEqual(@as(?f64, 2147483647.0), properties.scrollX(state.nodeById(id).?));
+    try testing.expectEqual(@as(usize, 1), factory.calls);
+}
