@@ -672,9 +672,9 @@ pub fn propertyValueClone(
 /// every arm releases what it is about to rebuild from and a self-clone has
 /// nothing left to rebuild.
 ///
-/// On `error.OutOfMemory` the destination payload of the variant that failed
-/// is empty and still owned by `dest`: its old contents were released before
-/// the append that failed. Every earlier entry of the store is unchanged.
+/// On `error.OutOfMemory` a reused custom-action payload remains unchanged.
+/// Other reused list payloads are empty and still owned by `dest` if their
+/// append fails. Every earlier entry of the store is unchanged.
 pub fn propertyValueCloneInto(
     gpa: std.mem.Allocator,
     dest: *PropertyValue,
@@ -750,13 +750,8 @@ pub fn propertyValueCloneInto(
         .custom_action_vec => |actions| {
             if (reuse) {
                 var kept = dest.*.custom_action_vec;
-                // The replacement is built first, into a list of its own, and
-                // only then does the teardown run. `dest` may be `source`, so
-                // `actions` can name the very descriptions the teardown
-                // releases and the very buffer the first append moves;
-                // rebuilding after that teardown would read freed memory.
-                // Owning the copies first makes the order irrelevant, so the
-                // loop below never holds a slice across a growth.
+                // Copy the descriptions before any teardown or buffer growth.
+                // Allocation failure must leave the old actions owned by `dest`.
                 var rebuilt: std.ArrayList(CustomAction) = .empty;
                 errdefer deinitActions(gpa, &rebuilt);
                 for (actions.items) |action| {
@@ -765,13 +760,13 @@ pub fn propertyValueCloneInto(
                     try rebuilt.append(gpa, fresh);
                 }
 
-                // Each old action owns a description of its own, so the list
-                // buffer is not the only thing to release before reusing it.
+                // Reserve before teardown so the ownership transfer cannot fail.
+                try kept.ensureTotalCapacity(gpa, rebuilt.items.len);
                 for (kept.items) |*action| action.deinit(gpa);
                 kept.clearRetainingCapacity();
-                errdefer kept.deinit(gpa);
-                for (rebuilt.items) |action| try kept.append(gpa, action);
-                deinitActions(gpa, &rebuilt);
+                kept.appendSliceAssumeCapacity(rebuilt.items);
+                // The descriptions now belong to `kept`. Release only the header.
+                rebuilt.deinit(gpa);
                 dest.* = .{ .custom_action_vec = kept };
             } else {
                 dest.* = .{ .custom_action_vec = try cloneActions(gpa, actions.items) };
@@ -873,7 +868,7 @@ fn cloneActions(
     items: []const CustomAction,
 ) std.mem.Allocator.Error!std.ArrayList(CustomAction) {
     var owned: std.ArrayList(CustomAction) = .empty;
-    errdefer owned.deinit(gpa);
+    errdefer deinitActions(gpa, &owned);
     for (items) |action| {
         var fresh = try CustomAction.init(gpa, action.id, action.description.items);
         errdefer fresh.deinit(gpa);
@@ -1504,6 +1499,8 @@ pub const Properties = struct {
     /// reusing the destination's buffers on clone. Both lists are sorted, so
     /// one pass pairs them by id: an id in both hands over its allocation, an
     /// id only in `out` is released, and an id only in the source is copied.
+    /// Source-only ids enter at their sorted positions so getters remain valid,
+    /// including after an allocation failure.
     /// A second clone of a whole store therefore costs no allocation at all.
     ///
     /// Everything the source owns is copied through `out.gpa`, so `out` is
@@ -1534,7 +1531,19 @@ pub const Properties = struct {
                     out.items.items[index].deinit(out.gpa);
                     _ = out.items.orderedRemove(index);
                 },
-                .gt => index += 1,
+                .gt => {
+                    var fresh = try propertyValueClone(
+                        out.gpa,
+                        self.items.items[source_index].value,
+                    );
+                    errdefer fresh.deinit(out.gpa);
+                    try out.items.insert(out.gpa, index, .{
+                        .id = self.items.items[source_index].id,
+                        .value = fresh,
+                    });
+                    index += 1;
+                    source_index += 1;
+                },
             }
         }
         // Whatever `out` still holds past `index` is not in the source.
@@ -2187,6 +2196,97 @@ test "cloneInto reuses the destination buffers and drops what is gone" {
     try source.cloneInto(&out);
     try testing.expect(source.eql(&out));
     try testing.expectEqual(before, out.get(.label).?.string.items.ptr);
+}
+
+test "cloneInto sorted merge preserves scroll getters including zero maximum" {
+    // New maxima must remain findable between updated scroll positions.
+    const numbers = @import("numbers.zig");
+    var source: Properties = .init(testing.allocator);
+    defer source.deinit();
+    try numbers.setScrollX(&source, 0.0);
+    try numbers.setScrollXMax(&source, 0.0);
+    try numbers.setScrollY(&source, 9.0);
+    try numbers.setScrollYMax(&source, 30.0);
+
+    var out: Properties = .init(testing.allocator);
+    defer out.deinit();
+    try numbers.setScrollX(&out, -2.0);
+    try numbers.setScrollY(&out, 4.0);
+
+    try source.cloneInto(&out);
+    try testing.expectEqual(@as(?f64, 0.0), numbers.scrollX(&out));
+    try testing.expectEqual(@as(?f64, 0.0), numbers.scrollXMax(&out));
+    try testing.expectEqual(@as(?f64, 9.0), numbers.scrollY(&out));
+    try testing.expectEqual(@as(?f64, 30.0), numbers.scrollYMax(&out));
+    try testing.expectEqual(@as(usize, 4), out.count());
+    try testing.expect(source.eql(&out));
+    for (out.items.items[0 .. out.count() - 1], out.items.items[1..]) |left, right| {
+        try testing.expect(@intFromEnum(left.id) < @intFromEnum(right.id));
+    }
+}
+
+test "cloneInto sorted merge owns interleaved strings through allocation failures" {
+    // Sweep insertion, payload cloning, reuse, and removal with real stores.
+    const Exercise = struct {
+        fn run(gpa: std.mem.Allocator) !void {
+            var source: Properties = .init(testing.allocator);
+            defer source.deinit();
+            const source_ids = [_]PropertyId{
+                .label, .value, .access_key, .author_id,
+                .class_name, .font_family, .html_id, .html_tag,
+            };
+            for (source_ids) |id| {
+                try source.set(id, propertyValueFrom(
+                    .string,
+                    try sampleBytes(testing.allocator, @tagName(id)),
+                ));
+            }
+            var seed: Properties = .init(testing.allocator);
+            defer seed.deinit();
+            for ([_]PropertyId{ .description, .value, .class_name, .tooltip }) |id| {
+                try seed.set(id, propertyValueFrom(
+                    .string,
+                    try sampleBytes(testing.allocator, "old destination"),
+                ));
+            }
+            var out = try seed.clone(gpa);
+            defer out.deinit();
+            const kept_buffer = out.get(.class_name).?.string.items.ptr;
+
+            source.cloneInto(&out) catch |err| {
+                // Even a partial copy must keep unique, searchable entries.
+                for (out.items.items, 0..) |entry, index| {
+                    if (index > 0) {
+                        try testing.expect(
+                            @intFromEnum(out.items.items[index - 1].id) < @intFromEnum(entry.id),
+                        );
+                    }
+                    try testing.expectEqual(index, out.find(entry.id).?);
+                }
+                return err;
+            };
+            try testing.expect(source.eql(&out));
+            try testing.expectEqual(source_ids.len, out.count());
+            try testing.expectEqual(kept_buffer, out.get(.class_name).?.string.items.ptr);
+            try testing.expect(out.get(.description) == null);
+            try testing.expect(out.get(.tooltip) == null);
+            for (source_ids, 0..) |id, index| {
+                try testing.expectEqual(index, out.find(id).?);
+                try testing.expectEqualStrings(@tagName(id), out.get(id).?.string.items);
+                try testing.expect(
+                    source.get(id).?.string.items.ptr != out.get(id).?.string.items.ptr,
+                );
+            }
+            const inserted_buffer = out.get(.label).?.string.items.ptr;
+            try source.cloneInto(&out);
+            try testing.expect(source.eql(&out));
+            try testing.expectEqual(inserted_buffer, out.get(.label).?.string.items.ptr);
+            try testing.expectEqual(kept_buffer, out.get(.class_name).?.string.items.ptr);
+            source.clear(.label);
+            try testing.expectEqualStrings("label", out.get(.label).?.string.items);
+        }
+    };
+    try testing.checkAllAllocationFailures(testing.allocator, Exercise.run, .{});
 }
 
 test "propertyValueCloneInto reuses the destination list buffer" {

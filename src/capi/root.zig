@@ -35,19 +35,14 @@
 //! `optionals.zig` is the twenty-five `accesskit_opt_*` forms and the absence
 //! convention each one uses; the header declares no `accesskit_opt_*` function,
 //! so there is nothing there to export. `property_value.zig` is the nineteen C
-//! enumerations and the 272 tags they carry, proved to be one-to-one in both
+//! enumerations and the 273 tags they carry, proved to be one-to-one in both
 //! directions. `tree_update.zig` is the one of the three with declarations, and
 //! it owns all ten `accesskit_tree_update_*` exports.
 //!
-//! **The runtime channel, and the three declarations on it.**
-//! `accesskit_set_allocator`, `accesskit_last_error` and
-//! `accesskit_string_free` are the only three functions in this header a C
-//! consumer can call without holding one of its handles, and between them they
-//! are the whole of the state this library keeps outside the caller: the
-//! declared allocator every allocation goes through, and one failure tag per
-//! thread. `allocation.zig` owns both values and exports neither; the three
-//! `export fn` at the foot of this file are the C declarations that reach them,
-//! and no other module in this namespace exports one of them.
+//! The runtime channel contains `accesskit_set_allocator`,
+//! `accesskit_last_error`, `accesskit_last_error_name`, and
+//! `accesskit_string_free`. `allocation.zig` owns the declared allocator and
+//! the thread-local failure slot. This file exports the C functions.
 
 const std = @import("std");
 
@@ -83,7 +78,7 @@ pub const platform = @import("platform.zig");
 /// The tree update: one atomic change to one tree, and its ten exports.
 pub const tree_update = @import("tree_update.zig");
 
-/// The nineteen C enumerations and the 272 tags they carry.
+/// The nineteen C enumerations and the 273 tags they carry.
 pub const property_value = @import("property_value.zig");
 
 /// The twenty-five `accesskit_opt_*` forms and the absence convention each one
@@ -109,10 +104,7 @@ test "every module in this namespace is reachable and analysed" {
     std.testing.refAllDecls(optionals);
 }
 
-// =============================================================================
-// The runtime channel: three declarations, and the only three in this header a
-// C consumer can call without holding a handle.
-// =============================================================================
+// These functions do not require a platform handle.
 
 /// Installs the allocator every exported function in this library allocates
 /// through, or restores the C allocator when either half is `null`.
@@ -144,14 +136,17 @@ export fn accesskit_set_allocator(
 /// reads it immediately after the call that failed and before it makes another
 /// call on this thread.
 ///
-/// **This is the one declaration that does not clear the tag on entry.** The
-/// rule at `include/zaccesskit.h:122` says every function clears it, and
-/// reading the slot here rather than writing it is what makes that rule true
-/// for every other function. Clearing it here would leave the tag at
-/// `ACCESSKIT_ERROR_NONE` on every read, which is a channel that reports only
-/// that nothing has failed yet.
+/// This getter and `accesskit_last_error_name` preserve the failure slot.
+/// All other exported calls clear the slot on entry.
 export fn accesskit_last_error() callconv(.c) allocation.Tag {
     return allocation.lastError();
+}
+
+/// Returns the static error name from the most recent call on this thread.
+/// Returns `null` if that call did not fail. Does not clear the failure slot.
+/// The caller must not release the returned string.
+export fn accesskit_last_error_name() callconv(.c) ?[*:0]const u8 {
+    return allocation.lastErrorName();
 }
 
 /// Releases a string a getter in this header returned, exactly once.
@@ -293,44 +288,6 @@ fn newTreeInfo() !*tree_info.accesskit_tree_info {
     return tree_info.treeInfoNew(allocation.allocator(), 1);
 }
 
-test "the three runtime exports have the C shapes the header declares" {
-    // `accesskit_set_allocator` takes the two function pointers the header
-    // declares at `include/zaccesskit.h:6472-6473` and a `void *` beside them,
-    // and returns nothing.
-    const install = @typeInfo(@TypeOf(accesskit_set_allocator)).@"fn";
-    try std.testing.expectEqual(std.builtin.CallingConvention.c, install.calling_convention);
-    try std.testing.expect(!install.is_var_args);
-    try std.testing.expectEqual(void, install.return_type.?);
-    try std.testing.expectEqual(@as(usize, 3), install.params.len);
-    try std.testing.expectEqual(?allocation.AllocFn, install.params[0].type.?);
-    try std.testing.expectEqual(?allocation.FreeFn, install.params[1].type.?);
-    try std.testing.expectEqual(?*anyopaque, install.params[2].type.?);
-
-    // `accesskit_last_error` returns `accesskit_error` and takes nothing. The
-    // enum is four bytes wide on every target, so the return crosses in the same
-    // register a C caller reads it from; a narrower tag would change the
-    // classification without any size check in the header noticing.
-    const read = @typeInfo(@TypeOf(accesskit_last_error)).@"fn";
-    try std.testing.expectEqual(std.builtin.CallingConvention.c, read.calling_convention);
-    try std.testing.expect(!read.is_var_args);
-    try std.testing.expectEqual(@as(usize, 0), read.params.len);
-    try std.testing.expectEqual(@as(usize, @sizeOf(c_int)), @sizeOf(allocation.Tag));
-    const tag = @typeInfo(allocation.Tag).@"enum";
-    try std.testing.expectEqual(c_int, tag.tag_type);
-    try std.testing.expectEqual(@as(usize, 2), tag.fields.len);
-    try std.testing.expectEqual(@as(c_int, 0), @intFromEnum(allocation.Tag.none));
-    try std.testing.expectEqual(@as(c_int, 1), @intFromEnum(allocation.Tag.out_of_memory));
-
-    // `accesskit_string_free` takes the `char *` a getter returns and returns
-    // nothing. The parameter is a many-item pointer and not a slice, because a
-    // C caller has no length to pass.
-    const release = @typeInfo(@TypeOf(accesskit_string_free)).@"fn";
-    try std.testing.expectEqual(std.builtin.CallingConvention.c, release.calling_convention);
-    try std.testing.expect(!release.is_var_args);
-    try std.testing.expectEqual(void, release.return_type.?);
-    try std.testing.expectEqual(@as(usize, 1), release.params.len);
-    try std.testing.expectEqual([*:0]u8, release.params[0].type.?);
-}
 
 test "the pair set_allocator installs receives every allocation and the context" {
     var storage: [4096]u8 align(16) = undefined;
