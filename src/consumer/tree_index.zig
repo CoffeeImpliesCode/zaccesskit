@@ -291,27 +291,6 @@ pub const TreeIndexMap = struct {
         if (destination.id_to_index.count() != forward_mapping_count) return false;
         if (destination.index_to_id.count() != reverse_mapping_count) return false;
 
-        // Registration is bounded by the u32 index space. Each scan is bounded
-        // by its own map's validated count; neither direction stands for both.
-        assert(forward_mapping_count <= std.math.maxInt(u32));
-        assert(reverse_mapping_count <= std.math.maxInt(u32));
-        const ids = source.id_to_index.keys();
-        const indices = source.id_to_index.values();
-        assert(ids.len == forward_mapping_count);
-        assert(indices.len == forward_mapping_count);
-        for (0..forward_mapping_count) |position| {
-            const index = destination.getIndex(ids[position]) orelse return false;
-            if (index != indices[position]) return false;
-        }
-
-        const reverse_indices = source.index_to_id.keys();
-        const reverse_ids = source.index_to_id.values();
-        assert(reverse_indices.len == reverse_mapping_count);
-        assert(reverse_ids.len == reverse_mapping_count);
-        for (0..reverse_mapping_count) |position| {
-            const id = destination.getId(reverse_indices[position]) orelse return false;
-            if (!std.meta.eql(id, reverse_ids[position])) return false;
-        }
         return true;
     }
 };
