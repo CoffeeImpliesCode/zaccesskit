@@ -10,7 +10,7 @@ implementation, and it needs no Rust toolchain at any point.
 **PowerPC64 C ABI limit:** this publication does not support the PowerPC64 C consumer boundary.
 The linked C consumer crashes on Zig 0.16.0 aggregate-return lowering.
 Independent compiler-only reproductions fail without zaccesskit.
-Pure Zig PowerPC64 tests, all twelve reference cases, and the offline integration scenario passed through QEMU.
+Earlier pure Zig PowerPC64 tests, twelve recorded reference cases, and the offline integration scenario passed through QEMU.
 The user accepted publication with this C boundary limit. No compiler change or speculative wrapper is included.
 All checks remain enabled. See `docs/50-verification.md` sections 10.5 and 10.7 for the failing C receipts.
 The corrected-source gate exited 1. Formatting, build, native tests, and AST checks passed.
@@ -23,10 +23,11 @@ The self-hosted x86 Debug backend failed five linked-C geometry result checks. T
 
 The async design runs the other way round from what the name suggests.
 `std.Io` is the interface. `zio` is one implementation behind it, in the place
-`std.Io.Threaded` and `std.Io.Uring` sit. Every library signature takes
-`io: std.Io`, and a `*zio.Runtime` appears only where a task is spawned, a group
-is driven or a timeout is armed. `docs/30-port-design.md` section 7 and
-`docs/20-zio-and-zig-io.md` section 1 carry the reasoning.
+`std.Io.Threaded` and `std.Io.Uring` sit.
+Blocking entry points take explicit I/O capabilities.
+Native transport owners also receive the runtime needed for owned tasks.
+The pure schema and consumer layers need neither capability.
+`docs/30-port-design.md` sections 2.1 and 12.2 record the boundary.
 
 It tracks two upstream repositories, which version independently:
 
@@ -44,12 +45,11 @@ targets and the generated header already matches it.
 
 ## What is in the tree
 
-The library exists. The table below is a census of the working copy, measured by
-reading the files: module and line counts from `find` and `wc`, and test counts
-from a comment-aware scan for `test "` declarations. The last column counts the
-modules `zig build test` reaches from `src/root.zig`. A milestone moves every
-figure in the table, so treat each one as the reading of a moment and
-re-measure it before you quote it.
+The library exists. The table below preserves a historical source census.
+It does not describe the current source or import graph.
+`docs/30-port-design.md` sections 1.3 and 12 describe the current public contracts.
+`docs/52-translation-ledger.md` records current item dispositions.
+`docs/50-verification.md` records actual test and platform receipts.
 
 | Layer | Modules | Lines | `test "` | In the analysis graph |
 |---|---:|---:|---:|---|
@@ -68,17 +68,17 @@ declarations `include/zaccesskit.h` carries, and `src/adapters/` holds the five
 platform adapters. The layering is a constraint rather than a preference:
 `docs/30-port-design.md` section 3.3 fixes it.
 
-`include/zaccesskit.h` is 6596 lines and declares 498 functions. A Linux build
-exports 446 of them, because 52 sit behind a preprocessor guard that is off
-there. `docs/40-capi-build-map.md` section 1.1 measured both figures, and
-`tools/capi_parity/main.zig` re-measures them per target on demand.
+The earlier header census counted 6596 lines and 498 functions, with 446 Linux exports.
+Those figures are historical, not the current exact-error API inventory.
+`docs/52-translation-ledger.md` maps the added C diagnostics.
+`tools/capi_parity/main.zig` measures header/export parity per target.
 
-### The analysis graph does not cover four files
+### Historical analysis graph: four files were unreachable
 
-`zig build test` compiles the test root `src/root.zig` and follows every
-`@import` from it. That reaches 110 of the 114 modules under `src/`. The other
-four are on disk, are compiled by nobody, and hold 1554 lines and 22 `test "`
-declarations.
+The earlier `src/root.zig` import walk reached 110 of 114 modules.
+At that measurement, four Windows files were unreachable.
+Those findings below are historical, not current missing-provider claims.
+The current source publishes real Windows provider namespaces.
 
 | File | Lines | `test "` | Why nothing imports it |
 |---|---:|---:|---|
@@ -109,12 +109,28 @@ Its strict x86_64 cross row passed all 1653 library tests and all 1676 linked-C 
 The full gate exited 1 because external checker failures and the PowerPC64 C boundary failure remain.
 `docs/50-verification.md` section 10.7 records the final stage results and cross counts.
 
-The census above is a historical source measurement, not the final executed test count.
-A declaration count and a pass count are not the same measurement.
+The census above is historical. Declaration counts and executed pass counts are different measurements.
 Neither certifies behavior on a real platform accessibility object.
-The reference checks cover twelve finite, hand-recorded, source-derived cases.
-They do not execute a Rust oracle or establish wire parity.
-The translation ledger remains at 57 open rows.
+The current fixture inventory contains fifteen finite, hand-recorded, source-derived cases.
+Earlier twelve-case receipts remain twelve-case evidence.
+No fixture check executes a Rust oracle or establishes wire parity.
+Use `docs/52-translation-ledger.md` for reconciled source counts, not the earlier 57-open-row summary.
+
+The root publishes seven names: `schema`, `consumer`, `capi`, `adapters`, `Runtime`,
+`version`, and `minimum_zig_version` (`src/root.zig:36-81`).
+`adapters` publishes AT-SPI, Windows, Mac, iOS, and Android namespaces.
+`Runtime` is the same pinned zio runtime type used by native adapters.
+Mandatory declaration-reachability guards remain in the test graph.
+They do not replace observable behavior and ownership tests.
+
+Current portable native-contract tests passed 18 cases and skipped one case in each safety mode.
+The Windows native client cross-build exited 0. No Windows client executed.
+Mac context tests passed ten cases and skipped two native Objective-C cases.
+The Linux provider started after a reserved-driver-sender correction and appeared in an independent GNOME registry query.
+Full interface/action/event/close proof remains pending.
+The earlier Android full-module run had 1676 passes and two failures; later full imports failed before tests.
+`docs/50-verification.md` section 11 records the exact receipts and limits.
+Nogui remains source-only and was not executed.
 
 ## Why a direct translation
 
@@ -377,6 +393,10 @@ ordinary test rather than as a fuzz target.
 
 ## Layout
 
+This listing preserves the earlier directory census.
+Module, dependency, build-step, and document counts below are historical.
+The current root publishes seven names, including `adapters` and the shared `Runtime` type.
+
 ```text
 zaccesskit/
 ├── .envrc                  direnv hook, loads the host scratch policy first
@@ -393,7 +413,7 @@ zaccesskit/
 ├── include/
 │   └── zaccesskit.h        the C ABI, checked in rather than generated
 ├── src/
-│   ├── root.zig            the module root; re-exports the three namespaces
+│   ├── root.zig            the module root; current public names are listed above
 │   ├── schema/             24 modules: the platform-neutral vocabulary
 │   ├── consumer/           28 modules: the tree, its queries, the update protocol
 │   ├── capi/               14 modules: the 498 header declarations in Zig
@@ -421,10 +441,9 @@ zig-pkg -> /tmp/cache/zaccesskit/pkg
 `.jj/` and `.git/` hold the colocated version control. `.devenv/` and `.direnv/`
 are generated. `codedb.snapshot` is an index artifact and is ignored.
 
-Five object files sit in the repository root: `probe2.o`, `probe6.o`, `probe7.o`,
-`probe8.o` and `probe9.o`, together about 30 MB. They are scratch output from
-the geometry probes `docs/19` records, nothing imports them, and `.gitignore`
-does not name them. Delete them.
+The earlier geometry research left five probe object files, as recorded in `docs/19`.
+That historical inventory is not a current filesystem observation.
+The standing scratch-cleanup requirements in `AGENTS.md` remain unchanged.
 
 The adapter order is fixed: `atspi`, `windows`, `macos`, `ios`, `android`.
 AT-SPI comes first because it is the only adapter whose protocol runs on this

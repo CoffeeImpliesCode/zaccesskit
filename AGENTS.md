@@ -233,24 +233,22 @@ Each item names the failure it prevents. Do not rediscover them.
   fuzz` over the 823 lines of `zig-gate` returns `0`. A fuzz step therefore never
   runs unless a gate line in `docs/40-plan.md` names it. Put the target file and
   the corpus directory in that line.
-- **`src/root.zig` declares five names, and every one of them earns its
-  place.** It re-exports the three namespaces `schema`, `consumer` and `capi`,
-  and it mirrors `version` and `minimum_zig_version` out of `build.zig.zon`
-  through the `build_options` module. It used to be a module doc comment and
-  nothing else, and the `empty-file` warning `zlint` reported for it was the
-  correct verdict on that file. The file is not that file any more, so the
-  warning and the exemption that allowed it are both gone. Do not add a
-  placeholder `pub const`, an `export fn` or an unused import to quiet a
-  linter, and do not flatten the three namespaces into the root:
-  `docs/30-port-design.md` record R2 fixes them one level down, because a
-  consumer names those types in one signature.
-- **A re-export nothing references analyses nothing.** Zig analyses lazily, so
-  `pub const schema = @import("schema/root.zig")` compiles without looking at
-  one module under `src/schema/`. `zig build test` reported green that way,
-  having checked two constants and two tests. Each of the three namespaces
-  therefore has a test in `src/root.zig` that calls
-  `std.testing.refAllDecls` on it, and a fourth namespace needs one in the
-  same change.
+- **`src/root.zig` declares seven names, and each earns its place.**
+  It publishes `schema`, `consumer`, `capi`, `adapters`, `Runtime`, `version`,
+  and `minimum_zig_version` at `src/root.zig:36-81`.
+  `adapters` publishes the five platform namespaces.
+  `Runtime` exposes the same pinned zio runtime type used by those adapters.
+  The version constants come from `build.zig.zon` through `build_options`.
+  Do not add a placeholder declaration, unused import, or export to quiet a linter.
+  Do not flatten the namespaces into the root.
+  `docs/30-port-design.md` record R2 keeps types under their owning namespace.
+- **A re-export nothing references analyzes nothing.** Zig analyzes lazily.
+  A namespace import alone does not force its declarations into the test graph.
+  Keep the mandatory `std.testing.refAllDecls` namespace guards in `src/root.zig`
+  and `src/adapters/root.zig`.
+  Add the corresponding guard in the same change when a namespace becomes public.
+  These guards prove reachability, not behavior or native platform execution.
+  Pair them with meaningful boundary-value and ownership tests.
 - **Z001 is off in `.ziglint.zon`, and it stays off.** Z001 asks for a
   camelCase function name. 498 of its findings are the C ABI surface, where
   the Zig identifier **is** the C symbol in `include/zaccesskit.h` byte for
@@ -632,29 +630,27 @@ Every item can fail, and every failure points at a defect.
 
 ## 11. What this host cannot run, and how each limit is proved
 
-Three things in this repository cannot be verified on a buildhost host. A claim
-that they work is a claim you have not checked. Do not write one.
+Host compilation, portable execution, and real platform execution are separate evidence classes.
+Do not claim a native result without its actual command, output, and platform receipt.
 
 |Limit|Evidence it is a limit|
 |---|---|
-|The five platform adapters run on Linux only, through a refusal seam|AppKit, UIKit, Win32, X11 and the AT-SPI bus are all absent. `test -f /usr/include/X11/extensions/XTest.h` and the same for `Xfixes.h`, `XInput2.h` and `xkbcommon.h` return no file, while the runtime libraries are present. Each adapter compiles and its module graph type-checks, and no adapter reaches a real platform object.|
-|`aarch64-linux` and `powerpc64-linux` cannot execute the COM layer|The COM entry points carry `callconv(.winapi)`, which resolves on neither foreign target. `zig build cross-test` runs the Debug shard under `qemu_user` on both and reports `status=pass` for the shard, so the row proves the tree compiles and its pure halves execute, and it proves nothing about the COM surface. The admitted consequence is that a COM defect cannot be caught by any row in the matrix.|
-|AT-SPI may be unable to register on this host|goose v3.3.0 never learns its own unique bus name on this D-Bus, so the adapter cannot complete registration. Every AT-SPI path is exercised through the refusal seam instead. `[OBSERVED]` rather than proved, because the failure is in the bus, not in this tree.|
+| No Windows, Mac, iOS, or Android native execution receipt exists in the current record | `docs/50-verification.md` section 11 records portable tests and a Windows client cross-build. Neither proves SDK-client execution |
+| Foreign Linux pure tests do not execute the COM layer | The COM target restrictions and earlier cross results remain separate from real Windows UI Automation. The unsupported PowerPC64 linked-C boundary remains disclosed in section 10.7 |
+| The full real Linux provider matrix remains unverified | After the reserved-driver-sender correction, the provider started and appeared in independent GNOME registry `GetChildren`. This establishes registration, not all interfaces, actions, signals, removal, or close behavior. Section 11.3 records the exact authority |
 
-**What a green gate therefore proves.** `zig build test` passing at 1556 in Debug
-and ReleaseSafe, `zig build fuzz` at 353, `zig fmt --check` clean,
-`zig build capi-parity` in parity on five targets, `zig ast-check` parsing every
-file under `src/`, and `cross-test` at `status=pass` for x86_64-linux,
-aarch64-linux and powerpc64-linux together prove that the tree compiles, that
-its pure halves execute on three architectures, and that the C ABI matches the
-upstream header symbol for symbol. They prove nothing about any adapter
-talking to a real accessibility bus, and no line in a commit message may say
-otherwise.
+**What a green gate proves.** A gate receipt covers only the stages, declarations,
+targets, and executed tests in that receipt.
+Historical 1556-test and 353-corpus counts are not current suite counts.
+`docs/50-verification.md` records exact counts and actual stage failures.
+The corrected-source gate in section 10.7 exited 1, not 0.
+Portable checks, cross-compilation, header parity, and a reachable registry do not prove native provider behavior.
+No commit message may claim more than the observed receipt establishes.
 
-**Where the translation gap is.** `docs/52-translation-ledger.md` carries one
-row per upstream public item with both `path:line` values. At the last measured
-merge it held 1356 unique rows: 457 ported, 536 adapted, 194 not-applicable and
-169 open. Every open row names what blocks it, and the blockers are these three
-host limits plus a handful of house rules that forbid the shape the port would
-need. The count is a measurement, not an estimate, and it changes when a row is
-re-examined.
+**Where the translation gap is.** `docs/52-translation-ledger.md` maps upstream
+public items with both `path:line` values.
+An earlier measurement had 1356 rows: 457 ported, 536 adapted, 194 not-applicable,
+and 169 open.
+That count is historical. Use the reconciled ledger for current dispositions.
+A source mapping, an open GitHub issue, and a native acceptance result are different records.
+Keep unresolved source rows separate from implemented portable items and unverified native behavior.
