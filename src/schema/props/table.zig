@@ -672,9 +672,9 @@ pub fn propertyValueClone(
 /// every arm releases what it is about to rebuild from and a self-clone has
 /// nothing left to rebuild.
 ///
-/// On `error.OutOfMemory` the destination payload of the variant that failed
-/// is empty and still owned by `dest`: its old contents were released before
-/// the append that failed. Every earlier entry of the store is unchanged.
+/// On `error.OutOfMemory` a reused custom-action payload remains unchanged.
+/// Other reused list payloads are empty and still owned by `dest` if their
+/// append fails. Every earlier entry of the store is unchanged.
 pub fn propertyValueCloneInto(
     gpa: std.mem.Allocator,
     dest: *PropertyValue,
@@ -750,13 +750,8 @@ pub fn propertyValueCloneInto(
         .custom_action_vec => |actions| {
             if (reuse) {
                 var kept = dest.*.custom_action_vec;
-                // The replacement is built first, into a list of its own, and
-                // only then does the teardown run. `dest` may be `source`, so
-                // `actions` can name the very descriptions the teardown
-                // releases and the very buffer the first append moves;
-                // rebuilding after that teardown would read freed memory.
-                // Owning the copies first makes the order irrelevant, so the
-                // loop below never holds a slice across a growth.
+                // Copy the descriptions before any teardown or buffer growth.
+                // Allocation failure must leave the old actions owned by `dest`.
                 var rebuilt: std.ArrayList(CustomAction) = .empty;
                 errdefer deinitActions(gpa, &rebuilt);
                 for (actions.items) |action| {
@@ -765,13 +760,13 @@ pub fn propertyValueCloneInto(
                     try rebuilt.append(gpa, fresh);
                 }
 
-                // Each old action owns a description of its own, so the list
-                // buffer is not the only thing to release before reusing it.
+                // Reserve before teardown so the ownership transfer cannot fail.
+                try kept.ensureTotalCapacity(gpa, rebuilt.items.len);
                 for (kept.items) |*action| action.deinit(gpa);
                 kept.clearRetainingCapacity();
-                errdefer kept.deinit(gpa);
-                for (rebuilt.items) |action| try kept.append(gpa, action);
-                deinitActions(gpa, &rebuilt);
+                kept.appendSliceAssumeCapacity(rebuilt.items);
+                // The descriptions now belong to `kept`. Release only the header.
+                rebuilt.deinit(gpa);
                 dest.* = .{ .custom_action_vec = kept };
             } else {
                 dest.* = .{ .custom_action_vec = try cloneActions(gpa, actions.items) };
@@ -873,7 +868,7 @@ fn cloneActions(
     items: []const CustomAction,
 ) std.mem.Allocator.Error!std.ArrayList(CustomAction) {
     var owned: std.ArrayList(CustomAction) = .empty;
-    errdefer owned.deinit(gpa);
+    errdefer deinitActions(gpa, &owned);
     for (items) |action| {
         var fresh = try CustomAction.init(gpa, action.id, action.description.items);
         errdefer fresh.deinit(gpa);
