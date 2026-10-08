@@ -1232,7 +1232,9 @@ const ConsumerRaiseRecorder = struct {
     }
 
     fn class(env: JniEnv, _: [:0]const u8) JObject {
-        if (of(env).failure == error.JavaMemberMissing) return null;
+        if (of(env).failure) |cause| {
+            if (cause == error.JavaMemberMissing) return null;
+        }
         return fakeClass();
     }
 
@@ -1257,12 +1259,15 @@ const ConsumerRaiseRecorder = struct {
     }
 
     fn string(env: JniEnv, _: []const u8) jni.JString {
-        if (of(env).failure == error.OutOfMemory) return null;
+        if (of(env).failure) |cause| {
+            if (cause == error.OutOfMemory) return null;
+        }
         return fakeRunnable();
     }
 
     fn exception(env: JniEnv) bool {
-        return of(env).failure == error.JavaException;
+        if (of(env).failure) |cause| return cause == error.JavaException;
+        return false;
     }
 
     fn table(self: *ConsumerRaiseRecorder) JniTable {

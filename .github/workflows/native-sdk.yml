@@ -1,0 +1,285 @@
+name: Native SDK clients
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/native-sdk.yml'
+      - 'build.zig'
+      - 'build.zig.zon'
+      - 'src/**'
+      - 'tools/windows_native_client.zig'
+      - 'tools/macos_native_client.zig'
+      - 'docs/50-verification.md'
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/native-sdk.yml'
+      - 'build.zig'
+      - 'build.zig.zon'
+      - 'src/**'
+      - 'tools/windows_native_client.zig'
+      - 'tools/macos_native_client.zig'
+      - 'docs/50-verification.md'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: native-sdk-${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# These jobs run SDK clients, not the full test suite or the external gate.
+# iOS and Android have no native SDK client entrypoints in this tree.
+jobs:
+  native-client:
+    name: Native client (${{ matrix.platform }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: windows
+            runner: windows-2022
+            archive: x86_64-windows
+          - platform: macos
+            runner: macos-15
+            archive: aarch64-macos
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      NATIVE_ROOT: ${{ runner.temp }}/native-sdk
+      TMPDIR: ${{ runner.temp }}/native-sdk/tmp
+      TMP: ${{ runner.temp }}/native-sdk/tmp
+      TEMP: ${{ runner.temp }}/native-sdk/tmp
+      XDG_CACHE_HOME: ${{ runner.temp }}/native-sdk/cache
+      ZIG_LOCAL_CACHE_DIR: ${{ runner.temp }}/native-sdk/cache/local
+      ZIG_GLOBAL_CACHE_DIR: ${{ runner.temp }}/native-sdk/cache/global
+      NATIVE_SOURCE: ${{ runner.temp }}/native-sdk/source
+      NATIVE_OUT: ${{ runner.temp }}/native-sdk/out
+      NATIVE_EVIDENCE: ${{ runner.temp }}/native-sdk/evidence
+      NATIVE_PLATFORM: ${{ matrix.platform }}
+      ZIG_ARCHIVE_KEY: ${{ matrix.archive }}
+    steps:
+      - name: Create runner-local scratch before code commands
+        run: |
+          $ErrorActionPreference = 'Stop'
+          @($env:TMPDIR, $env:XDG_CACHE_HOME, $env:ZIG_LOCAL_CACHE_DIR,
+            $env:ZIG_GLOBAL_CACHE_DIR, $env:NATIVE_SOURCE, $env:NATIVE_OUT,
+            $env:NATIVE_EVIDENCE, "$env:NATIVE_ROOT/compiler") | ForEach-Object {
+            New-Item -ItemType Directory -Force -Path $_ | Out-Null
+          }
+
+      # https://api.github.com/repos/actions/checkout/git/ref/tags/v4
+      - name: Check out source without stored credentials
+        id: checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Copy source and read the sole compiler version authority
+        id: compiler
+        timeout-minutes: 5
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Get-ChildItem -Force -LiteralPath $env:GITHUB_WORKSPACE |
+            Where-Object { $_.Name -notin @('.git', '.jj', '.zig-cache', 'zig-out', 'zig-pkg') } |
+            Copy-Item -Recurse -Force -Destination $env:NATIVE_SOURCE
+          New-Item -ItemType Directory -Force -Path "$env:NATIVE_SOURCE/zig-pkg" | Out-Null
+          $manifest = Get-Content -Raw -LiteralPath "$env:NATIVE_SOURCE/build.zig.zon"
+          $matches = [regex]::Matches($manifest, '(?m)^\s*\.minimum_zig_version\s*=\s*"([^"]+)"\s*,')
+          if ($matches.Count -ne 1) { throw 'Expected one minimum_zig_version in build.zig.zon' }
+          $version = $matches[0].Groups[1].Value
+          if ($version -notmatch '^\d+\.\d+\.\d+$') { throw 'Expected an exact release compiler version' }
+          "version=$version" | Out-File -Append -Encoding utf8 -FilePath $env:GITHUB_OUTPUT
+          "ZIG_SELECTED_VERSION=$version" | Out-File -Append -Encoding utf8 -FilePath $env:GITHUB_ENV
+
+      - name: Install only the manifest-selected official compiler
+        timeout-minutes: 10
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $indexPath = "$env:NATIVE_EVIDENCE/zig-download-index.json"
+          Invoke-WebRequest -Uri 'https://ziglang.org/download/index.json' -OutFile $indexPath
+          $index = Get-Content -Raw -LiteralPath $indexPath | ConvertFrom-Json -AsHashtable
+          $release = $index[$env:ZIG_SELECTED_VERSION]
+          if ($null -eq $release) { throw 'Selected compiler is absent from the official download index' }
+          $package = $release[$env:ZIG_ARCHIVE_KEY]
+          if ($null -eq $package) { throw 'Native compiler package is absent from the download index' }
+          $uri = [uri]$package.tarball
+          if ($uri.Scheme -ne 'https' -or $uri.Host -ne 'ziglang.org') {
+            throw 'Compiler archive must come from ziglang.org over HTTPS'
+          }
+          if ($package.shasum -notmatch '^[0-9a-f]{64}$') { throw 'Missing compiler SHA-256' }
+          $archive = Join-Path "$env:NATIVE_ROOT/compiler" ([IO.Path]::GetFileName($uri.AbsolutePath))
+          Invoke-WebRequest -Uri $uri.AbsoluteUri -OutFile $archive
+          $actualHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $archive).Hash.ToLowerInvariant()
+          if ($actualHash -ne $package.shasum) { throw 'Compiler archive SHA-256 mismatch' }
+          [ordered]@{
+            authority = 'build.zig.zon minimum_zig_version'
+            version = $env:ZIG_SELECTED_VERSION
+            index = 'https://ziglang.org/download/index.json'
+            package = $env:ZIG_ARCHIVE_KEY
+            url = $uri.AbsoluteUri
+            sha256 = $actualHash
+          } | ConvertTo-Json | Set-Content -Encoding utf8 "$env:NATIVE_EVIDENCE/compiler-download.json"
+          if ($IsWindows) {
+            Expand-Archive -LiteralPath $archive -DestinationPath "$env:NATIVE_ROOT/compiler"
+            $binaryName = 'zig.exe'
+          } elseif ($IsMacOS) {
+            & /usr/bin/tar -xf $archive -C "$env:NATIVE_ROOT/compiler"
+            if ($LASTEXITCODE -ne 0) { throw "Compiler extraction failed: $LASTEXITCODE" }
+            $binaryName = 'zig'
+          } else {
+            throw 'Native SDK clients require Windows or macOS'
+          }
+          $compilers = @(Get-ChildItem -Directory -LiteralPath "$env:NATIVE_ROOT/compiler" |
+            ForEach-Object { Join-Path $_.FullName $binaryName } |
+            Where-Object { Test-Path -LiteralPath $_ -PathType Leaf })
+          if ($compilers.Count -ne 1) { throw 'Expected exactly one installed compiler' }
+          "ZIG_NATIVE_COMPILER=$($compilers[0])" |
+            Out-File -Append -Encoding utf8 -FilePath $env:GITHUB_ENV
+
+      - name: Record actual Windows SDK and runtime metadata
+        if: runner.os == 'Windows'
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $kits = Get-ItemProperty -LiteralPath 'HKLM:\SOFTWARE\Microsoft\Windows Kits\Installed Roots'
+          $headers = @(Get-ChildItem -LiteralPath "$($kits.KitsRoot10)/Include" -Directory |
+            ForEach-Object { Join-Path $_.FullName 'um/UIAutomation.h' } |
+            Where-Object { Test-Path -LiteralPath $_ -PathType Leaf })
+          if ($headers.Count -eq 0) { throw 'Installed Windows SDK has no UI Automation header' }
+          $dllPath = Join-Path $env:SystemRoot 'System32/UIAutomationCore.dll'
+          $dll = Get-Item -LiteralPath $dllPath
+          [ordered]@{
+            sdk_root = $kits.KitsRoot10
+            sdk_headers = @($headers | ForEach-Object {
+              @{ path = $_; sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $_).Hash }
+            })
+            runtime_path = $dll.FullName
+            runtime_version = $dll.VersionInfo.FileVersion
+            runtime_sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $dllPath).Hash
+            declarations = 'Pinned zigwin32 dependency in build.zig.zon, not SDK header translation'
+            scope = 'SDK inventory and real OS UIA runtime. Client assertions determine runtime proof.'
+          } | ConvertTo-Json -Depth 5 |
+            Set-Content -Encoding utf8 "$env:NATIVE_EVIDENCE/windows-sdk-runtime.json"
+
+      - name: Run the actual client on its native OS and retain both streams
+        timeout-minutes: 15
+        env:
+          CHECKOUT_COMMIT: ${{ steps.checkout.outputs.commit }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $program = @'
+          const fs = require('node:fs');
+          const path = require('node:path');
+          const crypto = require('node:crypto');
+          const { spawnSync } = require('node:child_process');
+          const e = process.env;
+          const evidence = e.NATIVE_EVIDENCE;
+          const metadata = {
+            checkout_commit: e.CHECKOUT_COMMIT,
+            event_sha: e.GITHUB_SHA,
+            run_id: e.GITHUB_RUN_ID,
+            run_attempt: e.GITHUB_RUN_ATTEMPT,
+            runner_os: e.RUNNER_OS,
+            runner_arch: e.RUNNER_ARCH,
+            image_os: e.ImageOS,
+            image_version: e.ImageVersion,
+            node: process.version,
+            source: e.NATIVE_SOURCE,
+            package_directory: path.join(e.NATIVE_SOURCE, 'zig-pkg'),
+            output: e.NATIVE_OUT,
+            compiler: e.ZIG_NATIVE_COMPILER,
+            selected_version: e.ZIG_SELECTED_VERSION,
+            scope: 'Actual native SDK client only. No full-suite or external-assistive-client claim.',
+            source_sha256: {},
+            commands: []
+          };
+          const save = () => fs.writeFileSync(path.join(evidence, 'run.json'), JSON.stringify(metadata, null, 2));
+          function hashSources(directory) {
+            for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+              const file = path.join(directory, entry.name);
+              if (entry.isDirectory()) hashSources(file);
+              else if (entry.isFile()) {
+                metadata.source_sha256[path.relative(e.NATIVE_SOURCE, file)] =
+                  crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+              }
+            }
+          }
+          hashSources(e.NATIVE_SOURCE);
+          save();
+          function run(name, command, args) {
+            const stdoutPath = path.join(evidence, `${name}.stdout.txt`);
+            const stderrPath = path.join(evidence, `${name}.stderr.txt`);
+            const receipt = { name, command, args, status: 'started', stdout: stdoutPath, stderr: stderrPath };
+            metadata.commands.push(receipt);
+            save();
+            const stdout = fs.openSync(stdoutPath, 'w');
+            const stderr = fs.openSync(stderrPath, 'w');
+            let result;
+            try {
+              result = spawnSync(command, args, {
+                cwd: e.NATIVE_SOURCE, env: e, stdio: ['ignore', stdout, stderr], timeout: 12 * 60 * 1000
+              });
+            } finally {
+              fs.closeSync(stdout);
+              fs.closeSync(stderr);
+            }
+            receipt.exit_code = result.status;
+            receipt.signal = result.signal;
+            receipt.error = result.error ? String(result.error) : null;
+            receipt.status = result.status === 0 && !result.error ? 'passed' : 'failed';
+            save();
+            process.stdout.write(fs.readFileSync(stdoutPath));
+            process.stderr.write(fs.readFileSync(stderrPath));
+            if (result.error || result.status !== 0) throw new Error(`${name} failed: ${JSON.stringify(receipt)}`);
+            return fs.readFileSync(stdoutPath, 'utf8').trim();
+          }
+          if (e.NATIVE_PLATFORM === 'windows' && process.platform !== 'win32') throw new Error('Wrong Windows host');
+          if (e.NATIVE_PLATFORM === 'macos' && process.platform !== 'darwin') throw new Error('Wrong macOS host');
+          const version = run('zig-version', e.ZIG_NATIVE_COMPILER, ['version']);
+          if (version !== e.ZIG_SELECTED_VERSION) throw new Error('Compiler version differs from manifest');
+          run('zig-env', e.ZIG_NATIVE_COMPILER, ['env']);
+          const args = ['build'];
+          if (e.NATIVE_PLATFORM === 'windows') {
+            if (process.arch !== 'x64') throw new Error('Windows client lane requires x64');
+            args.push('windows-native-client-run', '-Dtarget=x86_64-windows-gnu');
+          } else if (e.NATIVE_PLATFORM === 'macos') {
+            if (process.arch !== 'arm64') throw new Error('macOS client lane requires arm64');
+            run('macos-version', '/usr/bin/sw_vers', []);
+            run('xcode-version', '/usr/bin/xcodebuild', ['-version']);
+            const sdk = run('macos-sdk-path', '/usr/bin/xcrun', ['--sdk', 'macosx', '--show-sdk-path']);
+            run('macos-sdk-version', '/usr/bin/xcrun', ['--sdk', 'macosx', '--show-sdk-version']);
+            for (const framework of ['AppKit', 'Foundation']) {
+              if (!fs.existsSync(path.join(sdk, 'System/Library/Frameworks', `${framework}.framework`))) {
+                throw new Error(`Actual SDK is missing ${framework}`);
+              }
+            }
+            metadata.macos_sdk = sdk;
+            save();
+            args.push('macos-native-client-run', `-Dmacos-sdk=${sdk}`);
+          } else throw new Error('Unsupported native client lane');
+          args.push('--cache-dir', e.ZIG_LOCAL_CACHE_DIR, '--global-cache-dir', e.ZIG_GLOBAL_CACHE_DIR,
+            '--prefix', e.NATIVE_OUT);
+          if (e.NATIVE_PLATFORM === 'windows') {
+            args.push('--', '--timeout-ms', '5000', '--pump-rounds', '20000', '--fault-limit', '4096');
+          }
+          run('native-client', e.ZIG_NATIVE_COMPILER, args);
+          '@
+          & node -e $program
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      # https://api.github.com/repos/actions/upload-artifact/git/ref/tags/v4
+      # Upload evidence only, not source, packages, caches, or built binaries.
+      - name: Retain actual client output and compiler SDK source metadata
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: native-sdk-${{ matrix.platform }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ env.NATIVE_EVIDENCE }}
+          if-no-files-found: error
+          retention-days: 14

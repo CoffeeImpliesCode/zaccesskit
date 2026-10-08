@@ -1551,7 +1551,7 @@ test "atomic dirty recovery fail-N rejects update and focus without contaminatin
             try testing.expectEqual(@as(usize, 0), recorder.count);
             try expectAtomicState(baseline.stateOf(), tree.stateOf());
             failing.fail_index = std.math.maxInt(usize);
-            const retry = if (focus_only) null else try atomicActionFixture(gpa, true, true);
+            const retry: ?TreeUpdate = if (focus_only) null else try atomicActionFixture(gpa, true, true);
             failing.fail_index = failing.alloc_index + fail_index;
             const result = if (focus_only)
                 tree.updateHostFocusStateAndProcessChanges(false, &slots)

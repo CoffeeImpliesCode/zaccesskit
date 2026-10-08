@@ -1248,6 +1248,7 @@ fn testStateMaskBoundary() error{
     TestUnexpectedResult,
     TestExpectedEqual,
     TestExpectedError,
+    TestUnexpectedError,
     InvalidStateMask,
 }!void {
     const all = try StateSet.fromWords(.{ 0xffffffff, 0x00000fff });
@@ -1301,6 +1302,7 @@ fn testWireDomainFuzz(_: void, smith: *testing.Smith) error{
     TestUnexpectedResult,
     TestExpectedEqual,
     TestExpectedError,
+    TestUnexpectedError,
     InvalidStateMask,
 }!void {
     const code = smith.value(u32);

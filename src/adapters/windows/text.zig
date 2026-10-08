@@ -795,7 +795,7 @@ const TestFixture = struct {
         return create(std.testing.allocator, weak, value);
     }
 
-    fn action(request: schema.ActionRequest, userdata: ?*anyopaque) void {
+    fn action(request: *const schema.ActionRequest, userdata: ?*anyopaque) void {
         const self: *TestFixture = @ptrCast(@alignCast(userdata.?));
         self.last_action = request.action;
         self.last_target = request.target_node;
