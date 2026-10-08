@@ -1,68 +1,13 @@
-//! The macOS adapter: the 16 C entry points, the three handles, and the state
-//! machine that sits behind them.
+//! Native AppKit C entry points and the pure Host test seam.
 //!
-//! **Upstream range.** `accesskit_macos` 0.27.1, the tree at
-//! `adapters/macos/src/`: `adapter.rs:24-295` (the state machine and the six
-//! tree-facing calls), `context.rs:26-102` (the context and its drop),
-//! `event.rs:20-335` (the queued events, behind `events.zig`),
-//! `subclass.rs:160-200` (the subclassing adapter) and `patch.rs:39-71` (the
-//! focus forwarder). The 16 declarations themselves are
-//! `src/capi/platform.zig:926-1199` and are not edited here.
+//! C handles use c_native.Bridge and real Objective-C objects on macOS.
+//! Other targets refuse with NativeUnsupported before inspecting host pointers
+//! or allocating. Pure Host helpers exercise tree and ownership behavior only;
+//! they are not native providers.
 //!
-//! **What is compiled-and-tested here, and what needs a Mac.** This host is
-//! Linux and has no macOS SDK. `zig build-exe -target aarch64-macos` fails at
-//! `-lobjc` with `unable to find dynamic system library 'objc'`, recorded as
-//! `docs/16:1780` and as row H5 of `docs/50-verification.md`, and
-//! `translate-c` cannot parse an Objective-C header at all, recorded as
-//! `docs/16:1784` and analysed in `docs/42` section 2.5. So:
-//!
-//! **L1, the source type-checks for its target.** This module contributes the
-//! state machine, the ownership and lifetime rules, the three handles, the
-//! focus-forwarder registry and all 16 signatures, and every platform call sits
-//! behind `Host`. All of that is checked on Linux.
-//!
-//! **L2, the object links against real system libraries. Nothing here.** It
-//! needs a Mac with the SDK. The Objective-C runtime call in
-//! `install_focus_forwarder` is the one place this tree would reach libobjc, and
-//! nothing in this directory has ever been linked against it.
-//!
-//! **L3, the adapter works against a live assistive technology. Nothing here.**
-//! It needs a running application with VoiceOver.
-//!
-//! A green run on this host is evidence about the state machine, the ownership
-//! and the tables. It is not evidence that the adapter builds, and it is not
-//! evidence that the adapter works.
-//!
-//! **The `Host` seam, and why it is not a stub.** Everything the adapter cannot
-//! do without AppKit goes through one struct of five function pointers: post a
-//! notification against a node, post one with a `userInfo` against a window,
-//! read the view, read the window that holds it, and hit-test it. `RecordingHost`
-//! is a complete implementation of that interface — it accepts every call and
-//! records it, so a test sees exactly which notification reached which node —
-//! and the same `MacosAdapter` type drives both. **The one thing no `Host`
-//! implementation on this host can do is reach a real assistive technology**, and
-//! that is exactly the L3 row above.
-//!
-//! **Ownership.** `Context` is reference counted, which is the port's `Rc`.
-//! Upstream `QueuedEvents` holds an `Rc<Context>` and so outlives the adapter
-//! that produced it; a queued-events handle here holds one reference and
-//! releases it in `macosQueuedEventsRaise`, and `macosAdapterFree` drops the
-//! adapter's. `macosQueuedEventsRaise` is the only release for the handle: a
-//! second call is a use-after-free and a `null` pointer is a contract
-//! violation, both as the header states.
-//!
-//! **The 16 signatures.** They are the ones `src/capi/platform.zig:926-1199`
-//! calls. Two of them differ from the shape a reader might expect, and
-//! `platform.zig` is the authority:
-//! `macosAdapterNew` takes `is_view_focused` as a `bool` and not as a function
-//! pointer, and `macosSubclassingAdapterNew` and `...ForWindow` take no
-//! deactivation handler at all, because AppKit drives activation for this
-//! platform.
-//!
-//! **The loop bound.** Every walk in this file is over one of the five tables in
-//! `attributes.zig`, `literals.zig` or the class registry below, each of which
-//! has a comptime length. `Context.destroy` walks `nodes`, whose length is the
-//! number of platform nodes the tree produced.
+//! Queues own their captured allocator and payload independently of the adapter.
+//! Native queues retain Objective-C targets; pure queues retain tree metadata but
+//! stop calling the borrowed Host when the adapter closes.
 
 const std = @import("std");
 
@@ -77,6 +22,14 @@ const attributes_mod = @import("attributes.zig");
 const events_mod = @import("events.zig");
 const literals_mod = @import("literals.zig");
 const roles_mod = @import("roles.zig");
+const native = @import("native.zig");
+const c_native = @import("c_native.zig");
+/// Checked real native class patch installers; no C diagnostic suppression.
+pub const patch = @import("patch.zig");
+/// Canonical typed native runtime used by AppKit clients.
+pub const objc = @import("objc.zig");
+pub const foundation = @import("foundation.zig");
+const builtin = @import("builtin");
 
 const ActivationHandler = boundary.ActivationHandler;
 const ActionHandler = boundary.ActionHandler;
@@ -98,6 +51,22 @@ pub const roles = roles_mod;
 pub const attributes = attributes_mod;
 pub const events = events_mod;
 
+pub const NativeAdapter = native.NativeAdapter;
+pub const Options = native.Options;
+pub const ActivationSink = native.ActivationSink;
+pub const FullTreeSupplier = native.FullTreeSupplier;
+pub const AttachTarget = native.AttachTarget;
+pub const NativeError = native.NativeError;
+pub const CreateError = native.CreateError;
+pub const AttachError = native.AttachError;
+pub const CloseError = native.CloseError;
+pub const UpdateError = native.UpdateError;
+pub const NotificationError = native.NotificationError;
+pub const UpdateOutcome = native.UpdateOutcome;
+pub const PreparedUpdateOutcome = native.PreparedUpdateOutcome;
+pub const RuntimeRelease = native.RuntimeRelease;
+pub const NativeNotifications = native.NativeNotifications;
+
 /// The one allocator this adapter uses for its own lifetimes.
 ///
 /// It is `allocation.allocator()` and not a fresh allocator, because the C
@@ -109,11 +78,8 @@ fn heap() Allocator {
     return allocation.allocator();
 }
 
-/// The one platform seam, and the five calls that go through it.
-///
-/// Each function pointer is `callconv(.c)` because on a target where these are
-/// real AppKit entry points they are. `RecordingHost` implements all five
-/// without AppKit.
+/// The pure notification and geometry seam used by deterministic source tests.
+/// Native C handles never hold or call this vtable.
 pub const Host = struct {
     /// The callee's own state, passed to every call unchanged.
     ptr: ?*anyopaque,
@@ -163,8 +129,8 @@ pub const NodeList = struct {
 
 /// What `Context.doAction` can report.
 ///
-/// The two members are the two `schema.actionDataToC` can raise plus the one
-/// `allocation.create` can. The set is named here rather than inferred at the
+/// The two members are the conversion and raw allocator errors from
+/// `boundary.createActionRequest`. The set is named rather than inferred at the
 /// call, so a caller can tell an exhausted allocator from a text no C string
 /// can spell.
 pub const DoActionError = error{
@@ -189,6 +155,8 @@ const Context = struct {
     /// How many owners this context has. It reaches zero only when the adapter
     /// and every queued-events handle have let it go.
     refs: usize,
+    /// Closing ends every borrowed Host and callback lifetime, not tree ownership.
+    closed: bool = false,
     /// The tree an application reads.
     tree: consumer.tree.Tree,
     /// Metadata strings borrowed by the tree, retained with queued contexts.
@@ -284,16 +252,12 @@ const Context = struct {
         self.refs += 1;
     }
 
-    /// Drops one reference, releasing the context when the last one goes.
-    ///
-    /// Upstream `Context::drop` at `context.rs:91-102` posts one
-    /// `NSAccessibilityUIElementDestroyedNotification` for every node it still
-    /// holds, and this call does the same before it releases anything.
+    /// Drops the tree and metadata after the final adapter or queue reference.
     fn release(self: *Context) void {
         self.refs -= 1;
         if (self.refs != 0) return;
         const allocator = self.allocator;
-        self.postDestroyedForEveryNode();
+        self.close();
         var nodes = self.nodes;
         nodes.deinit(allocator);
         var arena = self.arena;
@@ -301,6 +265,13 @@ const Context = struct {
         self.tree.deinit();
         self.metadata_owners.deinit();
         allocator.destroy(self);
+    }
+
+    /// Posts destruction while the Host is still live, exactly once.
+    fn close(self: *Context) void {
+        if (self.closed) return;
+        self.closed = true;
+        self.postDestroyedForEveryNode();
     }
 
     /// Posts one destruction per live platform node, upstream `context.rs:91`.
@@ -352,51 +323,13 @@ const Context = struct {
         return removed.value;
     }
 
-    /// Hands one platform action to the handler the caller registered, upstream
-    /// `Context::do_action` at `AK/macos/src/context.rs:86-88`.
-    ///
-    /// **The request crosses the C ABI by transfer.** `boundary.ActionHandler`
-    /// takes a `*CActionRequest` it owns from the moment it is called, and it
-    /// must release it with `accesskit_action_request_free`, which is
-    /// `schema.cActionRequestDeinit` followed by `allocation.release`. So the
-    /// block comes from `allocation.create`, the payload from
-    /// `self.allocator`, and nothing after the call releases either. A callback
-    /// that keeps the pointer has a use-after-free and one that releases it
-    /// twice has a double free.
-    ///
-    /// **Who calls it.** Upstream reaches this from the node class, at
-    /// `AK/macos/src/node.rs:585`, `:693`, `:712`, `:731`, `:1139` and `:1218`.
-    /// The port holds those six selectors as table rows in `attributes.zig` with
-    /// no body, so nothing in this directory calls it yet. This function is the
-    /// half that owns the request, so it is here and the callers arrive with
-    /// the class.
-    ///
-    /// **Errors.** `error.OutOfMemory` and `error.InteriorNul`, from
-    /// `schema.actionDataToC` and from `allocation.create`. On either one the
-    /// handler is not called, so no request exists to free.
+    /// Converts a borrowed producer request into an owned raw C request.
+    /// The callback releases payload and outer box with the configured allocator.
     fn doAction(self: *Context, request: schema.ActionRequest) DoActionError!void {
-        const gpa = self.allocator;
-        var payload: ?schema.CActionData = null;
-        if (request.data) |data| payload = try schema.actionDataToC(gpa, data);
-        // The conversion above is the only allocation before the block exists,
-        // so a block that cannot be made must hand the payload back.
-        const built = allocation.create(schema.CActionRequest) catch |err| switch (err) {
-            error.OutOfMemory => {
-                if (payload) |*owned| schema.cActionDataDeinit(gpa, owned);
-                return error.OutOfMemory;
-            },
+        const built = boundary.createActionRequest(allocation.allocator(), request) catch |err| {
+            allocation.failWithError(err);
+            return err;
         };
-        built.* = .{
-            .action = request.action,
-            .target_tree = request.target_tree,
-            .target_node = request.target_node,
-            .data = .{
-                .has_value = payload != null,
-                .value = payload orelse std.mem.zeroes(schema.CActionData),
-            },
-        };
-        // Ownership moves to the callback here. Nothing after this line releases
-        // the request.
         action_request.callActionHandler(self.action_handler, built, self.action_userdata);
     }
 };
@@ -407,13 +340,15 @@ const Context = struct {
 /// not a value: the caller owns a `*MacosQueuedEvents` and must pass it to
 /// `macosQueuedEventsRaise`, which raises the events and releases the handle.
 pub const MacosQueuedEvents = struct {
-    /// The allocator that grew `events`.
+    /// Captured at construction, including for the stable outer box.
     allocator: Allocator,
-    /// The context the events are raised against, held by reference so that the
-    /// handle stays valid after the adapter is freed.
-    context: *Context,
-    /// The events, in the order they must be raised.
-    events: ArrayList(events_mod.QueuedEvent),
+    payload: union(enum) {
+        pure: struct {
+            context: *Context,
+            events: ArrayList(events_mod.QueuedEvent),
+        },
+        native: *native.NativeNotifications,
+    },
 
     /// Raises every event and releases the handle.
     ///
@@ -422,10 +357,14 @@ pub const MacosQueuedEvents = struct {
     /// handle: a second call is a use-after-free and a `null` pointer is a
     /// contract violation, both as `include/zaccesskit.h:6048` states.
     ///
-    /// **Errors.** None. Upstream cannot fail either: a destroyed node is
-    /// skipped and an announcement with no window is dropped, because a client
-    /// that is not there to hear it must not be sent one.
+    /// Exact checked native posting failures are latched in the C diagnostic.
+    /// WrongThread refuses before consuming; admitted success or failure
+    /// spends the payload and box.
     pub fn raiseAndRelease(self: *MacosQueuedEvents) void {
+        if (self.payload == .native and !foundation.isMainThread()) {
+            allocation.failWithError(error.WrongThread);
+            return;
+        }
         self.raise();
         self.destroy();
     }
@@ -436,13 +375,23 @@ pub const MacosQueuedEvents = struct {
     /// posting without spending the handle. A caller on the C seam uses
     /// `raiseAndRelease`, which is the only release.
     pub fn raise(self: *MacosQueuedEvents) void {
-        for (self.events.items) |*event| {
+        const pure = switch (self.payload) {
+            .native => |notifications| {
+                notifications.raise() catch |err| allocation.failWithError(err);
+                return;
+            },
+            .pure => |*value| value,
+        };
+        if (pure.context.closed) return;
+        for (pure.events.items) |*event| {
             switch (event.*) {
                 .generic => |generic| {
-                    const node = self.context.getOrCreatePlatformNode(generic.node_id) catch
+                    const node = pure.context.getOrCreatePlatformNode(generic.node_id) catch |err| {
+                        allocation.failWithError(err);
                         continue;
-                    self.context.host.post(
-                        self.context.host.ptr,
+                    };
+                    pure.context.host.post(
+                        pure.context.host.ptr,
                         node,
                         generic.notification,
                     );
@@ -450,19 +399,19 @@ pub const MacosQueuedEvents = struct {
                 .node_destroyed => |id| {
                     // A node with no platform node was never shown to a client,
                     // so there is nothing to tell it about.
-                    const node = self.context.removePlatformNode(id) orelse continue;
+                    const node = pure.context.removePlatformNode(id) orelse continue;
                     const name = events_mod.notificationFor(.node_destroyed) orelse continue;
-                    self.context.host.post(self.context.host.ptr, node, name);
+                    pure.context.host.post(pure.context.host.ptr, node, name);
                 },
                 .announcement => |announcement| {
-                    const view = self.context.host.view_of(self.context.host.ptr) orelse continue;
-                    const window = self.context.host.window_of(
-                        self.context.host.ptr,
+                    const view = pure.context.host.view_of(pure.context.host.ptr) orelse continue;
+                    const window = pure.context.host.window_of(
+                        pure.context.host.ptr,
                         view,
                     ) orelse continue;
                     const name = literals_mod.announcement_requested_notification.value;
-                    self.context.host.post_with_user_info(
-                        self.context.host.ptr,
+                    pure.context.host.post_with_user_info(
+                        pure.context.host.ptr,
                         window,
                         name,
                         announcement.text,
@@ -480,24 +429,20 @@ pub const MacosQueuedEvents = struct {
     /// release and `macosQueuedEventsRaise` is it.
     pub fn destroy(self: *MacosQueuedEvents) void {
         const allocator = self.allocator;
-        var list = self.events;
-        events_mod.releaseEvents(allocator, &list);
-        const context = self.context;
-        // SAFETY: `releaseEvents` above freed every queued event's payload and
-        // the array behind them, and the `context.release()` below drops the
-        // reference through the local copy taken before this line rather than
-        // through `self`. Nothing after this reads `self`, so poisoning it
-        // turns a second `raiseAndRelease` into a Debug trap instead of a
-        // double free.
-        self.* = undefined;
-        context.release();
+        switch (self.payload) {
+            .pure => |*pure| {
+                events_mod.releaseEvents(allocator, &pure.events);
+                pure.context.release();
+            },
+            .native => |notifications| notifications.deinit(),
+        }
+        allocator.destroy(self);
     }
 };
 
 /// The state an adapter is in, upstream `AK/macos/src/adapter.rs:26-38`.
 ///
-/// The three states are: no tree has been asked for yet, the activation handler
-/// answered "no tree" so a placeholder stands in, or a real tree is active.
+/// Three pure tree phases, or an independently owned genuine native bridge.
 const State = union(enum) {
     /// No tree has been asked for. Upstream `State::Inactive`.
     inactive: Inactive,
@@ -506,6 +451,8 @@ const State = union(enum) {
     placeholder: Placeholder,
     /// A tree is active. Upstream `State::Active`.
     active: *Context,
+    /// Genuine native provider; never carries a fake Host.
+    native: *c_native.Bridge,
 
     /// The part of `inactive` and `placeholder` that both carry.
     const Common = struct {
@@ -545,23 +492,12 @@ const State = union(enum) {
 pub const MacosAdapter = struct {
     /// The allocator the state was built with.
     allocator: Allocator,
-    /// The platform seam.
-    host: Host,
-    /// Which of the three states the adapter is in.
+    /// Only pure adapters have a borrowed Host.
+    host: ?Host,
+    /// Pure tree state or a genuine native owner.
     state: State,
 
-    /// The recorder this adapter allocated for itself, or `null` when the host
-    /// was supplied by the caller.
-    ///
-    /// **This field is the whole ownership decision.** `Host` carries five
-    /// function pointers and a `?*anyopaque`, with no destructor, so a `Host`
-    /// cannot say whether its `ptr` is borrowed or owned. Without this field the
-    /// three entry points that call `recordingHost` allocate a `RecordingHost`
-    /// and hand out a pointer to it that nothing ever releases: neither the box
-    /// nor the `posts` buffer, which grows with the adapter's whole notification
-    /// traffic. `newAdapter` leaves this `null` and never fills it in, which is
-    /// what keeps a caller-supplied host from being freed by an adapter that
-    /// does not own it. `releaseState` is the only reader.
+    /// A recorder owned by an explicitly pure test helper, never a C constructor.
     owned_host: ?*RecordingHost = null,
 
     /// Asks `factory` for a tree and hands it to the adapter.
@@ -571,18 +507,18 @@ pub const MacosAdapter = struct {
     /// The caller owns a non-null result and must pass it to
     /// `macosQueuedEventsRaise`.
     ///
-    /// **Errors.** None. An update the tree rejects or a factory that runs out
-    /// of memory leaves the adapter in the state it was in and produces no
-    /// handle, because a handle whose tree is stale would be worse than none. A
-    /// handle that cannot be allocated answers the same way. Over a
-    /// placeholder the new tree stays installed even so, because it is the
-    /// current one.
+    /// Native rejection and postcommit notification failures latch the exact
+    /// diagnostic. A queue-box failure drops notifications, never the committed
+    /// native baseline. Pure fixtures retain their source-only optional result.
     pub fn updateIfActive(
         self: *MacosAdapter,
         factory: TreeUpdateFactory,
         factory_userdata: ?*anyopaque,
     ) ?*MacosQueuedEvents {
         switch (self.state) {
+            .native => |bridge| return self.nativeQueuedEvents(
+                bridge.update(factory, factory_userdata),
+            ),
             .inactive => return null,
             .placeholder => |*placeholder| {
                 const update = treeUpdateFromFactory(factory, factory_userdata);
@@ -590,7 +526,7 @@ pub const MacosAdapter = struct {
                     self.allocator,
                     update,
                     placeholder.common.is_view_focused,
-                    self.host,
+                    self.host.?,
                     placeholder.common.action_handler,
                     placeholder.common.action_userdata,
                     placeholder.context.view,
@@ -613,6 +549,7 @@ pub const MacosAdapter = struct {
                         return null;
                     };
                 }
+                placeholder.context.close();
                 placeholder.context.release();
                 self.state = .{ .active = context };
                 return self.newQueuedEvents(context, list);
@@ -648,6 +585,7 @@ pub const MacosAdapter = struct {
         is_focused: bool,
     ) ?*MacosQueuedEvents {
         switch (self.state) {
+            .native => |bridge| return self.nativeQueuedEvents(bridge.updateFocus(is_focused)),
             .inactive => |*inactive| {
                 inactive.common.is_view_focused = is_focused;
                 return null;
@@ -682,6 +620,7 @@ pub const MacosAdapter = struct {
         activation_userdata: ?*anyopaque,
     ) ?*Context {
         switch (self.state) {
+            .native => return null,
             .inactive => |inactive| {
                 const boxed = activation_handler(activation_userdata);
                 if (boxed) |initial| {
@@ -689,7 +628,7 @@ pub const MacosAdapter = struct {
                         self.allocator,
                         initial,
                         inactive.common.is_view_focused,
-                        self.host,
+                        self.host.?,
                         inactive.common.action_handler,
                         inactive.common.action_userdata,
                         inactive.view,
@@ -708,7 +647,7 @@ pub const MacosAdapter = struct {
                     placeholder,
                     .{},
                     false,
-                    self.host,
+                    self.host.?,
                     inactive.common.action_handler,
                     inactive.common.action_userdata,
                     inactive.view,
@@ -736,6 +675,12 @@ pub const MacosAdapter = struct {
         activation_handler: ActivationHandler,
         activation_userdata: ?*anyopaque,
     ) ?*anyopaque {
+        if (self.state == .native) {
+            return self.state.native.children(activation_handler, activation_userdata) catch |err| {
+                allocation.failWithError(err);
+                return null;
+            };
+        }
         const context = self.getOrInitContext(activation_handler, activation_userdata) orelse
             return null;
         const state = context.tree.stateOf();
@@ -773,6 +718,12 @@ pub const MacosAdapter = struct {
         activation_handler: ActivationHandler,
         activation_userdata: ?*anyopaque,
     ) ?*anyopaque {
+        if (self.state == .native) {
+            return self.state.native.focus(activation_handler, activation_userdata) catch |err| {
+                allocation.failWithError(err);
+                return null;
+            };
+        }
         const context = self.getOrInitContext(activation_handler, activation_userdata) orelse
             return null;
         const state = context.tree.stateOf();
@@ -795,7 +746,17 @@ pub const MacosAdapter = struct {
         activation_handler: ActivationHandler,
         activation_userdata: ?*anyopaque,
     ) ?*anyopaque {
-        const view = self.host.view_of(self.host.ptr) orelse return null;
+        if (self.state == .native) {
+            return self.state.native.hitTest(
+                .{ .x = x, .y = y },
+                activation_handler,
+                activation_userdata,
+            ) catch |err| {
+                allocation.failWithError(err);
+                return null;
+            };
+        }
+        const view = self.host.?.view_of(self.host.?.ptr) orelse return null;
         _ = view;
         const context = self.getOrInitContext(activation_handler, activation_userdata) orelse
             return null;
@@ -806,7 +767,7 @@ pub const MacosAdapter = struct {
         // coordinate system. When it has nothing, the tree is asked, and the
         // root is the fallback.
         const point: schema.Point = .{ .x = x, .y = y };
-        if (self.host.hit_test(self.host.ptr, point.x, point.y)) |hit| return hit;
+        if (self.host.?.hit_test(self.host.?.ptr, point.x, point.y)) |hit| return hit;
 
         const found = consumer.node_ref.geometry.nodeAtPoint(
             self.allocator,
@@ -836,18 +797,46 @@ pub const MacosAdapter = struct {
         context: *Context,
         list: ArrayList(events_mod.QueuedEvent),
     ) ?*MacosQueuedEvents {
-        const handle = self.allocator.create(MacosQueuedEvents) catch {
+        const handle = self.allocator.create(MacosQueuedEvents) catch |err| {
             var owned = list;
             events_mod.releaseEvents(self.allocator, &owned);
+            allocation.failWithError(err);
             return null;
         };
         context.retain();
         handle.* = .{
             .allocator = self.allocator,
-            .context = context,
-            .events = list,
+            .payload = .{ .pure = .{ .context = context, .events = list } },
         };
         return handle;
+    }
+
+    /// Publication has already committed before the C queue box is allocated.
+    fn nativeQueuedEvents(
+        self: *MacosAdapter,
+        outcome: native.PreparedUpdateOutcome,
+    ) ?*MacosQueuedEvents {
+        switch (outcome) {
+            .inactive => return null,
+            .rejected => |err| {
+                allocation.failWithError(err);
+                return null;
+            },
+            .committed => |committed| {
+                if (committed.notification_error) |err| allocation.failWithError(err);
+                const notifications = committed.events orelse return null;
+                const handle = self.allocator.create(MacosQueuedEvents) catch |err| {
+                    notifications.deinit();
+                    allocation.failWithError(err);
+                    return null;
+                };
+                handle.* = .{
+                    .allocator = self.allocator,
+                    .payload = .{ .native = notifications },
+                };
+                return handle;
+            },
+        }
     }
 };
 
@@ -858,8 +847,8 @@ pub const MacosAdapter = struct {
 pub const MacosSubclassingAdapter = struct {
     /// The allocator the adapter was built with.
     allocator: Allocator,
-    /// The platform seam.
-    host: Host,
+    /// Only pure adapters have a Host.
+    host: ?Host,
     /// The adapter that does the work.
     adapter: MacosAdapter,
     /// The window this adapter was built for, or `null` when it was built for a
@@ -1064,6 +1053,11 @@ pub const RecordingHost = struct {
 /// **This call is the only way to release the handle.** A second call is a
 /// use-after-free and `events` must not be `null`.
 pub fn macosQueuedEventsRaise(queued: *MacosQueuedEvents) void {
+    if (!requireNativePlatform()) return;
+    if (queued.payload != .native) {
+        allocation.failWithError(error.NativeUnsupported);
+        return;
+    }
     queued.raiseAndRelease();
 }
 
@@ -1083,27 +1077,39 @@ pub fn macosAdapterNew(
     action_handler: ActionHandler,
     action_handler_userdata: ?*anyopaque,
 ) ?*MacosAdapter {
-    // The recorder is allocated here and owned by the adapter, so the adapter
-    // has to learn it holds one. `newAdapter` cannot do that from a `Host`,
-    // because a `Host` carries no way to say its pointer is owned.
-    var owned: ?*RecordingHost = null;
-    const host = recordingHost(&owned);
-    const adapter = newAdapter(
-        view,
+    if (!requireNativePlatform()) return null;
+    const target = view orelse {
+        allocation.failWithError(error.InvalidView);
+        return null;
+    };
+    const gpa = heap();
+    const adapter = gpa.create(MacosAdapter) catch |err| {
+        allocation.failWithError(err);
+        return null;
+    };
+    const bridge = c_native.Bridge.create(
+        gpa,
+        .{ .view = target },
         is_view_focused,
+        false,
+        null,
+        null,
         action_handler,
         action_handler_userdata,
-        host,
-    ) orelse return null;
-    adapter.owned_host = owned;
+    ) catch |err| {
+        gpa.destroy(adapter);
+        allocation.failWithError(err);
+        return null;
+    };
+    adapter.* = .{ .allocator = gpa, .host = null, .state = .{ .native = bridge } };
     return adapter;
 }
 
 /// Returns a macOS adapter for `view` over `host`, or `null` when the allocation
 /// failed.
 ///
-/// It is `macosAdapterNew` with the seam supplied, and it is what a target with
-/// AppKit uses. `host.ptr` must stay valid until the adapter is released.
+/// Source-only Host constructor. It does not attach an AppKit provider.
+/// `host.ptr` must stay valid until the adapter closes.
 pub fn newAdapter(
     view: ?*anyopaque,
     is_view_focused: bool,
@@ -1135,8 +1141,14 @@ pub fn newAdapter(
 /// A queued-events handle the caller still holds stays valid: it holds its own
 /// context reference. `adapter` must not be `null`.
 pub fn macosAdapterFree(adapter: *MacosAdapter) void {
-    releaseState(adapter);
-    heap().destroy(adapter);
+    if (!requireNativeAdapter(adapter)) return;
+    const gpa = adapter.allocator;
+    releaseState(adapter) catch |err| {
+        allocation.failWithError(err);
+        if (err != error.WrongThread) gpa.destroy(adapter);
+        return;
+    };
+    gpa.destroy(adapter);
 }
 
 /// Releases whatever state `adapter` holds, without releasing `adapter` itself.
@@ -1144,31 +1156,31 @@ pub fn macosAdapterFree(adapter: *MacosAdapter) void {
 /// `MacosSubclassingAdapter` embeds a `MacosAdapter` by value, so its release
 /// calls this rather than `macosAdapterFree`: destroying the embedded struct
 /// would free memory that belongs to the outer allocation.
-fn releaseState(self: *MacosAdapter) void {
+fn releaseState(self: *MacosAdapter) NativeError!void {
+    var close_error: ?NativeError = null;
     switch (self.state) {
+        .native => |bridge| bridge.closeAndDestroy() catch |err| {
+            // Only thread refusal leaves the bridge open for a main-thread retry.
+            // A postclose notification error spends the bridge, not the baseline.
+            if (err == error.WrongThread) return err;
+            close_error = err;
+        },
         .inactive => {},
-        .placeholder => |placeholder| placeholder.context.release(),
-        .active => |context| context.release(),
+        .placeholder => |placeholder| {
+            placeholder.context.close();
+            placeholder.context.release();
+        },
+        .active => |context| {
+            context.close();
+            context.release();
+        },
     }
-    // The recorder this adapter allocated for itself, and only that one. A
-    // caller-supplied host leaves `owned_host` null, so this cannot free a box
-    // the application still owns.
-    //
-    // **The order is load-bearing.** `RecordingHost.deinit` releases `posts` and
-    // then poisons the value with `self.* = undefined`; it frees no box, because
-    // in a test the recorder is a stack value with no box to free. So `deinit`
-    // must run first and `destroy` second: the other way round leaks the `posts`
-    // buffer, which is the larger half of the leak, and calling `deinit` after
-    // `destroy` reads a freed box.
     if (self.owned_host) |recorder| {
         recorder.deinit();
-        heap().destroy(recorder);
+        self.allocator.destroy(recorder);
     }
-    // SAFETY: the switch above released what the state owned, and the block
-    // above released the recorder this adapter owned. No statement after this
-    // line reads `self`. The caller destroys or owns the memory, so a stale read
-    // traps in Debug rather than reaching a released context.
     self.* = undefined;
+    if (close_error) |err| return err;
 }
 
 /// Asks `update_factory` for a tree and hands it to the adapter.
@@ -1184,6 +1196,7 @@ pub fn macosAdapterUpdateIfActive(
     update_factory: TreeUpdateFactory,
     update_factory_userdata: ?*anyopaque,
 ) ?*MacosQueuedEvents {
+    if (!requireNativeAdapter(adapter)) return null;
     return adapter.updateIfActive(update_factory, update_factory_userdata);
 }
 
@@ -1198,6 +1211,7 @@ pub fn macosAdapterUpdateViewFocusState(
     adapter: *MacosAdapter,
     is_focused: bool,
 ) ?*MacosQueuedEvents {
+    if (!requireNativeAdapter(adapter)) return null;
     return adapter.updateViewFocusState(is_focused);
 }
 
@@ -1214,6 +1228,7 @@ pub fn macosAdapterViewChildren(
     activation_handler: ActivationHandler,
     activation_handler_userdata: ?*anyopaque,
 ) ?*anyopaque {
+    if (!requireNativeAdapter(adapter)) return null;
     return adapter.viewChildren(activation_handler, activation_handler_userdata);
 }
 
@@ -1229,6 +1244,7 @@ pub fn macosAdapterFocus(
     activation_handler: ActivationHandler,
     activation_handler_userdata: ?*anyopaque,
 ) ?*anyopaque {
+    if (!requireNativeAdapter(adapter)) return null;
     return adapter.focus(activation_handler, activation_handler_userdata);
 }
 
@@ -1246,6 +1262,7 @@ pub fn macosAdapterHitTest(
     activation_handler: ActivationHandler,
     activation_handler_userdata: ?*anyopaque,
 ) ?*anyopaque {
+    if (!requireNativeAdapter(adapter)) return null;
     return adapter.hitTest(x, y, activation_handler, activation_handler_userdata);
 }
 
@@ -1259,7 +1276,11 @@ pub fn macosAdapterHitTest(
 /// nothing from the adapter once the call returns, so the adapter may be freed
 /// first.
 pub fn macosAdapterDebug(adapter: *const MacosAdapter) ?[*:0]u8 {
-    return renderDebug(adapter, heap()) catch null;
+    if (!requireNativeAdapter(adapter)) return null;
+    return renderDebug(adapter, heap()) catch |err| {
+        allocation.failWithError(err);
+        return null;
+    };
 }
 
 /// Returns a subclassing adapter for `view`, or `null` when the allocation
@@ -1278,25 +1299,18 @@ pub fn macosSubclassingAdapterNew(
     action_handler: ActionHandler,
     action_handler_userdata: ?*anyopaque,
 ) ?*MacosSubclassingAdapter {
-    // The activation handler is not stored: this adapter forwards a tree-facing
-    // call, and that call carries the handler, so holding one here would be a
-    // second lifetime the header does not describe.
-    _ = activation_handler;
-    _ = activation_handler_userdata;
-    // The recorder is allocated here and owned by the adapter, so the adapter
-    // has to learn it holds one. It is set on the embedded `MacosAdapter`,
-    // because `macosSubclassingAdapterFree` releases that one and nothing else.
-    var owned: ?*RecordingHost = null;
-    const host = recordingHost(&owned);
-    const adapter = newSubclassingAdapter(
-        view,
-        view,
+    if (!requireNativePlatform()) return null;
+    const target = view orelse {
+        allocation.failWithError(error.InvalidView);
+        return null;
+    };
+    return newNativeSubclassingAdapter(
+        .{ .view = target },
+        activation_handler,
+        activation_handler_userdata,
         action_handler,
         action_handler_userdata,
-        host,
-    ) orelse return null;
-    adapter.adapter.owned_host = owned;
-    return adapter;
+    );
 }
 
 /// Returns a subclassing adapter for `window`, or `null` when the allocation
@@ -1313,34 +1327,24 @@ pub fn macosSubclassingAdapterForWindow(
     action_handler: ActionHandler,
     action_handler_userdata: ?*anyopaque,
 ) ?*MacosSubclassingAdapter {
-    _ = activation_handler;
-    _ = activation_handler_userdata;
-    // A window adapter drives the window's content view, upstream
-    // `subclass.rs:120-140`.
-    //
-    // The recorder is reached through `owned` rather than by casting `host.ptr`
-    // back, because `owned` is the pointer the adapter is told it owns. A `null`
-    // there is the allocation failure, and the recorder was never created.
-    var owned: ?*RecordingHost = null;
-    const host = recordingHost(&owned);
-    const recorder = owned orelse return null;
-    recorder.view = window;
-    const adapter = newSubclassingAdapter(
-        window,
-        window,
+    if (!requireNativePlatform()) return null;
+    const target = window orelse {
+        allocation.failWithError(error.InvalidView);
+        return null;
+    };
+    return newNativeSubclassingAdapter(
+        .{ .window = target },
+        activation_handler,
+        activation_handler_userdata,
         action_handler,
         action_handler_userdata,
-        host,
-    ) orelse return null;
-    adapter.adapter.owned_host = owned;
-    return adapter;
+    );
 }
 
 /// Returns a subclassing adapter for `view` over `host`, or `null` when the
 /// allocation failed.
 ///
-/// It is `macosSubclassingAdapterNew` with the seam supplied, and it is what a
-/// target with AppKit uses.
+/// Source-only Host constructor; no Objective-C subclass is installed.
 pub fn newSubclassingAdapter(
     view: ?*anyopaque,
     window: ?*anyopaque,
@@ -1349,20 +1353,23 @@ pub fn newSubclassingAdapter(
     host: Host,
 ) ?*MacosSubclassingAdapter {
     const adapter = heap().create(MacosSubclassingAdapter) catch return null;
-    errdefer heap().destroy(adapter);
     const inner = newAdapter(
         view,
         false,
         action_handler,
         action_handler_userdata,
         host,
-    ) orelse return null;
+    ) orelse {
+        heap().destroy(adapter);
+        return null;
+    };
     adapter.* = .{
         .allocator = heap(),
         .host = host,
         .adapter = inner.*,
         .window = window,
     };
+    heap().destroy(inner);
     return adapter;
 }
 
@@ -1373,12 +1380,15 @@ pub fn newSubclassingAdapter(
 ///
 /// The adapter must not be `null`.
 pub fn macosSubclassingAdapterFree(adapter: *MacosSubclassingAdapter) void {
-    releaseState(&adapter.adapter);
-    // SAFETY: the line above released the embedded adapter state, and the line
-    // below destroys this memory, so no statement after it reads `adapter`. A
-    // stale read traps in Debug rather than reaching the released state.
-    adapter.* = undefined;
-    heap().destroy(adapter);
+    if (!requireNativePlatform()) return;
+    if (!requireNativeAdapter(&adapter.adapter)) return;
+    const gpa = adapter.allocator;
+    releaseState(&adapter.adapter) catch |err| {
+        allocation.failWithError(err);
+        if (err != error.WrongThread) gpa.destroy(adapter);
+        return;
+    };
+    gpa.destroy(adapter);
 }
 
 /// Asks `update_factory` for a tree and hands it to the adapter.
@@ -1393,6 +1403,8 @@ pub fn macosSubclassingAdapterUpdateIfActive(
     update_factory: TreeUpdateFactory,
     update_factory_userdata: ?*anyopaque,
 ) ?*MacosQueuedEvents {
+    if (!requireNativePlatform()) return null;
+    if (!requireNativeAdapter(&adapter.adapter)) return null;
     return adapter.adapter.updateIfActive(update_factory, update_factory_userdata);
 }
 
@@ -1407,6 +1419,8 @@ pub fn macosSubclassingAdapterUpdateViewFocusState(
     adapter: *MacosSubclassingAdapter,
     is_focused: bool,
 ) ?*MacosQueuedEvents {
+    if (!requireNativePlatform()) return null;
+    if (!requireNativeAdapter(&adapter.adapter)) return null;
     return adapter.adapter.updateViewFocusState(is_focused);
 }
 
@@ -1416,13 +1430,15 @@ pub fn macosSubclassingAdapterUpdateViewFocusState(
 /// `accesskit_macos_add_focus_forwarder_to_window_class`,
 /// `include/zaccesskit.h:6228`, upstream `src/lib.rs:2966`.
 ///
-/// The function keeps its own copy of the name, so the caller keeps ownership of
-/// the buffer and must not release it after this call. Calling this twice for
-/// one class name has no additional effect. **The change cannot be undone**, so
+/// The caller owns the buffer and may release it when this call returns.
+/// Repeated installation on one class has no additional effect.
+/// **The change cannot be undone**, so
 /// the library must stay loaded for the life of the process: link it statically
 /// into the main executable.
 pub fn macosAddFocusForwarderToWindowClass(class_name: [*:0]const u8) void {
-    patchWindowClass(std.mem.span(class_name));
+    if (!requireNativePlatform()) return;
+    patch.installFocusForwarderForClassNamed(heap(), std.mem.span(class_name)) catch
+        |err| allocation.failWithError(err);
 }
 
 /// Adds a focus forwarder to the `NSWindow` subclass named by `class_name`,
@@ -1438,106 +1454,22 @@ pub fn macosAddFocusForwarderToWindowClassWithLength(
     class_name: [*]const u8,
     length: usize,
 ) void {
-    patchWindowClass(class_name[0..length]);
-}
-
-/// How many window class names `patchWindowClass` has recorded.
-///
-/// It is a comptime bound because the registry is a fixed-size table: the
-/// registration is process-lifetime and cannot be undone, so it is not a place
-/// where an unbounded list belongs. A caller that names more than this many
-/// classes is answered without a second entry, which is what "calling this
-/// twice for one class name has no additional effect" means for a full table.
-pub const window_class_capacity = 32;
-
-/// How many bytes one recorded window class name may hold.
-///
-/// It is 64 because an Objective-C class name is a short identifier and the
-/// table is fixed. A name longer than this is not recorded, which leaves the
-/// class without a forwarder rather than truncating the name into one that names
-/// a different class.
-pub const class_name_capacity = 64;
-
-/// How many window classes have been registered in this process.
-var registered_window_classes: usize = 0;
-
-/// The names, in registration order. It is never released.
-///
-/// **The count above and this table are the only file-scope `var`s in the
-/// adapter, and they are not a runtime handle.** Upstream keeps the same thing
-/// in a process-lifetime static at `subclass.rs:157` and the header states why:
-/// the modification cannot be undone, so a registration outlives every adapter
-/// and every call. There is no other place to put it, because
-/// `add_focus_forwarder_to_window_class` takes no adapter and no context.
-///
-/// A name handed out by `registeredWindowClass` is a view of this table, so it
-/// stays readable for the life of the process. A view built on the frame of
-/// whichever function called the accessor dangles the moment that function
-/// returns, and the fault lands later, in whoever read the name.
-// SAFETY: every slot either reader can reach is written first. `patchWindowClass`
-// `@memset`s the slot and copies the name in before it increments
-// `registered_window_classes`, and both readers stop at that count, so no slot
-// below it is ever read uninitialised.
-var window_class_names: [window_class_capacity][class_name_capacity]u8 = undefined;
-
-/// Records `name` and installs the forwarder, once per name.
-///
-/// The name is copied into `window_class_names`, so the caller keeps ownership of
-/// its buffer. A name already registered is not recorded again, so calling the
-/// entry point twice for one class has no additional effect.
-fn patchWindowClass(name: []const u8) void {
-    for (window_class_names[0..registered_window_classes]) |held| {
-        if (std.mem.eql(u8, std.mem.sliceTo(&held, 0), name)) return;
+    if (!requireNativePlatform()) return;
+    const bytes = class_name[0..length];
+    if (std.mem.indexOfScalar(u8, bytes, 0) != null) {
+        allocation.failWithError(error.InteriorNul);
+        return;
     }
-    if (registered_window_classes == window_class_capacity) return;
-    if (name.len == 0 or name.len > class_name_capacity) return;
-    const slot = &window_class_names[registered_window_classes];
-    @memset(slot, 0);
-    @memcpy(slot[0..name.len], name);
-    registered_window_classes += 1;
-    installFocusForwarder(name);
+    const gpa = heap();
+    const name = gpa.dupeZ(u8, bytes) catch |err| {
+        allocation.failWithError(err);
+        return;
+    };
+    defer gpa.free(name);
+    patch.installFocusForwarderForClassNamed(gpa, name) catch
+        |err| allocation.failWithError(err);
 }
 
-/// How many window class names the registry holds.
-///
-/// The count is at most `window_class_capacity` and only grows, because a
-/// registration cannot be undone.
-pub fn registeredWindowClassCount() usize {
-    return registered_window_classes;
-}
-
-/// The name at `index` in registration order, or `null` when `index` is at or
-/// past the count.
-///
-/// The slice points into `window_class_names` and stops at the NUL that follows
-/// the name. It is valid for the life of the process, so the caller keeps no
-/// reference and releases nothing.
-pub fn registeredWindowClass(index: usize) ?[]const u8 {
-    if (index >= registered_window_classes) return null;
-    const slot: *const [class_name_capacity]u8 = &window_class_names[index];
-    return std.mem.sliceTo(slot, 0);
-}
-
-/// Installs `accessibilityFocusedUIElement` on the class named `name`.
-///
-/// Upstream `AK/macos/src/patch.rs:39-71`. **This is the one call in the adapter
-/// that needs the Objective-C runtime, and it is the one thing this module does
-/// not write.** It needs `<objc/runtime.h>` and the macOS SDK, neither of which
-/// is on this host, and a wrong `extern` signature would be a crash inside the
-/// runtime rather than a compile error. `docs/42` section 2.5 records that
-/// `translate-c` cannot parse an Objective-C header, so the declarations cannot
-/// be generated either.
-///
-/// What is written is the protocol around it: the registration above, the
-/// selector name in `attributes.focus_forwarder_selector`, and the observation
-/// that a class is registered once. **A target with AppKit supplies the install
-/// step**, and this module does not claim the step is done.
-///
-/// `name` may be a borrowed slice with no sentinel; the install step copies it
-/// into the `CString` the runtime reads.
-fn installFocusForwarder(name: []const u8) void {
-    _ = name;
-}
 
 /// The four selectors the subclassing adapter installs on the host view.
 ///
@@ -1556,6 +1488,16 @@ pub fn hostViewSelectors() []const [:0]const u8 {
 /// **Returns.** `error.OutOfMemory` from `gpa.dupe`. On any error nothing is
 /// allocated, so a caller that gets `null` owns nothing.
 fn renderDebug(adapter: *const MacosAdapter, allocator: Allocator) ![*:0]u8 {
+    if (adapter.state == .native) {
+        const snapshot = adapter.state.native.adapter.debugSnapshot();
+        var buffer: [512]u8 = undefined;
+        const text = try std.fmt.bufPrint(
+            &buffer,
+            "NativeAdapter {{ state: {s}, nodes: {d} }}",
+            .{ @tagName(snapshot.state), snapshot.provider_count },
+        );
+        return (try allocator.dupeZ(u8, text)).ptr;
+    }
     // SAFETY: `bufPrint` below is the only writer and it writes exactly the
     // bytes it returns, so `rendered` never names a byte this buffer did not
     // receive. The `error.NoRoom` path returns before anything reads the
@@ -1565,12 +1507,14 @@ fn renderDebug(adapter: *const MacosAdapter, allocator: Allocator) ![*:0]u8 {
         .inactive => "Inactive",
         .placeholder => "Placeholder",
         .active => "Active",
+        .native => unreachable, // Native formatting returned above.
     };
     var nodes: usize = 0;
     switch (adapter.state) {
         .inactive => {},
         .placeholder => |placeholder| nodes = placeholder.context.nodes.count(),
         .active => |context| nodes = context.nodes.count(),
+        .native => unreachable, // Native formatting returned above.
     }
     const rendered = std.fmt.bufPrint(
         &buffer,
@@ -1581,81 +1525,55 @@ fn renderDebug(adapter: *const MacosAdapter, allocator: Allocator) ![*:0]u8 {
     return owned.ptr;
 }
 
-/// The `Host` the C entry points install when the caller supplies none.
-///
-/// It records into a `RecordingHost` the adapter owns, so a caller that never
-/// reaches AppKit still gets every notification delivered and observable.
-///
-/// **Ownership.** The recorder is heap-allocated, so this hands out a pointer
-/// something must release. `owned` carries it back to the caller, which stores
-/// it in `MacosAdapter.owned_host`; `releaseState` is what frees it. `Host` has
-/// no destructor, so this out-parameter is the only way the pointer and its
-/// ownership reach the same place. It is set to `null` on the allocation-failure
-/// path below, and a caller that sees `null` owns nothing.
-fn recordingHost(owned: *?*RecordingHost) Host {
-    owned.* = null;
-    const recorder = heap().create(RecordingHost) catch {
-        // Without a recorder there is nowhere to record a notification, so the
-        // host discards all five calls. The adapter is still built and still
-        // answers, which is a degraded adapter rather than a missing one. The
-        // alternative, answering `null` here, would also be defensible; what is
-        // not defensible is the comment this replaced, which claimed the entry
-        // points return `null` while the code went on to build the adapter.
-        return .{
-            .ptr = null,
-            .post = noopPost,
-            .post_with_user_info = noopPostWithUserInfo,
-            .view_of = noopView,
-            .window_of = noopWindow,
-            .hit_test = noopHitTest,
-        };
+fn requireNativePlatform() bool {
+    if (builtin.os.tag == .macos) return true;
+    allocation.failWithError(error.NativeUnsupported);
+    return false;
+}
+
+fn requireNativeAdapter(adapter: *const MacosAdapter) bool {
+    if (!requireNativePlatform()) return false;
+    if (adapter.state == .native) return true;
+    allocation.failWithError(error.NativeUnsupported);
+    return false;
+}
+
+fn newNativeSubclassingAdapter(
+    target: AttachTarget,
+    activation_handler: ActivationHandler,
+    activation_userdata: ?*anyopaque,
+    action_handler: ActionHandler,
+    action_userdata: ?*anyopaque,
+) ?*MacosSubclassingAdapter {
+    const gpa = heap();
+    const adapter = gpa.create(MacosSubclassingAdapter) catch |err| {
+        allocation.failWithError(err);
+        return null;
     };
-    recorder.* = RecordingHost.init(heap());
-    owned.* = recorder;
-    return recorder.host();
-}
-
-/// Discards a notification, used when no recorder could be allocated.
-fn noopPost(context: ?*anyopaque, node: ?*anyopaque, notification: [:0]const u8) void {
-    _ = context;
-    _ = node;
-    _ = notification;
-}
-
-/// Discards an announcement, used when no recorder could be allocated.
-fn noopPostWithUserInfo(
-    context: ?*anyopaque,
-    window: ?*anyopaque,
-    notification: [:0]const u8,
-    text: []const u8,
-    priority: i32,
-) void {
-    _ = context;
-    _ = window;
-    _ = notification;
-    _ = text;
-    _ = priority;
-}
-
-/// Answers no view, used when no recorder could be allocated.
-fn noopView(context: ?*anyopaque) ?*anyopaque {
-    _ = context;
-    return null;
-}
-
-/// Answers no window, used when no recorder could be allocated.
-fn noopWindow(context: ?*anyopaque, view: ?*anyopaque) ?*anyopaque {
-    _ = context;
-    _ = view;
-    return null;
-}
-
-/// Answers no hit, used when no recorder could be allocated.
-fn noopHitTest(context: ?*anyopaque, x: f64, y: f64) ?*anyopaque {
-    _ = context;
-    _ = x;
-    _ = y;
-    return null;
+    const bridge = c_native.Bridge.create(
+        gpa,
+        target,
+        false,
+        true,
+        activation_handler,
+        activation_userdata,
+        action_handler,
+        action_userdata,
+    ) catch |err| {
+        gpa.destroy(adapter);
+        allocation.failWithError(err);
+        return null;
+    };
+    adapter.* = .{
+        .allocator = gpa,
+        .host = null,
+        .adapter = .{ .allocator = gpa, .host = null, .state = .{ .native = bridge } },
+        .window = switch (target) {
+            .window => |window| window,
+            .view => null,
+        },
+    };
+    return adapter;
 }
 
 comptime {
@@ -1686,13 +1604,44 @@ comptime {
         if (info != .pointer) @compileError("an entry point must be a pointer");
         _ = i;
     }
-    // The registry and the three handles the header names.
-    if (@typeInfo(State).@"union".fields.len != 3) {
-        @compileError("the adapter has three states");
+    if (@typeInfo(State).@"union".fields.len != 4) {
+        @compileError("the adapter has three pure states and one native owner");
     }
 }
 
 // --- tests -------------------------------------------------------------------
+
+/// Pure fixtures deliberately bypass the native-only C edge.
+fn freePureAdapter(adapter: *MacosAdapter) void {
+    std.debug.assert(adapter.state != .native);
+    releaseState(adapter) catch @panic("pure state release cannot fail");
+    heap().destroy(adapter);
+}
+
+fn freePureSubclassingAdapter(adapter: *MacosSubclassingAdapter) void {
+    std.debug.assert(adapter.adapter.state != .native);
+    releaseState(&adapter.adapter) catch @panic("pure state release cannot fail");
+    heap().destroy(adapter);
+}
+
+fn newPureRecordedAdapter(
+    view: ?*anyopaque,
+    focused: bool,
+    action_handler: ActionHandler,
+    userdata: ?*anyopaque,
+) ?*MacosAdapter {
+    const gpa = heap();
+    const recorder = gpa.create(RecordingHost) catch return null;
+    recorder.* = RecordingHost.init(gpa);
+    recorder.view = view;
+    const adapter = newAdapter(view, focused, action_handler, userdata, recorder.host()) orelse {
+        recorder.deinit();
+        gpa.destroy(recorder);
+        return null;
+    };
+    adapter.owned_host = recorder;
+    return adapter;
+}
 
 test "the attribute and role tables are reachable and analysed" {
     // `attributes.zig` and `roles.zig` are reached only through this file, and
@@ -1779,6 +1728,8 @@ const RequestProbe = struct {
     fn call(request: *boundary.CActionRequest, context: ?*anyopaque) callconv(.c) void {
         const self: *RequestProbe = @ptrCast(@alignCast(context orelse return));
         const gpa = allocation.allocator();
+        defer gpa.destroy(request);
+        defer schema.cActionRequestDeinit(gpa, request);
         self.calls += 1;
         self.action = request.action;
         self.target_tree = request.target_tree;
@@ -1801,9 +1752,6 @@ const RequestProbe = struct {
                 else => {},
             }
         }
-        // The two halves of `accesskit_action_request_free`, in its order.
-        schema.cActionRequestDeinit(gpa, request);
-        allocation.release(request);
     }
 
     /// The text the last payload carried, as a slice of the fixed buffer.
@@ -1929,10 +1877,10 @@ test "an inactive adapter produces no events and no tree" {
     var action: RecordingAction = .{};
     const adapter = newAdapter(null, false, recordingAction, &action, recorder.host()) orelse
         return error.NoAdapter;
-    defer macosAdapterFree(adapter);
+    defer freePureAdapter(adapter);
 
-    try testing.expect(macosAdapterUpdateIfActive(adapter, oneShotFactory, null) == null);
-    try testing.expect(macosAdapterUpdateViewFocusState(adapter, true) == null);
+    try testing.expect(adapter.updateIfActive(oneShotFactory, null) == null);
+    try testing.expect(adapter.updateViewFocusState(true) == null);
     // Both calls record nothing, because nothing was posted.
     try testing.expectEqual(@as(usize, 0), recorder.count());
 }
@@ -1945,11 +1893,11 @@ test "a focus update before the first tree is kept for the tree that arrives" {
     var action: RecordingAction = .{};
     const adapter = newAdapter(null, false, recordingAction, &action, recorder.host()) orelse
         return error.NoAdapter;
-    defer macosAdapterFree(adapter);
+    defer freePureAdapter(adapter);
 
-    try testing.expect(macosAdapterUpdateViewFocusState(adapter, true) == null);
+    try testing.expect(adapter.updateViewFocusState(true) == null);
     try testing.expect(adapter.state.inactive.common.is_view_focused);
-    try testing.expect(macosAdapterUpdateViewFocusState(adapter, false) == null);
+    try testing.expect(adapter.updateViewFocusState(false) == null);
     try testing.expect(!adapter.state.inactive.common.is_view_focused);
 }
 
@@ -1963,17 +1911,17 @@ test "a null answer from an activation handler installs the placeholder" {
     var activation: AnsweringActivation = .{ .tree = null, .calls = 0 };
     const adapter = newAdapter(null, false, recordingAction, &action, recorder.host()) orelse
         return error.NoAdapter;
-    defer macosAdapterFree(adapter);
+    defer freePureAdapter(adapter);
 
     // A placeholder makes `focus` answer the placeholder root, which is a
     // window, and a window cannot hold focus.
-    const held = macosAdapterFocus(adapter, answeringActivation, &activation);
+    const held = adapter.focus(answeringActivation, &activation);
     try testing.expectEqual(@as(usize, 1), activation.calls);
     try testing.expect(held == null);
     try testing.expect(adapter.state == .placeholder);
 
     // The placeholder is still not active, so an update answers nothing.
-    try testing.expect(macosAdapterUpdateViewFocusState(adapter, true) == null);
+    try testing.expect(adapter.updateViewFocusState(true) == null);
 }
 
 test "a tree from an activation handler makes the adapter active" {
@@ -1984,14 +1932,14 @@ test "a tree from an activation handler makes the adapter active" {
     var activation: AnsweringActivation = .{ .tree = tree, .calls = 0 };
     const adapter = newAdapter(null, true, recordingAction, &action, recorder.host()) orelse
         return error.NoAdapter;
-    defer macosAdapterFree(adapter);
+    defer freePureAdapter(adapter);
 
-    const focused = macosAdapterFocus(adapter, answeringActivation, &activation);
+    const focused = adapter.focus(answeringActivation, &activation);
     try testing.expect(focused != null);
     try testing.expectEqual(@as(usize, 1), activation.calls);
     try testing.expect(adapter.state == .active);
     // The activation handler is not called again while the tree is active.
-    try testing.expect(macosAdapterFocus(adapter, answeringActivation, &activation) != null);
+    try testing.expect(adapter.focus(answeringActivation, &activation) != null);
     try testing.expectEqual(@as(usize, 1), activation.calls);
 }
 
@@ -2004,41 +1952,39 @@ test "the first update over a placeholder yields the focus event" {
     var activation: AnsweringActivation = .{ .tree = null, .calls = 0 };
     const adapter = newAdapter(null, true, recordingAction, &action, recorder.host()) orelse
         return error.NoAdapter;
-    defer macosAdapterFree(adapter);
+    defer freePureAdapter(adapter);
 
-    _ = macosAdapterFocus(adapter, answeringActivation, &activation);
+    _ = adapter.focus(answeringActivation, &activation);
     try testing.expect(adapter.state == .placeholder);
 
     const tree = try boxTwoNodeTree(allocation.allocator(), child_id);
-    const handle = macosAdapterUpdateIfActive(adapter, oneShotFactory, tree) orelse
+    const handle = adapter.updateIfActive(oneShotFactory, tree) orelse
         return error.NoQueuedEvents;
     try testing.expect(adapter.state == .active);
-    try testing.expectEqual(@as(usize, 1), handle.events.items.len);
+    try testing.expectEqual(@as(usize, 1), handle.payload.pure.events.items.len);
     try testing.expectEqualStrings(
         events_mod.notificationFor(.focus_moved) orelse return error.NoSuchNotification,
-        handle.events.items[0].generic.notification,
+        handle.payload.pure.events.items[0].generic.notification,
     );
-    macosQueuedEventsRaise(handle);
+    handle.raiseAndRelease();
 }
 
 test "raising the handle posts the event and the handle is then spent" {
-    // `macosQueuedEventsRaise` is the only release. After it the list is gone,
-    // so a second call is a use-after-free and this test proves the first one
-    // did post what the list held.
+    // Explicit raise spends the pure fixture's owned queue.
     var recorder = RecordingHost.init(std.testing.allocator);
     defer recorder.deinit();
     var action: RecordingAction = .{};
     var activation: AnsweringActivation = .{ .tree = null, .calls = 0 };
     const adapter = newAdapter(null, true, recordingAction, &action, recorder.host()) orelse
         return error.NoAdapter;
-    defer macosAdapterFree(adapter);
+    defer freePureAdapter(adapter);
 
-    _ = macosAdapterFocus(adapter, answeringActivation, &activation);
+    _ = adapter.focus(answeringActivation, &activation);
     const tree = try boxTwoNodeTree(allocation.allocator(), child_id);
-    const handle = macosAdapterUpdateIfActive(adapter, oneShotFactory, tree) orelse
+    const handle = adapter.updateIfActive(oneShotFactory, tree) orelse
         return error.NoQueuedEvents;
     try testing.expectEqual(@as(usize, 0), recorder.count());
-    macosQueuedEventsRaise(handle);
+    handle.raiseAndRelease();
     try testing.expectEqual(@as(usize, 1), recorder.count());
     try testing.expectEqualStrings(
         events_mod.notificationFor(.focus_moved) orelse return error.NoSuchNotification,
@@ -2057,8 +2003,8 @@ test "dropping a context posts one destroyed notification per live node" {
         return error.NoAdapter;
 
     // Two platform nodes, one for the root and one for the focus.
-    try testing.expect(macosAdapterFocus(adapter, answeringActivation, &activation) != null);
-    const children = macosAdapterViewChildren(adapter, answeringActivation, &activation);
+    try testing.expect(adapter.focus(answeringActivation, &activation) != null);
+    const children = adapter.viewChildren(answeringActivation, &activation);
     try testing.expect(children != null);
     const context = switch (adapter.state) {
         .active => |held| held,
@@ -2067,7 +2013,7 @@ test "dropping a context posts one destroyed notification per live node" {
     try testing.expectEqual(@as(usize, 2), context.nodes.count());
 
     const before = recorder.count();
-    macosAdapterFree(adapter);
+    freePureAdapter(adapter);
     try testing.expectEqual(@as(usize, 2), recorder.count() - before);
     try testing.expectEqualStrings(
         events_mod.notificationFor(.node_destroyed) orelse return error.NoSuchNotification,
@@ -2083,7 +2029,7 @@ test "queued events retain callback metadata after the adapter is freed" {
     const adapter = newAdapter(null, true, recordingAction, &action, recorder.host()) orelse
         return error.NoAdapter;
     var adapter_live = true;
-    defer if (adapter_live) macosAdapterFree(adapter);
+    defer if (adapter_live) freePureAdapter(adapter);
 
     const owned = try boxTwoNodeTree(std.testing.allocator, child_id);
     var pending: ?*c_tree_update.accesskit_tree_update = owned;
@@ -2096,13 +2042,13 @@ test "queued events retain callback metadata after the adapter is freed" {
     owned.setTreeInfo(info);
     var activation: AnsweringActivation = .{ .tree = owned, .calls = 0 };
     pending = null;
-    try testing.expect(macosAdapterFocus(adapter, answeringActivation, &activation) != null);
-    const queued = macosAdapterUpdateViewFocusState(adapter, false) orelse
+    try testing.expect(adapter.focus(answeringActivation, &activation) != null);
+    const queued = adapter.updateViewFocusState(false) orelse
         return error.NoQueuedEvents;
-    defer macosQueuedEventsRaise(queued);
-    macosAdapterFree(adapter);
+    defer queued.raiseAndRelease();
+    freePureAdapter(adapter);
     adapter_live = false;
-    const metadata = queued.context.tree.state.info;
+    const metadata = queued.payload.pure.context.tree.state.info;
     try testing.expectEqualStrings(
         "queued toolkit",
         metadata.toolkit_name orelse return error.NoToolkitName,
@@ -2125,8 +2071,8 @@ fn activeContextWith(
     };
     const adapter = newAdapter(null, true, RequestProbe.call, probe, recorder.host()) orelse
         return error.NoAdapter;
-    errdefer macosAdapterFree(adapter);
-    if (macosAdapterFocus(adapter, answeringActivation, &activation) == null) {
+    errdefer freePureAdapter(adapter);
+    if (adapter.focus(answeringActivation, &activation) == null) {
         return error.NoFocus;
     }
     const context = switch (adapter.state) {
@@ -2145,7 +2091,7 @@ test "an action reaches the handler with the request it was given" {
     defer recorder.deinit();
     var probe: RequestProbe = .{};
     const built = try activeContextWith(&probe, &recorder);
-    defer macosAdapterFree(built.adapter);
+    defer freePureAdapter(built.adapter);
 
     try built.context.doAction(.{
         .action = .click,
@@ -2169,7 +2115,7 @@ test "a payload crosses as the value tag and the text it carries" {
     defer recorder.deinit();
     var probe: RequestProbe = .{};
     const built = try activeContextWith(&probe, &recorder);
-    defer macosAdapterFree(built.adapter);
+    defer freePureAdapter(built.adapter);
 
     var typed: [5]u8 = "typed".*;
     try built.context.doAction(.{
@@ -2198,9 +2144,10 @@ test "a text with an interior zero reports InteriorNul and sends nothing" {
     defer recorder.deinit();
     var probe: RequestProbe = .{};
     const built = try activeContextWith(&probe, &recorder);
-    defer macosAdapterFree(built.adapter);
+    defer freePureAdapter(built.adapter);
 
     var text: [5]u8 = "ty\x00ed".*;
+    allocation.clearError();
     try testing.expectError(error.InteriorNul, built.context.doAction(.{
         .action = .set_value,
         .target_tree = schema.tree_id_root,
@@ -2208,6 +2155,8 @@ test "a text with an interior zero reports InteriorNul and sends nothing" {
         .data = .{ .value = &text },
     }));
     try testing.expectEqual(@as(usize, 0), probe.calls);
+    try testing.expectEqual(allocation.Tag.operation_failed, allocation.lastError());
+    try testing.expectEqualStrings("InteriorNul", std.mem.span(allocation.lastErrorName().?));
 }
 
 test "a view-children call that cannot grow its list releases what it took" {
@@ -2240,12 +2189,12 @@ test "a view-children call that cannot grow its list releases what it took" {
     var activation: AnsweringActivation = .{ .tree = tree, .calls = 0 };
     const adapter = newAdapter(null, true, recordingAction, &action, recorder.host()) orelse
         return error.NoAdapter;
-    defer macosAdapterFree(adapter);
+    defer freePureAdapter(adapter);
 
     // Activate the adapter on the real allocator first. Swapping in the failing
     // one before this point spends every index on the tree the activation
     // handler builds and leaves the list below unexercised.
-    const built = macosAdapterViewChildren(adapter, answeringActivation, &activation);
+    const built = adapter.viewChildren(answeringActivation, &activation);
     try testing.expect(built != null);
     const context = switch (adapter.state) {
         .active => |held| held,
@@ -2263,7 +2212,7 @@ test "a view-children call that cannot grow its list releases what it took" {
         // real list for the ones past the end. Neither is asserted here: the
         // claim under test is that nothing is held after either, and only the
         // leak detector can see that.
-        _ = macosAdapterViewChildren(adapter, answeringActivation, &activation);
+        _ = adapter.viewChildren(answeringActivation, &activation);
         adapter.allocator = testing.allocator;
     }
 
@@ -2281,9 +2230,9 @@ test "the debug text names the state and the platform node count" {
     var action: RecordingAction = .{};
     const adapter = newAdapter(null, true, recordingAction, &action, recorder.host()) orelse
         return error.NoAdapter;
-    defer macosAdapterFree(adapter);
+    defer freePureAdapter(adapter);
 
-    const text = macosAdapterDebug(adapter) orelse return error.NoText;
+    const text = try renderDebug(adapter, heap());
     try testing.expectEqualStrings(
         "MacosAdapter { state: Inactive, nodes: 0 }",
         std.mem.span(text),
@@ -2291,8 +2240,8 @@ test "the debug text names the state and the platform node count" {
     allocation.allocator().free(text[0..std.mem.len(text) :0]);
 
     var activation: AnsweringActivation = .{ .tree = null, .calls = 0 };
-    _ = macosAdapterFocus(adapter, answeringActivation, &activation);
-    const placeholder_text = macosAdapterDebug(adapter) orelse return error.NoText;
+    _ = adapter.focus(answeringActivation, &activation);
+    const placeholder_text = try renderDebug(adapter, heap());
     try testing.expectEqualStrings(
         "MacosAdapter { state: Placeholder, nodes: 0 }",
         std.mem.span(placeholder_text),
@@ -2300,60 +2249,6 @@ test "the debug text names the state and the platform node count" {
     allocation.allocator().free(placeholder_text[0..std.mem.len(placeholder_text) :0]);
 }
 
-test "the focus forwarder records a class name once" {
-    // `include/zaccesskit.h:6228`: the function keeps its own copy, and calling
-    // it twice for one class name has no additional effect.
-    const before = registeredWindowClassCount();
-    macosAddFocusForwarderToWindowClass("AccessKitTestWindow");
-    try testing.expectEqual(before + 1, registeredWindowClassCount());
-    try testing.expectEqualStrings(
-        "AccessKitTestWindow",
-        registeredWindowClass(registeredWindowClassCount() - 1) orelse return error.NoWindowClass,
-    );
-    macosAddFocusForwarderToWindowClass("AccessKitTestWindow");
-    try testing.expectEqual(before + 1, registeredWindowClassCount());
-
-    // The length form reads the same bytes and reaches the same registry, so
-    // the two entry points are one function rather than two.
-    const padded = "AccessKitTestPadded";
-    macosAddFocusForwarderToWindowClassWithLength(padded.ptr, padded.len);
-    try testing.expectEqual(before + 2, registeredWindowClassCount());
-    macosAddFocusForwarderToWindowClassWithLength(padded.ptr, padded.len);
-    try testing.expectEqual(before + 2, registeredWindowClassCount());
-    try testing.expectEqualStrings(
-        padded,
-        registeredWindowClass(registeredWindowClassCount() - 1) orelse return error.NoWindowClass,
-    );
-}
-
-test "a name read from the registry outlives the call that returned it" {
-    // The registry is process-lifetime, so the name it hands out must still
-    // read the same after the accessor has returned. An accessor that built
-    // the view on its own frame handed out a pointer into that dead frame
-    // instead: a Debug build read the stale bytes and passed, and an optimised
-    // build faulted inside the assertion that read them. **The address is the
-    // invariant**, and the read after the registry has moved on is what a
-    // caller does.
-    const index = registeredWindowClassCount();
-    try testing.expect(index + 2 < window_class_capacity);
-    macosAddFocusForwarderToWindowClass("AccessKitTestHeldName");
-    const held = registeredWindowClass(index) orelse return error.NoWindowClass;
-    const table = @intFromPtr(&window_class_names);
-    const address = @intFromPtr(held.ptr);
-    try testing.expect(address >= table);
-    try testing.expect(address < table + @sizeOf(@TypeOf(window_class_names)));
-
-    // A later registration writes a later slot, so the earlier view still
-    // reads its own bytes and the count has grown past it.
-    macosAddFocusForwarderToWindowClass("AccessKitTestLaterName");
-    try testing.expectEqualStrings("AccessKitTestHeldName", held);
-    try testing.expectEqualStrings(
-        "AccessKitTestLaterName",
-        registeredWindowClass(index + 1) orelse return error.NoWindowClass,
-    );
-    try testing.expectEqual(index + 2, registeredWindowClassCount());
-    try testing.expect(registeredWindowClass(index + 2) == null);
-}
 
 test "the subclassing adapter forwards its four calls" {
     // It holds a `MacosAdapter` and adds the window it was built for.
@@ -2373,10 +2268,10 @@ test "the subclassing adapter forwards its four calls" {
 
     // With no tree yet, the two update calls answer nothing.
     try testing.expect(
-        macosSubclassingAdapterUpdateIfActive(adapter, oneShotFactory, null) == null,
+        adapter.adapter.updateIfActive(oneShotFactory, null) == null,
     );
-    try testing.expect(macosSubclassingAdapterUpdateViewFocusState(adapter, true) == null);
-    macosSubclassingAdapterFree(adapter);
+    try testing.expect(adapter.adapter.updateViewFocusState(true) == null);
+    freePureSubclassingAdapter(adapter);
 }
 
 /// Counts the bytes `heap()` has handed out and not taken back.
@@ -2451,19 +2346,8 @@ fn countedFree(ptr: ?*anyopaque, context: ?*anyopaque) callconv(.c) void {
     counter.release(ptr orelse return);
 }
 
-test "the recorder the adapter allocates for itself comes back, box and posts" {
-    // `recordingHost` heap-allocates a `RecordingHost` and hands the pointer out
-    // through a `Host`, which carries five function pointers and no destructor.
-    // Before `owned_host` existed nothing released it, so every
-    // `accesskit_macos_adapter_new` on macOS leaked the box **and** the `posts`
-    // buffer, which grows with the adapter's whole notification traffic. The
-    // second half is the larger one, so a test that only checked the box would
-    // pass while `posts` still grew; the leak detector below sees both, because
-    // both come from the same allocator.
-    //
-    // The test tree could not have caught this before: all thirteen recorders
-    // here are stack values with no box, and `heap()` is normally the C
-    // allocator. Installing the pair is what puts a detector underneath both.
+test "the pure owned recorder comes back, box and posts" {
+    // An explicit pure helper owns both recorder allocations; C never uses it.
     var counter = HeapCounter.init(std.heap.c_allocator);
     defer counter.deinit();
     allocation.installAllocator(countedAlloc, countedFree, &counter);
@@ -2473,12 +2357,12 @@ test "the recorder the adapter allocates for itself comes back, box and posts" {
     defer allocation.installAllocator(null, null, null);
 
     var recorder_view: u8 = 0;
-    const adapter = macosAdapterNew(&recorder_view, true, recordingAction, null) orelse
+    const adapter = newPureRecordedAdapter(&recorder_view, true, recordingAction, null) orelse
         return error.NoAdapter;
 
     // The adapter is holding a recorder, which is the fact the release turns on.
     const recorder = adapter.owned_host orelse return error.NoOwnedRecorder;
-    try testing.expect(adapter.host.ptr == @as(?*anyopaque, recorder));
+    try testing.expect(adapter.host.?.ptr == @as(?*anyopaque, recorder));
 
     // Grow `posts`, so the leak under test is the buffer and not only the box.
     //
@@ -2508,7 +2392,7 @@ test "the recorder the adapter allocates for itself comes back, box and posts" {
     // before the `destroy` is what takes `posts` back. The other order would
     // leave a positive count here, which is the assertion that distinguishes the
     // two from a test that only proved the box came back.
-    macosAdapterFree(adapter);
+    freePureAdapter(adapter);
     try testing.expectEqual(@as(usize, 0), counter.outstanding);
 }
 
@@ -2525,7 +2409,7 @@ test "an adapter built over a caller's host never frees that host" {
         return error.NoAdapter;
     try testing.expect(adapter.owned_host == null);
 
-    macosAdapterFree(adapter);
+    freePureAdapter(adapter);
 
     // Still ours, still usable, and its own count still reads zero.
     try testing.expectEqual(@as(usize, 0), recorder.count());
@@ -2549,22 +2433,21 @@ test "a queued-events handle that cannot be allocated answers null" {
     var activation: AnsweringActivation = .{ .tree = tree, .calls = 0 };
     const adapter = newAdapter(null, true, recordingAction, &action, recorder.host()) orelse
         return error.NoAdapter;
-    defer macosAdapterFree(adapter);
+    defer freePureAdapter(adapter);
 
     // A live tree, so the handle allocation is the only thing left to fail.
-    _ = macosAdapterFocus(adapter, answeringActivation, &activation);
+    _ = adapter.focus(answeringActivation, &activation);
     const context = switch (adapter.state) {
         .active => |held| held,
         else => return error.NotActive,
     };
 
-    // Only the handle allocation runs on this allocator, because the tree was
-    // built before the swap. `macosAdapterFree` releases through `heap()` and
-    // the context's own allocator, so neither is disturbed here.
+    // Only queue allocation uses the failing allocator; restore it before free.
     var failing: testing.FailingAllocator = .init(testing.allocator, .{
         .fail_index = 0,
     });
     adapter.allocator = failing.allocator();
+    defer adapter.allocator = heap();
 
     try testing.expect(adapter.newQueuedEvents(context, .empty) == null);
     // The context is untouched, so the adapter still owns exactly one
@@ -2615,5 +2498,324 @@ test "the entry points take the handlers platform.zig passes them" {
     const hit: *const fn (*MacosAdapter, f64, f64, ActivationHandler, ?*anyopaque) ?*anyopaque =
         &macosAdapterHitTest;
     const debug: *const fn (*const MacosAdapter) ?[*:0]u8 = &macosAdapterDebug;
-    _ = .{ raise, new, free, update, focus, children, held_focus, hit, debug };
+    const subclass_new: *const fn (
+        ?*anyopaque, ActivationHandler, ?*anyopaque, ActionHandler, ?*anyopaque,
+    ) ?*MacosSubclassingAdapter = &macosSubclassingAdapterNew;
+    const window_new: *const fn (
+        ?*anyopaque, ActivationHandler, ?*anyopaque, ActionHandler, ?*anyopaque,
+    ) ?*MacosSubclassingAdapter = &macosSubclassingAdapterForWindow;
+    const subclass_free: *const fn (*MacosSubclassingAdapter) void =
+        &macosSubclassingAdapterFree;
+    const subclass_update: *const fn (
+        *MacosSubclassingAdapter, TreeUpdateFactory, ?*anyopaque,
+    ) ?*MacosQueuedEvents = &macosSubclassingAdapterUpdateIfActive;
+    const subclass_focus: *const fn (*MacosSubclassingAdapter, bool) ?*MacosQueuedEvents =
+        &macosSubclassingAdapterUpdateViewFocusState;
+    const forward: *const fn ([*:0]const u8) void = &macosAddFocusForwarderToWindowClass;
+    const forward_length: *const fn ([*]const u8, usize) void =
+        &macosAddFocusForwarderToWindowClassWithLength;
+    _ = .{
+        raise, new, free, update, focus, children, held_focus, hit, debug,
+        subclass_new, window_new, subclass_free, subclass_update, subclass_focus,
+        forward, forward_length,
+    };
+}
+
+test "native AppKit constructor refuses non-macOS before borrowing callbacks" {
+    if (@import("builtin").os.tag == .macos) return error.SkipZigTest;
+    const Probe = struct {
+        fn action(_: ?*anyopaque, _: *const schema.ActionRequest) void {
+            @panic("a refused native adapter must not call its borrowed action callback");
+        }
+        fn activate(_: ?*anyopaque) void {
+            @panic("a refused native adapter must not call its activation callback");
+        }
+    };
+    try testing.expectError(
+        error.NativeUnsupported,
+        @field(@This(), "NativeAdapter").create(testing.allocator, testing.io, .{
+            .action_handler = Probe.action,
+            .activation_sink = .{ .native = .{
+                .callback = Probe.activate,
+                .userdata = null,
+            } },
+            .userdata = null,
+        }),
+    );
+}
+
+test "queued notifications do not use a borrowed host after adapter close" {
+    var recorder = RecordingHost.init(testing.allocator);
+    defer recorder.deinit();
+    var probe: RequestProbe = .{};
+    const built = try activeContextWith(&probe, &recorder);
+    const fixture = try boxTwoNodeTree(allocation.allocator(), root_id);
+    const queued = built.adapter.updateIfActive(oneShotFactory, fixture) orelse
+        return error.NoEvents;
+    freePureAdapter(built.adapter);
+    const closed_post_count = recorder.posts.items.len;
+    queued.raiseAndRelease();
+    try testing.expectEqual(closed_post_count, recorder.posts.items.len);
+}
+
+test "C action producer transfers a raw configured allocator request" {
+    const RawRequestProbe = struct {
+        calls: usize = 0,
+        fn call(request: *boundary.CActionRequest, userdata: ?*anyopaque) callconv(.c) void {
+            const self: *@This() = @ptrCast(@alignCast(userdata.?));
+            self.calls += 1;
+            const gpa = allocation.allocator();
+            schema.cActionRequestDeinit(gpa, request);
+            gpa.destroy(request);
+        }
+    };
+    var counter = HeapCounter.init(std.heap.c_allocator);
+    defer counter.deinit();
+    allocation.installAllocator(countedAlloc, countedFree, &counter);
+    defer allocation.installAllocator(null, null, null);
+    var recorder = RecordingHost.init(testing.allocator);
+    defer recorder.deinit();
+    var probe: RawRequestProbe = .{};
+    var activation: AnsweringActivation = .{
+        .tree = try boxTwoNodeTree(allocation.allocator(), child_id),
+        .calls = 0,
+    };
+    const adapter = newAdapter(null, true, RawRequestProbe.call, &probe, recorder.host()) orelse
+        return error.NoAdapter;
+    defer freePureAdapter(adapter);
+    _ = adapter.focus(answeringActivation, &activation);
+    const context = switch (adapter.state) {
+        .active => |value| value,
+        else => return error.NotActive,
+    };
+    const bytes_before_request = counter.outstanding;
+    try context.doAction(.{
+        .action = .click,
+        .target_tree = schema.tree_id_root,
+        .target_node = child_id,
+        .data = null,
+    });
+    try testing.expectEqual(@as(usize, 1), probe.calls);
+    try testing.expectEqual(bytes_before_request, counter.outstanding);
+    var text: [5]u8 = "owned".*;
+    try context.doAction(.{
+        .action = .set_value,
+        .target_tree = schema.tree_id_root,
+        .target_node = child_id,
+        .data = .{ .value = &text },
+    });
+    try testing.expectEqual(@as(usize, 2), probe.calls);
+    try testing.expectEqual(bytes_before_request, counter.outstanding);
+    try testing.expectEqualStrings("owned", &text);
+}
+
+test "C macOS constructor refuses a non-native platform instead of returning a recorder" {
+    if (@import("builtin").os.tag == .macos) return error.SkipZigTest;
+    var counter = HeapCounter.init(std.heap.c_allocator);
+    defer counter.deinit();
+    allocation.installAllocator(countedAlloc, countedFree, &counter);
+    defer allocation.installAllocator(null, null, null);
+    var borrowed_view: u8 = 0;
+    var action: RecordingAction = .{};
+    allocation.clearError();
+    const result = macosAdapterNew(&borrowed_view, false, recordingAction, &action);
+    defer if (result) |adapter| macosAdapterFree(adapter);
+    try testing.expect(result == null);
+    try testing.expectEqual(allocation.Tag.operation_failed, allocation.lastError());
+    try testing.expectEqualStrings("NativeUnsupported", std.mem.span(allocation.lastErrorName().?));
+    try testing.expectEqual(@as(usize, 0), counter.outstanding);
+    try testing.expectEqual(@as(usize, 0), action.received);
+    allocation.clearError();
+    try testing.expect(macosAdapterNew(null, false, recordingAction, &action) == null);
+    try testing.expectEqualStrings("NativeUnsupported", std.mem.span(allocation.lastErrorName().?));
+    var activation: AnsweringActivation = .{ .tree = null, .calls = 0 };
+    allocation.clearError();
+    try testing.expect(macosSubclassingAdapterNew(
+        null, answeringActivation, &activation, recordingAction, &action,
+    ) == null);
+    try testing.expectEqual(allocation.Tag.operation_failed, allocation.lastError());
+    try testing.expectEqualStrings("NativeUnsupported", std.mem.span(allocation.lastErrorName().?));
+    allocation.clearError();
+    try testing.expect(macosSubclassingAdapterForWindow(
+        null, answeringActivation, &activation, recordingAction, &action,
+    ) == null);
+    try testing.expectEqual(allocation.Tag.operation_failed, allocation.lastError());
+    try testing.expectEqualStrings("NativeUnsupported", std.mem.span(allocation.lastErrorName().?));
+    try testing.expectEqual(@as(usize, 0), counter.outstanding);
+    try testing.expectEqual(@as(usize, 0), action.received);
+    try testing.expectEqual(@as(usize, 0), activation.calls);
+}
+
+test "C focus forwarders refuse a non-native platform instead of recording success" {
+    if (@import("builtin").os.tag == .macos) return error.SkipZigTest;
+    allocation.clearError();
+    macosAddFocusForwarderToWindowClass("AccessKitSourceOnlyRefusal");
+    try testing.expectEqual(allocation.Tag.operation_failed, allocation.lastError());
+    try testing.expectEqualStrings("NativeUnsupported", std.mem.span(allocation.lastErrorName().?));
+    const class_name = "AccessKitSourceOnlyLengthRefusal";
+    allocation.clearError();
+    macosAddFocusForwarderToWindowClassWithLength(class_name.ptr, class_name.len);
+    try testing.expectEqual(allocation.Tag.operation_failed, allocation.lastError());
+    try testing.expectEqualStrings("NativeUnsupported", std.mem.span(allocation.lastErrorName().?));
+}
+
+test "pure queue releases its stable box through its captured allocator exactly once" {
+    var counter = HeapCounter.init(std.heap.c_allocator);
+    defer counter.deinit();
+    allocation.installAllocator(countedAlloc, countedFree, &counter);
+    defer allocation.installAllocator(null, null, null);
+    var recorder = RecordingHost.init(testing.allocator);
+    defer recorder.deinit();
+    var probe: RequestProbe = .{};
+    const built = try activeContextWith(&probe, &recorder);
+    var adapter_live = true;
+    defer if (adapter_live) freePureAdapter(built.adapter);
+
+    const before_queue = counter.outstanding;
+    const queue = built.adapter.newQueuedEvents(built.context, .empty) orelse
+        return error.NoQueuedEvents;
+    try testing.expect(counter.outstanding > before_queue);
+    try testing.expectEqual(@as(usize, 2), built.context.refs);
+    built.adapter.allocator = testing.allocator;
+    queue.destroy();
+    built.adapter.allocator = heap();
+    try testing.expectEqual(before_queue, counter.outstanding);
+    try testing.expectEqual(@as(usize, 1), built.context.refs);
+
+    const surviving = built.adapter.newQueuedEvents(built.context, .empty) orelse
+        return error.NoQueuedEvents;
+    freePureAdapter(built.adapter);
+    adapter_live = false;
+    try testing.expect(counter.outstanding > 0);
+    const closed_posts = recorder.count();
+    surviving.raiseAndRelease();
+    try testing.expectEqual(closed_posts, recorder.count());
+    try testing.expectEqual(@as(usize, 0), counter.outstanding);
+}
+
+test "native C queue wrong-thread refusal preserves retained targets and main-thread retry" {
+    if (builtin.os.tag != .macos) return error.SkipZigTest;
+    const native_objc = @import("objc.zig");
+    var pool = try native_objc.AutoreleasePool.init();
+    defer pool.deinit();
+    var io_provider = std.Io.Threaded.init(testing.allocator, .{});
+    defer io_provider.deinit();
+    const Counts = struct {
+        actions: u32 = 0,
+        activations: u32 = 0,
+        runtime_releases: u32 = 0,
+
+        fn action(userdata: ?*anyopaque, _: *const schema.ActionRequest) void {
+            const self: *@This() = @ptrCast(@alignCast(userdata.?));
+            self.actions += 1;
+        }
+        fn activate(userdata: ?*anyopaque) void {
+            const self: *@This() = @ptrCast(@alignCast(userdata.?));
+            self.activations += 1;
+        }
+        fn release(userdata: ?*anyopaque) void {
+            const self: *@This() = @ptrCast(@alignCast(userdata.?));
+            self.runtime_releases += 1;
+        }
+    };
+    var counts: Counts = .{};
+    const owner = try NativeAdapter.create(testing.allocator, io_provider.io(), .{
+        .action_handler = Counts.action,
+        .userdata = &counts,
+        .activation_sink = .{ .native = .{ .callback = Counts.activate, .userdata = &counts } },
+        .runtime_release = .{ .userdata = &counts, .release = Counts.release },
+    });
+    var owner_alive = true;
+    defer if (owner_alive) {
+        owner.close() catch @panic("native queue fixture close failed");
+        owner.deinit();
+    };
+    const application_class = native_objc.getClass("NSApplication") orelse
+        return error.ObjectiveCUnavailable;
+    const application = native_objc.send(
+        ?native_objc.Object, application_class, "sharedApplication", .{},
+    ) orelse return error.NativeObjectCreationFailed;
+    _ = application;
+    const view_class = native_objc.getClass("NSView") orelse return error.ObjectiveCUnavailable;
+    const view = native_objc.send(?native_objc.Object, view_class, "new", .{}) orelse
+        return error.NativeObjectCreationFailed;
+    defer native_objc.release(view);
+    const window_class = native_objc.getClass("NSWindow") orelse return error.ObjectiveCUnavailable;
+    const allocated_window = native_objc.send(
+        ?native_objc.Object, window_class, "alloc", .{},
+    ) orelse return error.NativeObjectCreationFailed;
+    const window = native_objc.send(
+        ?native_objc.Object, allocated_window, "initWithContentRect:styleMask:backing:defer:", .{
+            native_objc.NSRect{
+                .origin = .{ .x = 0, .y = 0 },
+                .size = .{ .width = 64, .height = 64 },
+            },
+            @as(usize, 0), @as(usize, 2), @as(u8, 0),
+        },
+    ) orelse return error.NativeObjectCreationFailed;
+    defer native_objc.release(window);
+    const view_baseline = native_objc.send(usize, view, "retainCount", .{});
+    const window_baseline = native_objc.send(usize, window, "retainCount", .{});
+    var weak = owner.context.weak();
+    var weak_alive = true;
+    defer if (weak_alive) weak.deinit();
+    const queued = blk: {
+        const notifications = try NativeNotifications.create(testing.allocator, weak, .{
+            .view = view,
+            .window = window,
+        });
+        errdefer notifications.deinit();
+        const wrapper = try testing.allocator.create(MacosQueuedEvents);
+        wrapper.* = .{
+            .allocator = testing.allocator,
+            .payload = .{ .native = notifications },
+        };
+        break :blk wrapper;
+    };
+    var queue_alive = true;
+    defer if (queue_alive) queued.destroy();
+    weak.deinit();
+    weak_alive = false;
+    try owner.close();
+    owner.deinit();
+    owner_alive = false;
+    try testing.expectEqual(@as(u32, 0), counts.runtime_releases);
+    const retained_view_count = native_objc.send(usize, view, "retainCount", .{});
+    const retained_window_count = native_objc.send(usize, window, "retainCount", .{});
+    try testing.expectEqual(view_baseline + 1, retained_view_count);
+    try testing.expectEqual(window_baseline + 1, retained_window_count);
+    const Attempt = struct {
+        queue: *MacosQueuedEvents,
+        diagnostic: allocation.Tag = .none,
+        name: ?[*:0]const u8 = null,
+
+        fn run(self: *@This()) void {
+            allocation.clearError();
+            macosQueuedEventsRaise(self.queue);
+            self.diagnostic = allocation.lastError();
+            self.name = allocation.lastErrorName();
+        }
+    };
+    var attempted: Attempt = .{ .queue = queued };
+    const thread = try std.Thread.spawn(.{}, Attempt.run, .{&attempted});
+    thread.join();
+    // A consuming regression spends the handle; never repeat its cleanup.
+    if (counts.runtime_releases != 0) queue_alive = false;
+    try testing.expectEqual(allocation.Tag.operation_failed, attempted.diagnostic);
+    try testing.expectEqualStrings("WrongThread", std.mem.span(attempted.name.?));
+    try testing.expectEqual(@as(u32, 0), counts.runtime_releases);
+    try testing.expectEqual(@as(u32, 0), counts.actions);
+    try testing.expectEqual(@as(u32, 0), counts.activations);
+    try testing.expectEqual(retained_view_count, native_objc.send(usize, view, "retainCount", .{}));
+    try testing.expectEqual(retained_window_count, native_objc.send(usize, window, "retainCount", .{}));
+    try testing.expect(queued.payload == .native);
+    try testing.expectEqual(view, queued.payload.native.retained_view.?);
+    try testing.expectEqual(window, queued.payload.native.retained_window.?);
+    allocation.clearError();
+    queue_alive = false;
+    macosQueuedEventsRaise(queued);
+    try testing.expectEqual(allocation.Tag.none, allocation.lastError());
+    try testing.expectEqual(@as(u32, 1), counts.runtime_releases);
+    try testing.expectEqual(view_baseline, native_objc.send(usize, view, "retainCount", .{}));
+    try testing.expectEqual(window_baseline, native_objc.send(usize, window, "retainCount", .{}));
 }

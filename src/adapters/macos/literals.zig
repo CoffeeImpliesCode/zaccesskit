@@ -343,15 +343,15 @@ pub const announcement_keys = [announcement_key_count][:0]const u8{
 ///
 /// The value is the number a client reads out of the `NSNumber` under
 /// `NSAccessibilityPriorityKey`. `AK/macos/src/event.rs:35-43` picks between
-/// the two arms; `docs/51c-macos-test-plan.md` section 4.2 records the two
-/// numbers as the ones AppKit defines. **Unverified**: no macOS SDK is
-/// installed on this host, so `NSAccessibilityConstants.h` was not read.
+/// the two arms. `NSAccessibilityConstants.h` defines AppKit high as 90 and
+/// medium as 50; these are AppKit announcement priorities, not Windows UIA
+/// notification priority values.
 pub const PriorityLevel = enum(i32) {
     /// `NSAccessibilityPriorityHigh`, which `Live.assertive` announces at.
-    high = 700,
+    high = 90,
     /// `NSAccessibilityPriorityMedium`, which every other live value announces
     /// at.
-    medium = 500,
+    medium = 50,
 };
 
 comptime {
@@ -686,8 +686,8 @@ test "the announcement publishes two keys and one of two priorities" {
     try testing.expectEqualStrings("NSAccessibilityAnnouncementKey", announcement_keys[0]);
     try testing.expectEqualStrings("NSAccessibilityPriorityKey", announcement_keys[1]);
     // `AK/macos/src/event.rs:35-43` picks between exactly two levels.
-    try testing.expectEqual(@as(i32, 700), @intFromEnum(PriorityLevel.high));
-    try testing.expectEqual(@as(i32, 500), @intFromEnum(PriorityLevel.medium));
+    try testing.expectEqual(@as(i32, 90), @intFromEnum(PriorityLevel.high));
+    try testing.expectEqual(@as(i32, 50), @intFromEnum(PriorityLevel.medium));
 }
 
 test "every string in this module is declared sentinel-terminated" {

@@ -839,8 +839,26 @@ pub const Connection = struct {
     pub fn writeMessage(self: *Connection, message: dbus.Message) Error!void {
         var outgoing = message;
         if (outgoing.serial == 0) outgoing.serial = try self.nextSerial();
-        const bytes = try dbus.encode(self.gpa, outgoing, .little, self.limits);
+        const bytes = dbus.encode(self.gpa, outgoing, .little, self.limits) catch |err| {
+            std.debug.print(
+                "[PRIVATE-DBUS-ENCODE] stage=writeMessage.encode error={s} kind={s} serial={d}" ++
+                    " path={s} interface={s} member={s} sender={s} destination={s} signature={s}\n",
+                .{
+                    @errorName(err),
+                    @tagName(outgoing.kind),
+                    outgoing.serial,
+                    privateWireText(outgoing.path),
+                    privateWireText(outgoing.interface),
+                    privateWireText(outgoing.member),
+                    privateWireText(outgoing.sender),
+                    privateWireText(outgoing.destination),
+                    privateWireText(outgoing.signature),
+                },
+            );
+            return err;
+        };
         defer self.gpa.free(bytes);
+        dumpPrivateWire(bytes, .{ .stage = "writeMessage.encoded" });
         try self.writeBytes(bytes);
     }
 
@@ -901,6 +919,37 @@ fn authenticateTransport(connection: anytype, uid: u32) Error!void {
     return error.AuthenticationLineTooLong;
 }
 
+// Throwaway private-fixture capture; the parent restores this file after diagnosis.
+// Auth commands and UID credentials never pass through these capture helpers.
+fn privateWireText(text: ?[]const u8) []const u8 {
+    const value = text orelse "<none>";
+    return value[0..@min(value.len, 256)];
+}
+
+fn dumpPrivateWire(bytes: []const u8, diagnostic: struct {
+    stage: []const u8,
+    failure: ?Error = null,
+}) void {
+    var hex: [8192]u8 = undefined;
+    const captured_length = @min(bytes.len, 4096);
+    const digits = "0123456789abcdef";
+    for (bytes[0..captured_length], 0..) |byte, index| {
+        hex[index * 2] = digits[byte >> 4];
+        hex[index * 2 + 1] = digits[byte & 0x0f];
+    }
+    std.debug.print(
+        "[PRIVATE-DBUS-WIRE] stage={s} error={s} original_length={d}" ++
+            " captured_length={d} hex={s}\n",
+        .{
+            diagnostic.stage,
+            if (diagnostic.failure) |err| @errorName(err) else "<none>",
+            bytes.len,
+            captured_length,
+            hex[0 .. captured_length * 2],
+        },
+    );
+}
+
 fn readOwnedFrom(
     gpa: std.mem.Allocator,
     transport: anytype,
@@ -908,7 +957,10 @@ fn readOwnedFrom(
 ) Error!dbus.OwnedFrame {
     var fixed_header: [16]u8 = undefined;
     try transport.readExact(&fixed_header);
-    const frame_length = try dbus.frameLength(fixed_header, limits);
+    const frame_length = dbus.frameLength(fixed_header, limits) catch |err| {
+        dumpPrivateWire(&fixed_header, .{ .stage = "readOwnedFrom.frameLength", .failure = err });
+        return err;
+    };
     const arena = try gpa.create(std.heap.ArenaAllocator);
     errdefer gpa.destroy(arena);
     arena.* = std.heap.ArenaAllocator.init(gpa);
@@ -917,7 +969,10 @@ fn readOwnedFrom(
     @memcpy(bytes[0..16], &fixed_header);
     try transport.readExact(bytes[16..]);
     // Success transfers both raw bytes and decoding nodes with this same arena.
-    return try dbus.decodeInArena(arena, bytes, limits);
+    return dbus.decodeInArena(arena, bytes, limits) catch |err| {
+        dumpPrivateWire(bytes, .{ .stage = "readOwnedFrom.decodeInArena", .failure = err });
+        return err;
+    };
 }
 
 fn stringReply(message: dbus.Message) Error![]const u8 {
