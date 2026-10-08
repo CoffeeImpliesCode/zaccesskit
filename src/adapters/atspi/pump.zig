@@ -552,7 +552,9 @@ pub const Pump = struct {
             };
             self.gpa.free(outgoing.bytes);
             outgoing.receipt.finish(failure);
-            if (failure == error.Canceled) break;
+            if (failure) |cause| {
+                if (cause == error.Canceled) break;
+            }
         }
         while (self.outbound.tryReceive()) |outgoing| {
             self.gpa.free(outgoing.bytes);
@@ -641,7 +643,7 @@ fn drainRejected(queue: *zio.Channel(Event)) void {
 
 // Closing a bounded queue must settle every accepted caller-owned receipt before returning.
 test "closed owner queue rejects accepted work and records completion exactly once" {
-    const State = struct {
+    const ClosedWorkState = struct {
         rejected: u32 = 0,
         fn execute(_: *anyopaque, _: *bus.Bus) void { @panic("closed queue executed work"); }
         fn reject(context: *anyopaque, reason: RejectReason) void {
@@ -650,9 +652,9 @@ test "closed owner queue rejects accepted work and records completion exactly on
             state.rejected += 1;
         }
     };
-    var state: State = .{};
+    var state: ClosedWorkState = .{};
     var first: Receipt = .{ .work = .{
-        .context = &state, .execute = State.execute, .reject = State.reject,
+        .context = &state, .execute = ClosedWorkState.execute, .reject = ClosedWorkState.reject,
     } };
     var second: Receipt = .{ .work = first.work };
     var storage: [2]Event = undefined;
