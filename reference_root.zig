@@ -430,6 +430,10 @@ pub fn runVerification(
     const manifest = try parse(Manifest, gpa, manifest_body);
     defer manifest.deinit();
     if (!std.mem.eql(u8, manifest.value.source_commit, source_commit)) return error.InvalidFixture;
+    const geometry = try parseFixture(GeometryFixture, gpa, bodies[0]);
+    defer geometry.deinit();
+    const text = try parseFixture(TextFixture, gpa, bodies[1]);
+    defer text.deinit();
     var report: Report = .{};
     for (manifest.value.fixtures, bodies, 0..) |entry, body, index| {
         const expected_path = if (index == 0) "test/fixtures/geometry.json" else "test/fixtures/text.json";
@@ -443,10 +447,6 @@ pub fn runVerification(
         };
         std.crypto.hash.sha2.Sha256.hash(body, &report.fixtures[index].digest, .{});
     }
-    const geometry = try parseFixture(GeometryFixture, gpa, bodies[0]);
-    defer geometry.deinit();
-    const text = try parseFixture(TextFixture, gpa, bodies[1]);
-    defer text.deinit();
     if (geometry.value.cases.len != report.fixtures[0].case_count or
         text.value.cases.len != report.fixtures[1].case_count) return error.InvalidFixture;
     for (geometry.value.cases) |case| {
