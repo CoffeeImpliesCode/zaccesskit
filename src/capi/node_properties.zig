@@ -147,19 +147,19 @@ const props_vectors = schema.vectors;
 
 /// Clears the per-thread failure tag, which every export here does on entry.
 ///
-/// `include/zaccesskit.h:6476-6484` requires it: the tag is valid only until the
-/// next call on this thread. Without it a getter that answers "absent" would
+/// `include/zaccesskit.h:6502-6506` requires it: other functions clear both
+/// diagnostics on entry. Without it a getter that answers "absent" would
 /// inherit the tag of an earlier failing call, and a C caller could not tell the
 /// two apart. It is one thread-local store and nothing else.
 fn enter() void {
     allocation.clearError();
 }
 
-/// Records that the call just made failed to allocate.
+/// Records an out-of-memory failure in this module's diagnostic slot.
 ///
-/// The one failing member of `accesskit_error`
-/// (`include/zaccesskit.h:1761-1764`), and the tag every void setter here sets
-/// on its failing path for the reason this module's doc records.
+/// The C error domain also has `ACCESSKIT_ERROR_OPERATION_FAILED`
+/// (`include/zaccesskit.h:1780-1784`); this module uses the OOM tag
+/// (`include/zaccesskit.h:1782`).
 fn note_oom() void {
     allocation.failWith(.out_of_memory);
 }
@@ -839,12 +839,11 @@ export fn accesskit_node_owns(node: *const handles.accesskit_node) callconv(.c) 
 /// new list holding only `item`, which is upstream's 0.25.0 fix
 /// (`accesskit/src/lib.rs:1359-1365`).
 ///
-/// **A void pusher that can fail, for the reason every setter here gives.** On
-/// the failing path the list is unchanged and the tag becomes
-/// `ACCESSKIT_ERROR_OUT_OF_MEMORY`. The second arm of the pusher's error set,
-/// `PropertyTagMismatch`, is unreachable through any path the store can
-/// produce, and it is mapped to the same tag: a documented conflation, not a
-/// discarded error, because `accesskit_error` has one failing member.
+/// **A void pusher that can fail.** On failure the list is unchanged and the
+/// tag becomes `ACCESSKIT_ERROR_OUT_OF_MEMORY`. The pusher explicitly maps
+/// both error arms to that tag. `PropertyTagMismatch` is documented at
+/// `src/schema/props/vectors.zig:65-70` as unreachable through valid
+/// property-store paths.
 export fn accesskit_node_push_child(
     node: *handles.accesskit_node,
     item: NodeIdContent,
@@ -863,12 +862,11 @@ export fn accesskit_node_push_child(
 /// new list holding only `item`, which is upstream's 0.25.0 fix
 /// (`accesskit/src/lib.rs:1359-1365`).
 ///
-/// **A void pusher that can fail, for the reason every setter here gives.** On
-/// the failing path the list is unchanged and the tag becomes
-/// `ACCESSKIT_ERROR_OUT_OF_MEMORY`. The second arm of the pusher's error set,
-/// `PropertyTagMismatch`, is unreachable through any path the store can
-/// produce, and it is mapped to the same tag: a documented conflation, not a
-/// discarded error, because `accesskit_error` has one failing member.
+/// **A void pusher that can fail.** On failure the list is unchanged and the
+/// tag becomes `ACCESSKIT_ERROR_OUT_OF_MEMORY`. The pusher explicitly maps
+/// both error arms to that tag. `PropertyTagMismatch` is documented at
+/// `src/schema/props/vectors.zig:65-70` as unreachable through valid
+/// property-store paths.
 export fn accesskit_node_push_controlled(
     node: *handles.accesskit_node,
     item: NodeIdContent,
@@ -887,12 +885,11 @@ export fn accesskit_node_push_controlled(
 /// new list holding only `item`, which is upstream's 0.25.0 fix
 /// (`accesskit/src/lib.rs:1359-1365`).
 ///
-/// **A void pusher that can fail, for the reason every setter here gives.** On
-/// the failing path the list is unchanged and the tag becomes
-/// `ACCESSKIT_ERROR_OUT_OF_MEMORY`. The second arm of the pusher's error set,
-/// `PropertyTagMismatch`, is unreachable through any path the store can
-/// produce, and it is mapped to the same tag: a documented conflation, not a
-/// discarded error, because `accesskit_error` has one failing member.
+/// **A void pusher that can fail.** On failure the list is unchanged and the
+/// tag becomes `ACCESSKIT_ERROR_OUT_OF_MEMORY`. The pusher explicitly maps
+/// both error arms to that tag. `PropertyTagMismatch` is documented at
+/// `src/schema/props/vectors.zig:65-70` as unreachable through valid
+/// property-store paths.
 export fn accesskit_node_push_described_by(
     node: *handles.accesskit_node,
     item: NodeIdContent,
@@ -911,12 +908,11 @@ export fn accesskit_node_push_described_by(
 /// new list holding only `item`, which is upstream's 0.25.0 fix
 /// (`accesskit/src/lib.rs:1359-1365`).
 ///
-/// **A void pusher that can fail, for the reason every setter here gives.** On
-/// the failing path the list is unchanged and the tag becomes
-/// `ACCESSKIT_ERROR_OUT_OF_MEMORY`. The second arm of the pusher's error set,
-/// `PropertyTagMismatch`, is unreachable through any path the store can
-/// produce, and it is mapped to the same tag: a documented conflation, not a
-/// discarded error, because `accesskit_error` has one failing member.
+/// **A void pusher that can fail.** On failure the list is unchanged and the
+/// tag becomes `ACCESSKIT_ERROR_OUT_OF_MEMORY`. The pusher explicitly maps
+/// both error arms to that tag. `PropertyTagMismatch` is documented at
+/// `src/schema/props/vectors.zig:65-70` as unreachable through valid
+/// property-store paths.
 export fn accesskit_node_push_detail(
     node: *handles.accesskit_node,
     item: NodeIdContent,
@@ -935,12 +931,11 @@ export fn accesskit_node_push_detail(
 /// new list holding only `item`, which is upstream's 0.25.0 fix
 /// (`accesskit/src/lib.rs:1359-1365`).
 ///
-/// **A void pusher that can fail, for the reason every setter here gives.** On
-/// the failing path the list is unchanged and the tag becomes
-/// `ACCESSKIT_ERROR_OUT_OF_MEMORY`. The second arm of the pusher's error set,
-/// `PropertyTagMismatch`, is unreachable through any path the store can
-/// produce, and it is mapped to the same tag: a documented conflation, not a
-/// discarded error, because `accesskit_error` has one failing member.
+/// **A void pusher that can fail.** On failure the list is unchanged and the
+/// tag becomes `ACCESSKIT_ERROR_OUT_OF_MEMORY`. The pusher explicitly maps
+/// both error arms to that tag. `PropertyTagMismatch` is documented at
+/// `src/schema/props/vectors.zig:65-70` as unreachable through valid
+/// property-store paths.
 export fn accesskit_node_push_flow_to(
     node: *handles.accesskit_node,
     item: NodeIdContent,
@@ -959,12 +954,11 @@ export fn accesskit_node_push_flow_to(
 /// new list holding only `item`, which is upstream's 0.25.0 fix
 /// (`accesskit/src/lib.rs:1359-1365`).
 ///
-/// **A void pusher that can fail, for the reason every setter here gives.** On
-/// the failing path the list is unchanged and the tag becomes
-/// `ACCESSKIT_ERROR_OUT_OF_MEMORY`. The second arm of the pusher's error set,
-/// `PropertyTagMismatch`, is unreachable through any path the store can
-/// produce, and it is mapped to the same tag: a documented conflation, not a
-/// discarded error, because `accesskit_error` has one failing member.
+/// **A void pusher that can fail.** On failure the list is unchanged and the
+/// tag becomes `ACCESSKIT_ERROR_OUT_OF_MEMORY`. The pusher explicitly maps
+/// both error arms to that tag. `PropertyTagMismatch` is documented at
+/// `src/schema/props/vectors.zig:65-70` as unreachable through valid
+/// property-store paths.
 export fn accesskit_node_push_labelled_by(
     node: *handles.accesskit_node,
     item: NodeIdContent,
@@ -983,12 +977,11 @@ export fn accesskit_node_push_labelled_by(
 /// new list holding only `item`, which is upstream's 0.25.0 fix
 /// (`accesskit/src/lib.rs:1359-1365`).
 ///
-/// **A void pusher that can fail, for the reason every setter here gives.** On
-/// the failing path the list is unchanged and the tag becomes
-/// `ACCESSKIT_ERROR_OUT_OF_MEMORY`. The second arm of the pusher's error set,
-/// `PropertyTagMismatch`, is unreachable through any path the store can
-/// produce, and it is mapped to the same tag: a documented conflation, not a
-/// discarded error, because `accesskit_error` has one failing member.
+/// **A void pusher that can fail.** On failure the list is unchanged and the
+/// tag becomes `ACCESSKIT_ERROR_OUT_OF_MEMORY`. The pusher explicitly maps
+/// both error arms to that tag. `PropertyTagMismatch` is documented at
+/// `src/schema/props/vectors.zig:65-70` as unreachable through valid
+/// property-store paths.
 export fn accesskit_node_push_owned(
     node: *handles.accesskit_node,
     item: NodeIdContent,
@@ -1007,12 +1000,11 @@ export fn accesskit_node_push_owned(
 /// new list holding only `item`, which is upstream's 0.25.0 fix
 /// (`accesskit/src/lib.rs:1359-1365`).
 ///
-/// **A void pusher that can fail, for the reason every setter here gives.** On
-/// the failing path the list is unchanged and the tag becomes
-/// `ACCESSKIT_ERROR_OUT_OF_MEMORY`. The second arm of the pusher's error set,
-/// `PropertyTagMismatch`, is unreachable through any path the store can
-/// produce, and it is mapped to the same tag: a documented conflation, not a
-/// discarded error, because `accesskit_error` has one failing member.
+/// **A void pusher that can fail.** On failure the list is unchanged and the
+/// tag becomes `ACCESSKIT_ERROR_OUT_OF_MEMORY`. The pusher explicitly maps
+/// both error arms to that tag. `PropertyTagMismatch` is documented at
+/// `src/schema/props/vectors.zig:65-70` as unreachable through valid
+/// property-store paths.
 export fn accesskit_node_push_to_radio_group(
     node: *handles.accesskit_node,
     item: NodeIdContent,
@@ -6098,12 +6090,11 @@ export fn accesskit_node_custom_actions(
 /// back before the append, because the append owns the value and nothing else
 /// may release it after that.
 ///
-/// **A void pusher that can fail, for the reason every setter here gives.** On
-/// the failing path the list is unchanged and the tag becomes
-/// `ACCESSKIT_ERROR_OUT_OF_MEMORY`. The second arm of the pusher's error set,
-/// `PropertyTagMismatch`, is unreachable through any path the store can
-/// produce, and it is mapped to the same tag: a documented conflation, not a
-/// discarded error, because `accesskit_error` has one failing member.
+/// **A void pusher that can fail.** On failure the list is unchanged and the
+/// tag becomes `ACCESSKIT_ERROR_OUT_OF_MEMORY`. The pusher explicitly maps
+/// both error arms to that tag. `PropertyTagMismatch` is documented at
+/// `src/schema/props/vectors.zig:65-70` as unreachable through valid
+/// property-store paths.
 export fn accesskit_node_push_custom_action(
     node: *handles.accesskit_node,
     action: marshal.CustomActionHandle,

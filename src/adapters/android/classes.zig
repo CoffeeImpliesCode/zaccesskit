@@ -1,32 +1,14 @@
-//! The Java class descriptors the Android adapter passes to `GetMethodID` and
-//! `FindClass`.
+//! Java class descriptors used by the Android adapter's JNI lookups.
 //!
-//! `docs/42-native-adapter-build-map.md` section 1.4.3 heads this table
-//! "Java classes, 19" and then lists **20** descriptors: 11 rows one by one, a
-//! row of 6 standard types, a row of 2 marshalling types and
-//! `Ldalvik/system/InMemoryDexClassLoader;`. The map applies the same rule to
-//! `docs/16` in its correction C1, where it takes the table over the heading
-//! the table because the heading contradicts the table, so this module declares the 20
-//! the table lists and records the disagreement. `map_descriptor_count` is 19,
-//! the heading's figure, and the array length is 20.
+//! `docs/42-native-adapter-build-map.md` section 1.4.3 lists 20 classes under
+//! a heading of 19. `map_descriptor_count` preserves that historical heading.
+//! This census adds the documented AccessibilityManager class for the raise gate.
+//! The delegate class remains separate because native registration names it directly.
 //!
-//! One more class is named outside the table. The five native methods of
-//! `dev.accesskit.android.Delegate` are registered on the delegate class, and
-//! `delegate_class_descriptor` gives its descriptor, so the adapter names 21
-//! class descriptors in total.
-//!
-//! **Why a descriptor is pinned.** `GetMethodID` takes the class, the name and
-//! the signature as three separate strings, and every one of them has to be
-//! exact. A wrong descriptor is not a compile error anywhere and is not a
-//! runtime error until the lookup happens on a device, which is why each row is
-//! asserted here.
-//!
-//! **What is a fact and what is not.** The 20 spellings come from the map.
-//! `delegate_class_descriptor` is not one of the 20: it is derived, and its doc
-//! comment gives the derivation.
-//!
-//! **The loop bound.** Every loop over `descriptors` walks the array, whose
-//! length is 20.
+//! Android documents the manager at:
+//! https://developer.android.com/reference/android/view/accessibility/AccessibilityManager
+//! JNI object descriptors wrap the internal class name with `L` and `;`.
+//! Census walks are bounded by the descriptor array length.
 
 const std = @import("std");
 
@@ -56,15 +38,13 @@ pub const in_memory_dex_class_loader_descriptor: ClassDescriptor =
 
 /// How many descriptors `docs/42` section 1.4.3 counts in its heading.
 ///
-/// The table below holds one more. The `comptime` block states the difference
-/// rather than hiding it.
+/// The original map table lists 20. The current table also includes the manager.
 pub const map_descriptor_count = 19;
 
 /// How many descriptors `descriptors` holds.
-pub const descriptor_count = 20;
+pub const descriptor_count = 21;
 
-/// Every Java class descriptor the Android adapter names, in the map's row
-/// order.
+/// Map classes plus the documented accessibility manager.
 pub const descriptors = [descriptor_count]ClassDescriptor{
     // 11 rows the map lists one by one.
     "Landroid/view/View;",
@@ -88,6 +68,8 @@ pub const descriptors = [descriptor_count]ClassDescriptor{
     // The 2 marshalling types of one row.
     "Ljava/util/List;",
     "Ljava/nio/ByteBuffer;",
+    // Android's documented manager class, ledger row 520.
+    "Landroid/view/accessibility/AccessibilityManager;",
     // The embedded-dex loader of the last row.
     "Ldalvik/system/InMemoryDexClassLoader;",
 };
@@ -117,8 +99,8 @@ pub fn find(name: []const u8) ?ClassDescriptor {
     return null;
 }
 
-test "the table holds the 20 descriptors the map lists under a heading of 19" {
-    try testing.expectEqual(@as(usize, 20), descriptors.len);
+test "the class census adds the manager to the map's 20 descriptors" {
+    try testing.expectEqual(@as(usize, 21), descriptors.len);
     try testing.expectEqual(@as(usize, 19), map_descriptor_count);
 }
 
@@ -157,7 +139,7 @@ test "every standard and marshalling descriptor is spelled as the map spells it"
 }
 
 test "every descriptor is a well-formed object descriptor" {
-    // The walk is over the 20 rows, so the bound is `descriptor_count`.
+    // The walk is bounded by `descriptor_count`.
     for (descriptors) |candidate| {
         try testing.expect(candidate.len > 2);
         try testing.expectEqual(@as(u8, 'L'), candidate[0]);
@@ -185,4 +167,8 @@ test "the delegate class is named outside the map's table" {
         in_memory_dex_class_loader_descriptor,
         descriptors[descriptor_count - 1],
     ));
+}
+
+test "the documented accessibility manager is in the class census" {
+    try testing.expect(find("Landroid/view/accessibility/AccessibilityManager;") != null);
 }

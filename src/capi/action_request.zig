@@ -301,17 +301,18 @@ export fn accesskit_custom_actions_free(value: *CCustomActions) callconv(.c) voi
 /// (`include/zaccesskit.h:5369`); the parameter is a non-optional pointer for
 /// the reason `accesskit_custom_action_free` states.
 ///
-/// Whoever builds the request must allocate it with `allocation.create`, and
-/// the payload string must come from `allocation.allocator()`, because both
-/// halves are released here through the channel.
+/// The request and its optional string must both come from `allocation.allocator()`.
+/// Native input storage stays with its original owner. `boundary.createActionRequest`
+/// makes the independent copy that this free releases.
 ///
 /// Upstream `accesskit-c/src/common.rs:1128-1131` drops the box, and that box's
 /// payload releases its `char *` through `Drop` at
 /// `accesskit-c/src/common.rs:1084-1090`. Upstream's header does not say the
 /// string goes with the request; `include/zaccesskit.h:5366-5368` does.
 export fn accesskit_action_request_free(request: *CActionRequest) callconv(.c) void {
-    schema.cActionRequestDeinit(allocation.allocator(), request);
-    allocation.release(request);
+    const gpa = allocation.allocator();
+    schema.cActionRequestDeinit(gpa, request);
+    gpa.destroy(request);
 }
 
 /// Allocates one custom action handle carrying `id` and `description`.
@@ -721,27 +722,88 @@ test "the list free walks the actions, the array and the outer struct" {
     accesskit_custom_actions_free(list);
 }
 
-test "the request free runs end to end on a built request" {
-    // The library builds a request and the callback frees it, so the two sides
-    // have to agree on which allocator holds the request and which holds the
-    // payload string.
-    const request = try allocation.create(CActionRequest);
-    request.* = .{
+test "the public request free releases an independent copy through the installed C domain" {
+    // A separate source allocator must not become the callback's release domain.
+    const Domain = struct {
+        blocks: [2]?[]align(16) u8 = .{ null, null },
+
+        fn alloc(size: usize, context: ?*anyopaque) callconv(.c) ?*anyopaque {
+            const self: *@This() = @ptrCast(@alignCast(context.?));
+            for (&self.blocks) |*block| {
+                if (block.* == null) {
+                    const bytes = std.testing.allocator.alignedAlloc(u8, .@"16", size) catch
+                        return null;
+                    block.* = bytes;
+                    return bytes.ptr;
+                }
+            }
+            return null;
+        }
+
+        fn free(pointer: ?*anyopaque, context: ?*anyopaque) callconv(.c) void {
+            const self: *@This() = @ptrCast(@alignCast(context.?));
+            for (&self.blocks) |*block| {
+                if (block.*) |bytes| {
+                    if (@intFromPtr(bytes.ptr) == @intFromPtr(pointer.?)) {
+                        std.testing.allocator.free(bytes);
+                        block.* = null;
+                        return;
+                    }
+                }
+            }
+            @panic("Request released outside its installed C allocator domain");
+        }
+    };
+    const Capture = struct {
+        calls: usize = 0,
+        action: schema.Action = .click,
+        target_tree: schema.TreeId = schema.tree_id_root,
+        target_node: schema.NodeId = schema.nodeIdFromContent(0),
+        text: [5]u8 = undefined,
+        has_text: bool = false,
+
+        fn receive(owned: *CActionRequest, context: ?*anyopaque) callconv(.c) void {
+            defer accesskit_action_request_free(owned);
+            const self: *@This() = @ptrCast(@alignCast(context.?));
+            self.calls += 1;
+            self.action = owned.action;
+            self.target_tree = owned.target_tree;
+            self.target_node = owned.target_node;
+            if (!owned.data.has_value) return;
+            if (owned.data.value.tag != @intFromEnum(schema.ActionDataTag.value)) return;
+            const pointer = owned.data.value.payload.value orelse return;
+            const text = std.mem.span(pointer);
+            if (text.len != self.text.len) return;
+            @memcpy(&self.text, text);
+            self.has_text = true;
+        }
+    };
+    var domain: Domain = .{};
+    allocation.installAllocator(Domain.alloc, Domain.free, &domain);
+    defer allocation.installAllocator(null, null, null);
+    var source: schema.ActionRequest = .{
         .action = .replace_selected_text,
         .target_tree = schema.tree_id_root,
-        .target_node = .{ .value = 3 },
-        .data = .{ .has_value = true, .value = undefined },
+        .target_node = schema.nodeIdFromContent(3),
+        .data = .{ .value = try std.testing.allocator.dupe(u8, "typed") },
     };
-    var text: [5]u8 = "typed".*;
-    request.data.value = try schema.actionDataToC(allocation.allocator(), .{ .value = &text });
+    var source_live = true;
+    defer if (source_live) source.deinit(std.testing.allocator);
+    const request = try boundary.createActionRequest(allocation.allocator(), source);
+    try std.testing.expect(@intFromPtr(source.data.?.value.ptr) !=
+        @intFromPtr(request.data.value.payload.value.?));
+    source.deinit(std.testing.allocator);
+    source_live = false;
 
-    var seen: SeenRequest = .{};
-    callActionHandler(&recordRequest, request, &seen);
+    var seen: Capture = .{};
+    callActionHandler(&Capture.receive, request, &seen);
     try testing.expectEqual(@as(usize, 1), seen.calls);
-    const recorded = seen.text orelse return error.NoRecordedText;
-    try testing.expectEqualStrings("typed", std.mem.span(recorded));
-
-    accesskit_action_request_free(request);
+    try testing.expect(seen.has_text);
+    try testing.expectEqualStrings("typed", &seen.text);
+    try testing.expectEqual(schema.Action.replace_selected_text, seen.action);
+    try testing.expect(seen.target_tree.eql(schema.tree_id_root));
+    try testing.expect(seen.target_node.eql(schema.nodeIdFromContent(3)));
+    for (domain.blocks) |block| try std.testing.expect(block == null);
 }
 
 /// What one callback call observed, reached through `userdata`.
