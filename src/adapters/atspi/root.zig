@@ -944,3 +944,109 @@ test "the object identifier names the three paths this adapter exports" {
     defer std.testing.allocator.free(path);
     try testing.expectEqualStrings("/org/a11y/atspi/cache", path);
 }
+
+test "C inactive update skips factory and never synthesizes activation" {
+    // With no accessibility attachment, the application must keep its pending delta.
+    var activation: Probe = .{};
+    var factory: Probe = .{};
+    const adapter = try adapterFor(&activation);
+    defer adapter.deinit();
+
+    unixAdapterUpdateIfActive(adapter, Probe.factory, &factory);
+
+    try testing.expectEqual(@as(usize, 0), factory.calls);
+    try testing.expectEqual(@as(usize, 0), activation.calls);
+    try testing.expect(!adapter.activated);
+    try testing.expect(!adapter.platform.hasTree());
+}
+
+test "C rejected inactive delta does not trigger close deactivation" {
+    // An update attempt without an attachment is not an accessibility activation.
+    var activation: Probe = .{};
+    var action: Probe = .{};
+    var deactivation: Probe = .{};
+    var factory: Probe = .{};
+    const adapter = unixAdapterNew(
+        Probe.activation,
+        &activation,
+        Probe.action,
+        &action,
+        Probe.deactivation,
+        &deactivation,
+    ) orelse return error.AdapterAllocationFailed;
+
+    unixAdapterUpdateIfActive(adapter, Probe.factory, &factory);
+    unixAdapterFree(adapter);
+
+    try testing.expectEqual(@as(usize, 0), deactivation.calls);
+    try testing.expectEqual(@as(usize, 0), activation.calls);
+    try testing.expectEqual(@as(usize, 0), factory.calls);
+    try testing.expectEqual(@as(usize, 0), action.calls);
+}
+
+test "C debug string remains releasable through public C free after adapter close" {
+    // A C consumer releases this pointer through the installed C allocation authority.
+    const C = struct {
+        extern fn accesskit_string_free([*:0]u8) void;
+    };
+    var probe: Probe = .{};
+    const adapter = try adapterFor(&probe);
+    const text = unixAdapterDebug(adapter) orelse {
+        unixAdapterFree(adapter);
+        return error.DebugTextNotBuilt;
+    };
+    unixAdapterFree(adapter);
+
+    try testing.expect(std.mem.indexOf(u8, std.mem.span(text), "UnixAdapter") != null);
+    C.accesskit_string_free(text);
+}
+
+test "C debug string uses the installed raw allocator and survives adapter free" {
+    const allocation = @import("../../capi/allocation.zig");
+    const C = struct {
+        extern fn accesskit_string_free([*:0]u8) void;
+    };
+    const Pair = struct {
+        bytes: [1024]u8 align(8) = undefined,
+        allocations: usize = 0,
+        frees: usize = 0,
+        foreign_frees: usize = 0,
+        live: bool = false,
+
+        fn alloc(size: usize, context: ?*anyopaque) callconv(.c) ?*anyopaque {
+            const self: *@This() = @ptrCast(@alignCast(context.?));
+            if (self.live or size > self.bytes.len) return null;
+            self.allocations += 1;
+            self.live = true;
+            return &self.bytes;
+        }
+
+        fn free(pointer: ?*anyopaque, context: ?*anyopaque) callconv(.c) void {
+            const self: *@This() = @ptrCast(@alignCast(context.?));
+            if (pointer == @as(*anyopaque, @ptrCast(&self.bytes)) and self.live) {
+                self.frees += 1;
+                self.live = false;
+            } else {
+                self.foreign_frees += 1;
+                // The old debug producer uses c_allocator instead of this pair.
+                std.c.free(pointer);
+            }
+        }
+    };
+    var pair: Pair = .{};
+    allocation.installAllocator(Pair.alloc, Pair.free, &pair);
+    defer allocation.installAllocator(null, null, null);
+    var probe: Probe = .{};
+    const adapter = try adapterFor(&probe);
+    const text = unixAdapterDebug(adapter) orelse {
+        unixAdapterFree(adapter);
+        return error.DebugTextNotBuilt;
+    };
+    unixAdapterFree(adapter);
+    try testing.expect(std.mem.indexOf(u8, std.mem.span(text), "UnixAdapter") != null);
+    C.accesskit_string_free(text);
+    try testing.expectEqual(@as(usize, 0), pair.foreign_frees);
+    try testing.expectEqual(@as(usize, 1), pair.allocations);
+    try testing.expectEqual(pair.allocations, pair.frees);
+    try testing.expect(!pair.live);
+}
