@@ -3,7 +3,7 @@ const reference = @import("../reference_root.zig");
 
 test "all pinned-source geometry and consumer text cases match actual outputs" {
     const report = try reference.runVerification(std.testing.allocator, reference.fixture_bodies);
-    try std.testing.expectEqual(@as(usize, 12), report.case_count);
+    try std.testing.expectEqual(@as(usize, 15), report.case_count);
 }
 
 test "verification rejects malformed corrupt raw bytes before parsing" {
@@ -50,4 +50,18 @@ test "fixture parser reports malformed JSON within its closed error set" {
 
 test "wrong expected geometry output is not an oracle echo" {
     try std.testing.expectError(error.OutputMismatch, reference.testWrongOutput(std.testing.allocator));
+}
+
+test "wrong expected far-edge containment is not an oracle echo" {
+    try std.testing.expectError(
+        error.OutputMismatch,
+        reference.testWrongContainmentOutput(std.testing.allocator),
+    );
+}
+
+test "wrong expected final singular inverse coefficient is not an oracle echo" {
+    try std.testing.expectError(
+        error.OutputMismatch,
+        reference.testWrongNanOutput(std.testing.allocator),
+    );
 }

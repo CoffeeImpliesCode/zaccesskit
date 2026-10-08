@@ -9,8 +9,8 @@
 //! |---|---|---|
 //! | `constants.zig` | `AK/android/src/util.rs:14-68` | the 43 Android SDK constant names |
 //! | `values.zig` | the same lines | the 38 integers behind those names |
-//! | `classes.zig` | throughout | the 20 class descriptors of map section 1.4.3 |
-//! | `methods.zig` | the eight files | the 68 Java method names and the 27 lookups |
+//! | `classes.zig` | throughout | the 21 documented class descriptors |
+//! | `methods.zig` | the eight files | the 68 Java method names and the 38 lookup rows |
 //! | `jni.zig` | `inject.rs:14-23`, `:99` | 13 `JNIEnv` methods, 6 handle types, 4 scalars |
 //! | `jni_table.zig` | `inject.rs:14-23` | the 24 injectable JNI entry points |
 //! | `java_call.zig` | throughout | the checked lookup and call helpers |
@@ -217,14 +217,16 @@ pub fn androidPlatformActionFree(
 ///
 /// **The adapter must outlive this call**, which is the borrow rule the header
 /// states and the queue's `adapter` field exists for.
+/// Delivery failures retain their exact tags in the owning adapter's `last_error`.
 pub fn androidQueuedEventsRaise(
     events: *AndroidQueuedEvents,
     env: JniEnv,
     host: JObject,
 ) void {
-    _ = events.raise(jni_table_module.realTable(env), host);
-    events.deinit();
-    allocation.release(@ptrCast(@alignCast(events)));
+    defer allocation.release(@ptrCast(@alignCast(events)));
+    defer events.deinit();
+    const report = events.raise(jni_table_module.realTable(env), host);
+    if (report.failure) |err| events.adapter.last_error = err;
 }
 
 /// Returns an Android adapter, or `null` when the allocation failed.
@@ -492,7 +494,8 @@ pub fn androidInjectingAdapterUpdateIfActive(
 /// `error.OutOfMemory` is reported to `accesskit_last_error` here, because this
 /// is the last point where the C caller can still read it.
 fn boxEvents(events: AndroidQueuedEvents) ?*AndroidQueuedEvents {
-    const block = allocation.create(AndroidQueuedEvents) catch {
+    const block = allocation.create(AndroidQueuedEvents) catch |err| {
+        events.adapter.last_error = err;
         var owned = events;
         owned.deinit();
         allocation.failWith(.out_of_memory);
@@ -540,13 +543,13 @@ pub const entry_point_names = [entry_point_count][:0]const u8{
 
 /// Every module of the boundary, re-exported so a caller reaches one namespace.
 pub const modules = struct {
-    /// The 20 Java class descriptors.
+    /// The 21 documented Java class descriptors.
     pub const classes = classes_module;
     /// The 43 Android SDK constant names.
     pub const constants = constants_module;
     /// The `JNIEnv` and `JavaVM` entry points, handle types and scalars.
     pub const jni = jni_census;
-    /// The 68 Java method names and the 27 lookups.
+    /// The 68 Java method names and the 38 lookup rows.
     pub const methods = methods_module;
     /// The 24 injectable JNI entry points.
     pub const jni_table = jni_table_module;
@@ -574,8 +577,8 @@ comptime {
         @compileError("the map gives 43 integer constants");
     }
     if (methods_module.method_name_count != 68) @compileError("the map gives 68 method names");
-    if (classes_module.descriptor_count != 20) {
-        @compileError("the map's table lists 20 descriptors");
+    if (classes_module.descriptor_count != 21) {
+        @compileError("the documented Android delivery surface has 21 descriptors");
     }
     if (jni_census.jni_env_method_count != 13) {
         @compileError("the map gives 13 JNIEnv entry points");
@@ -583,10 +586,10 @@ comptime {
     if (jni_census.handle_type_count + jni_census.scalar_type_count != 10) {
         @compileError("the map gives 10 handle and scalar types");
     }
-    if (methods_module.method_name_count - methods_module.pinned_signature_count !=
+    if (methods_module.method_name_count - methods_module.pinned_name_count !=
         methods_module.unpinned_name_count)
     {
-        @compileError("the unpinned count must be 68 minus 22");
+        @compileError("unpinned method names must exclude documented method names");
     }
 
     // The two figures the census above does not cover. `src/capi/platform.zig`
@@ -758,16 +761,16 @@ test "every module of the boundary is reachable" {
     testing.refAllDecls(modules.injecting);
 }
 
-test "the census holds the figures the map measured" {
+test "the census retains historical map counts and documented delivery descriptors" {
     try testing.expectEqual(@as(usize, 43), constants_module.constant_count);
     try testing.expectEqual(@as(usize, 68), methods_module.method_name_count);
-    try testing.expectEqual(@as(usize, 20), classes_module.descriptor_count);
+    try testing.expectEqual(@as(usize, 21), classes_module.descriptor_count);
     try testing.expectEqual(@as(usize, 19), classes_module.map_descriptor_count);
     try testing.expectEqual(@as(usize, 13), jni_census.jni_env_method_count);
     try testing.expectEqual(@as(usize, 5), registeredNativeCount());
 }
 
-test "22 of the 68 method names have a lookup row and 46 do not" {
+test "documented lookup rows cover 33 of the 68 method names" {
     // The walk is over the 68 rows of `methods_module.method_names`, so the bound
     // is `methods_module.method_name_count`.
     var covered: usize = 0;
@@ -775,7 +778,7 @@ test "22 of the 68 method names have a lookup row and 46 do not" {
         if (methods_module.findByName(name) != null) covered += 1;
     }
     try testing.expectEqual(methods_module.pinned_name_count, covered);
-    try testing.expectEqual(@as(usize, 22), covered);
+    try testing.expectEqual(@as(usize, 33), covered);
     try testing.expectEqual(
         methods_module.unpinned_name_count,
         methods_module.method_name_count - covered,
@@ -1079,15 +1082,21 @@ test "every failure an adapter call can report is named" {
     const adapter_errors = @typeInfo(adapter_module.Error).error_set.?;
     var seen_null_update = false;
     var seen_tree_rejected = false;
-    var seen_queue_failure = false;
+    var seen_narrow_failure = false;
+    var seen_filter_failure = false;
+    var seen_allocation_failure = false;
     for (adapter_errors) |tag| {
         if (std.mem.eql(u8, tag.name, "NullTreeUpdate")) seen_null_update = true;
         if (std.mem.eql(u8, tag.name, "TreeRejected")) seen_tree_rejected = true;
-        if (std.mem.eql(u8, tag.name, "TreeEventQueueFailed")) seen_queue_failure = true;
+        if (std.mem.eql(u8, tag.name, "OutOfRange")) seen_narrow_failure = true;
+        if (std.mem.eql(u8, tag.name, "TreeCycle")) seen_filter_failure = true;
+        if (std.mem.eql(u8, tag.name, "OutOfMemory")) seen_allocation_failure = true;
     }
     try testing.expect(seen_null_update);
     try testing.expect(seen_tree_rejected);
-    try testing.expect(seen_queue_failure);
+    try testing.expect(seen_narrow_failure);
+    try testing.expect(seen_filter_failure);
+    try testing.expect(seen_allocation_failure);
 }
 
 test "the five injecting natives agree with what methods.zig records" {
@@ -1100,12 +1109,201 @@ test "the five injecting natives agree with what methods.zig records" {
     try testing.expectEqual(@as(usize, 5), registeredNativeCount());
 }
 
-/// How many of the 27 lookup rows are registered native methods. The walk is
-/// over the 27 rows, so the bound is `methods_module.method_id_count`.
+/// Counts native registrations within the `method_id_count` lookup rows.
 fn registeredNativeCount() usize {
     var total: usize = 0;
     for (methods_module.method_ids) |row| {
         if (row.kind == .registered_native) total += 1;
     }
     return total;
+}
+
+// The raw slot array drives the C-facing raise through realTable, not a VM.
+const RaiseConsumerFixture = struct {
+    slots: [jni_table_module.jni_slot_count]?*const anyopaque =
+        .{null} ** jni_table_module.jni_slot_count,
+    enabled: bool = true,
+    failure: ?java_call_module.CallError = null,
+    sends: usize = 0,
+    refuse_alloc: bool = false,
+    allocs: usize = 0,
+    frees: usize = 0,
+    used: usize = 0,
+    store: [4096]u8 align(16) = undefined,
+
+    fn prepare(self: *RaiseConsumerFixture) JniEnv {
+        self.slots[0] = self;
+        self.slots[jni_table_module.slotOf("FindClass")] = @ptrCast(&findClass);
+        self.slots[jni_table_module.slotOf("GetMethodID")] = @ptrCast(&methodId);
+        self.slots[jni_table_module.slotOf("GetStaticMethodID")] = @ptrCast(&methodId);
+        self.slots[jni_table_module.slotOf("CallObjectMethodA")] = @ptrCast(&object);
+        self.slots[jni_table_module.slotOf("CallStaticObjectMethodA")] = @ptrCast(&object);
+        self.slots[jni_table_module.slotOf("CallBooleanMethodA")] = @ptrCast(&boolean);
+        self.slots[jni_table_module.slotOf("CallVoidMethodA")] = @ptrCast(&voidCall);
+        self.slots[jni_table_module.slotOf("NewString")] = @ptrCast(&newString);
+        self.slots[jni_table_module.slotOf("ExceptionCheck")] = @ptrCast(&exception);
+        return @ptrCast(&self.slots);
+    }
+
+    fn of(env: JniEnv) *RaiseConsumerFixture {
+        const slots: [*]const ?*const anyopaque = @ptrCast(@alignCast(env.?));
+        return @ptrCast(@alignCast(@constCast(slots[0].?)));
+    }
+
+    fn findClass(env: JniEnv, _: [*c]const u8) callconv(.c) JObject {
+        if (of(env).failure == error.JavaMemberMissing) return null;
+        return @ptrFromInt(0x7000);
+    }
+
+    fn methodId(
+        _: JniEnv,
+        _: JObject,
+        name: [*c]const u8,
+        _: [*c]const u8,
+    ) callconv(.c) jni_table_module.JMethodId {
+        const terminated: [*:0]const u8 = @ptrCast(name);
+        const method = std.mem.span(terminated);
+        if (std.mem.eql(u8, method, "isEnabled")) return @ptrFromInt(0x7010);
+        if (std.mem.eql(u8, method, "requestSendAccessibilityEvent")) {
+            return @ptrFromInt(0x7011);
+        }
+        return @ptrFromInt(0x7012);
+    }
+
+    fn object(
+        _: JniEnv,
+        _: JObject,
+        _: jni_table_module.JMethodId,
+        _: [*c]const jni_table_module.JValue,
+    ) callconv(.c) JObject {
+        return @ptrFromInt(0x7001);
+    }
+
+    fn boolean(
+        env: JniEnv,
+        _: JObject,
+        method: jni_table_module.JMethodId,
+        _: [*c]const jni_table_module.JValue,
+    ) callconv(.c) jni_table_module.JBoolean {
+        const self = of(env);
+        if (@intFromPtr(method) == 0x7011) {
+            self.sends += 1;
+            return 1;
+        }
+        return @intFromBool(self.enabled);
+    }
+
+    fn voidCall(
+        env: JniEnv,
+        _: JObject,
+        method: jni_table_module.JMethodId,
+        _: [*c]const jni_table_module.JValue,
+    ) callconv(.c) void {
+        if (@intFromPtr(method) == 0x7011) of(env).sends += 1;
+    }
+
+    fn newString(
+        env: JniEnv,
+        _: [*c]const u16,
+        _: jni_table_module.JSize,
+    ) callconv(.c) JObject {
+        if (of(env).failure == error.OutOfMemory) return null;
+        return @ptrFromInt(0x7002);
+    }
+
+    fn exception(env: JniEnv) callconv(.c) jni_table_module.JBoolean {
+        return @intFromBool(of(env).failure == error.JavaException);
+    }
+
+    fn alloc(size: usize, context: ?*anyopaque) callconv(.c) ?*anyopaque {
+        const self: *RaiseConsumerFixture = @ptrCast(@alignCast(context.?));
+        if (self.refuse_alloc) return null;
+        const start = std.mem.alignForward(usize, self.used, 16);
+        if (size > self.store.len -| start) return null;
+        self.used = start + size;
+        self.allocs += 1;
+        return self.store[start..][0..size].ptr;
+    }
+
+    fn free(_: ?*anyopaque, context: ?*anyopaque) callconv(.c) void {
+        const self: *RaiseConsumerFixture = @ptrCast(@alignCast(context.?));
+        self.frees += 1;
+    }
+};
+
+test "root raise consumes its boxed queue once on enabled disabled and exact failures" {
+    // Queue storage is leak-checked; only its C box uses the counted pair.
+    const cases = [_]struct {
+        enabled: bool = true,
+        failure: ?java_call_module.CallError = null,
+        sends: usize = 0,
+    }{
+        .{ .sends = 1 },
+        .{ .enabled = false },
+        .{ .failure = error.JavaMemberMissing },
+        .{ .failure = error.OutOfMemory },
+        .{ .failure = error.JavaException },
+    };
+    for (cases) |case| {
+        var adapter = try AndroidAdapter.init(testing.allocator);
+        defer adapter.deinit();
+        var queue = AndroidQueuedEvents.init(testing.allocator, &adapter);
+        try queue.append(.simple(values_module.EVENT_VIEW_CLICKED, null));
+        var fixture: RaiseConsumerFixture = .{
+            .enabled = case.enabled,
+            .failure = case.failure,
+        };
+        const env = fixture.prepare();
+        allocation.installAllocator(RaiseConsumerFixture.alloc, RaiseConsumerFixture.free, &fixture);
+        defer allocation.installAllocator(null, null, null);
+        const boxed = boxEvents(queue) orelse return error.NoQueueBuilt;
+        androidQueuedEventsRaise(boxed, env, @ptrFromInt(0x7003));
+        if (case.failure) |failure| {
+            try testing.expectEqual(@as(adapter_module.Error, failure), adapter.last_error.?);
+        } else {
+            try testing.expect(adapter.last_error == null);
+        }
+        try testing.expectEqual(case.sends, fixture.sends);
+        try testing.expectEqual(@as(usize, 1), fixture.allocs);
+        try testing.expectEqual(@as(usize, 1), fixture.frees);
+    }
+}
+
+test "injecting update retains the exact factory error in its owning adapter" {
+    var active = try ActiveAdapter.init(testing.allocator);
+    defer active.deinit();
+    var target: AndroidInjectingAdapter = .{
+        .gpa = testing.allocator,
+        .inner = active.adapter,
+        .env = null,
+        .host = @ptrFromInt(0x7003),
+        .runnable = null,
+        .delegate = null,
+        .activation_handler = probedActivation,
+        .activation_handler_userdata = &active.probe,
+        .action_handler = unusedAction,
+        .action_handler_userdata = null,
+        .pending_events = .empty,
+    };
+    defer target.pending_events.deinit(testing.allocator);
+    var probe: Probe = .{ .gpa = testing.allocator };
+    target.updateIfActive(probedFactory, &probe);
+    try testing.expectEqual(@as(usize, 1), probe.calls);
+    try testing.expectEqual(adapter_module.Error.NullTreeUpdate, active.adapter.last_error.?);
+    try testing.expectEqual(@as(usize, 0), target.pending_events.items.len);
+}
+
+test "root boxing failure releases the unboxed queue and retains OutOfMemory" {
+    var adapter = try AndroidAdapter.init(testing.allocator);
+    defer adapter.deinit();
+    var queue = AndroidQueuedEvents.init(testing.allocator, &adapter);
+    try queue.append(.simple(values_module.EVENT_VIEW_CLICKED, null));
+    var fixture: RaiseConsumerFixture = .{ .refuse_alloc = true };
+    allocation.installAllocator(RaiseConsumerFixture.alloc, RaiseConsumerFixture.free, &fixture);
+    defer allocation.installAllocator(null, null, null);
+    defer allocation.clearError();
+    try testing.expect(boxEvents(queue) == null);
+    try testing.expectEqual(adapter_module.Error.OutOfMemory, adapter.last_error.?);
+    try testing.expectEqual(allocation.Tag.out_of_memory, allocation.lastError());
+    try testing.expectEqual(@as(usize, 0), fixture.frees);
 }
