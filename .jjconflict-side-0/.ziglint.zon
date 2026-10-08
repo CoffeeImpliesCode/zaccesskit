@@ -1,0 +1,36 @@
+.{
+    // Z001 asks for a camelCase function name. The 498 C ABI exports cannot
+    // take one, because the Zig identifier is the C symbol in
+    // `include/zaccesskit.h` byte for byte. 440 of them are `export fn
+    // accesskit_*` across seven files, and the other 58 are the
+    // `@export`-driven declarations in `src/capi/platform.zig`, where the
+    // emitted symbol name is the C name. A rename to `accesskitNodeChild`
+    // passes this rule and breaks every C caller, so the rule is off for this
+    // package rather than the code.
+    //
+    // What holds the 498 instead is `zig build capi-parity`, and the property
+    // it asserts is two-directional: it reads the header declarations and the
+    // symbols the Zig side exports, and a symbol on one side and not the other
+    // fails the run with both files and lines. That holds against a rename
+    // applied to the Zig side alone, which is the mistake this exemption
+    // exists because it happened here.
+    //
+    // Its limit, so nobody over-reads it. The Zig side is scanned lexically,
+    // so a rename applied to the Zig declarations *and* to the parity tool's
+    // own expectations would pass. Reaching that also needs an edit to
+    // `include/zaccesskit.h`, so the header is the fixed side and the blast
+    // radius of this blind spot is the header, not the Zig half.
+    //
+    // Collateral, stated rather than hidden. Z001 reported 546 findings, so
+    // turning it off also stops reporting the 48 that are fixable. ziglint
+    // 0.5.3 loads one `.ziglint.zon` per run and has no per-directory rule
+    // scoping, so a config cannot exempt `src/capi/` alone; naming and review
+    // own those 48 instead. If ziglint ever gains per-path rule config, narrow
+    // this to the eight C ABI files.
+    //
+    // The other 31 rules stay on: `Rule` at `ziglint/src/rules.zig:5-37`
+    // declares 32 codes, Z001 to Z033 with Z008 absent, and this turns off one.
+    .rules = .{
+        .Z001 = .{ .enabled = false },
+    },
+}
