@@ -35,7 +35,7 @@
 //! `optionals.zig` is the twenty-five `accesskit_opt_*` forms and the absence
 //! convention each one uses; the header declares no `accesskit_opt_*` function,
 //! so there is nothing there to export. `property_value.zig` is the nineteen C
-//! enumerations and the 272 tags they carry, proved to be one-to-one in both
+//! enumerations and the 273 tags they carry, proved to be one-to-one in both
 //! directions. `tree_update.zig` is the one of the three with declarations, and
 //! it owns all ten `accesskit_tree_update_*` exports.
 //!
@@ -78,7 +78,7 @@ pub const platform = @import("platform.zig");
 /// The tree update: one atomic change to one tree, and its ten exports.
 pub const tree_update = @import("tree_update.zig");
 
-/// The nineteen C enumerations and the 272 tags they carry.
+/// The nineteen C enumerations and the 273 tags they carry.
 pub const property_value = @import("property_value.zig");
 
 /// The twenty-five `accesskit_opt_*` forms and the absence convention each one

@@ -480,10 +480,9 @@ pub fn treeUpdateDebug(
     defer owning.deinit();
     formatTreeUpdate(update, &owning.writer) catch |err| switch (err) {
         // `std.Io.Writer.Allocating.drain` returns `error.WriteFailed` from one
-        // place, `lib/std/Io/Writer.zig:2705`, and that place is the
-        // `ensureUnusedCapacity` call that could not make room. A writer that
-        // owns its buffer and grows it has no other way to fail, so the C
-        // layer's one failing tag answers it.
+        // place, `lib/std/Io/Writer.zig:2705`, when `ensureUnusedCapacity`
+        // cannot grow the buffer. This writer owns its buffer, so that failure
+        // means allocation growth failed and maps to `error.OutOfMemory`.
         error.WriteFailed => return error.OutOfMemory,
     };
     const text = try owning.toOwnedSliceSentinel(0);
