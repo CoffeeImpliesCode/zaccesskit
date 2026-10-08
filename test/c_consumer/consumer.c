@@ -10,6 +10,7 @@
 
 #include "zaccesskit.h"
 
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -883,6 +884,236 @@ static void check_opt_index(void)
     ++node_free_calls;
     accesskit_node_free(node);
 }
+
+/* Both call forms use the public bool-plus-payload declarations. Never compare
+   padding: only the independent boundary probe owns a whole-byte oracle. */
+_Static_assert(offsetof(struct accesskit_opt_node_id, has_value) == 0,
+               "NodeId flag is first");
+_Static_assert(offsetof(struct accesskit_opt_index, has_value) == 0,
+               "index flag is first");
+_Static_assert(offsetof(struct accesskit_opt_double, has_value) == 0,
+               "double flag is first");
+_Static_assert(offsetof(struct accesskit_opt_node_id, value) == _Alignof(uint64_t),
+               "NodeId payload alignment");
+_Static_assert(offsetof(struct accesskit_opt_index, value) == _Alignof(size_t),
+               "index payload alignment");
+_Static_assert(offsetof(struct accesskit_opt_double, value) == _Alignof(double),
+               "double payload alignment");
+_Static_assert(sizeof(struct accesskit_opt_node_id) ==
+               offsetof(struct accesskit_opt_node_id, value) + sizeof(uint64_t),
+               "NodeId canonical size");
+_Static_assert(sizeof(struct accesskit_opt_index) ==
+               offsetof(struct accesskit_opt_index, value) + sizeof(size_t),
+               "index canonical size");
+_Static_assert(sizeof(struct accesskit_opt_double) ==
+               offsetof(struct accesskit_opt_double, value) + sizeof(double),
+               "double canonical size");
+_Static_assert(sizeof(double) == sizeof(uint64_t), "binary64 bit oracle");
+
+enum {
+    OPTIONAL_NODE_CASES = 5,
+    OPTIONAL_INDEX_CASES = 5,
+    OPTIONAL_DOUBLE_CASES = 7,
+    OPTIONAL_GETTER_CALLS = 7 * (2 + 4 * OPTIONAL_NODE_CASES) +
+                            9 * (2 + 4 * OPTIONAL_INDEX_CASES) +
+                           11 * (2 + 4 * OPTIONAL_DOUBLE_CASES)
+};
+
+static const accesskit_node_id optional_node_cases[OPTIONAL_NODE_CASES] = {
+    UINT64_C(0), UINT64_C(4242), UINT64_C(0x8000000000000000),
+    UINT64_C(0xfedcba9876543210), UINT64_MAX
+};
+static const size_t optional_index_cases[OPTIONAL_INDEX_CASES] = {
+    0u, 17u, SIZE_MAX / 2u + 1u, SIZE_MAX - 1u, SIZE_MAX
+};
+static const uint64_t optional_double_bits[OPTIONAL_DOUBLE_CASES] = {
+    UINT64_C(0x0000000000000000), /* +0 */
+    UINT64_C(0x8000000000000000), /* -0 */
+    UINT64_C(0xc0934a0000000000), /* -1234.5 */
+    UINT64_C(0x3ff0000000000001), /* finite, low payload bit */
+    UINT64_C(0x7ff0000000000000), /* +infinity */
+    UINT64_C(0xfff0000000000000), /* -infinity */
+    UINT64_C(0x7ff8123456789abc)  /* quiet NaN with payload */
+};
+static const accesskit_node_id optional_control_children[] = {
+    UINT64_C(0x123456789abcdef0), UINT64_C(0xfedcba9876543210)
+};
+
+static uint64_t optional_double_raw_bits(const double *value)
+{
+    uint64_t bits;
+    memcpy(&bits, value, sizeof(bits));
+    return bits;
+}
+
+/* Public readback detects damage to the opaque input, including its allocated
+   properties. It neither knows nor reads the private Node representation. */
+static void check_optional_input(const struct accesskit_node *node)
+{
+    char *label;
+    struct accesskit_node_ids children;
+    struct accesskit_opt_float control;
+    size_t baseline = allocation_state.active;
+    unsigned long before_strings = string_free_calls;
+
+    CHECK(accesskit_node_role(node) == ACCESSKIT_ROLE_WINDOW);
+    CHECK(accesskit_last_error() == ACCESSKIT_ERROR_NONE);
+    label = accesskit_node_label(node);
+    CHECK(accesskit_last_error() == ACCESSKIT_ERROR_NONE);
+    CHECK(label != NULL);
+    if (label != NULL) {
+        CHECK(strcmp(label, "optional ABI input survives") == 0);
+        release_string(label, "optional ABI input label");
+        CHECK(accesskit_last_error() == ACCESSKIT_ERROR_NONE);
+    }
+    CHECK_SIZE("optional label release", string_free_calls - before_strings, 1u);
+    children = accesskit_node_children(node);
+    CHECK(accesskit_last_error() == ACCESSKIT_ERROR_NONE);
+    CHECK(children.length == COUNT(optional_control_children));
+    CHECK(children.values != NULL);
+    if (children.length == COUNT(optional_control_children) && children.values != NULL) {
+        CHECK(children.values[0] == optional_control_children[0]);
+        CHECK(children.values[1] == optional_control_children[1]);
+    }
+    control = accesskit_node_font_weight(node);
+    CHECK(accesskit_last_error() == ACCESSKIT_ERROR_NONE);
+    CHECK(control.has_value == true);
+    CHECK(control.value == 12.5f);
+    CHECK_SIZE("optional input readback allocation balance",
+               allocation_state.active, baseline);
+}
+
+/* Token-pasted calls below really invoke each named C getter directly. The
+   volatile function pointer forces a second, genuinely indirect call. */
+#define CHECK_OPTIONAL_PAIR(type, property, indirect, present, expected, oracle) \
+    do {                                                                       \
+        struct type direct_result = accesskit_node_##property(node);            \
+        struct type indirect_result;                                           \
+        CHECK(accesskit_last_error() == ACCESSKIT_ERROR_NONE);                  \
+        CHECK(direct_result.has_value == (present));                            \
+        CHECK(oracle == (expected));                                            \
+        ++getter_calls;                                                        \
+        check_optional_input(node);                                            \
+        indirect_result = (indirect)(node);                                     \
+        CHECK(accesskit_last_error() == ACCESSKIT_ERROR_NONE);                  \
+        CHECK(indirect_result.has_value == (present));                          \
+        memcpy(&direct_result.value, &indirect_result.value,                     \
+               sizeof(direct_result.value));                                   \
+        CHECK(oracle == (expected));                                            \
+        ++getter_calls;                                                        \
+        check_optional_input(node);                                            \
+    } while (0)
+
+#define CHECK_OPTIONAL_INTEGER(type, property, getter_type, cases)              \
+    do {                                                                       \
+        size_t case_index;                                                     \
+        getter_type volatile indirect = accesskit_node_##property;             \
+        CHECK_OPTIONAL_PAIR(type, property, indirect, false, 0u,                \
+                            direct_result.value);                              \
+        for (case_index = 0; case_index < COUNT(cases); ++case_index) {           \
+            accesskit_node_set_##property(node, (cases)[case_index]);           \
+            CHECK(accesskit_last_error() == ACCESSKIT_ERROR_NONE);              \
+            CHECK_OPTIONAL_PAIR(type, property, indirect, true,                 \
+                                (cases)[case_index], direct_result.value);     \
+            accesskit_node_clear_##property(node);                              \
+            CHECK(accesskit_last_error() == ACCESSKIT_ERROR_NONE);              \
+            CHECK_OPTIONAL_PAIR(type, property, indirect, false, 0u,            \
+                                direct_result.value);                          \
+        }                                                                      \
+    } while (0)
+
+#define CHECK_OPTIONAL_DOUBLE(property)                                        \
+    do {                                                                       \
+        size_t case_index;                                                     \
+        opt_double_get_fn volatile indirect = accesskit_node_##property;       \
+        CHECK_OPTIONAL_PAIR(accesskit_opt_double, property, indirect, false,    \
+                            UINT64_C(0),                                       \
+                            optional_double_raw_bits(&direct_result.value));  \
+        for (case_index = 0; case_index < OPTIONAL_DOUBLE_CASES; ++case_index) { \
+            double value;                                                      \
+            memcpy(&value, &optional_double_bits[case_index], sizeof(value));   \
+            accesskit_node_set_##property(node, value);                         \
+            CHECK(accesskit_last_error() == ACCESSKIT_ERROR_NONE);              \
+            CHECK_OPTIONAL_PAIR(accesskit_opt_double, property, indirect, true, \
+                                optional_double_bits[case_index],              \
+                                optional_double_raw_bits(&direct_result.value)); \
+            accesskit_node_clear_##property(node);                              \
+            CHECK(accesskit_last_error() == ACCESSKIT_ERROR_NONE);              \
+            CHECK_OPTIONAL_PAIR(accesskit_opt_double, property, indirect, false, \
+                                UINT64_C(0),                                   \
+                                optional_double_raw_bits(&direct_result.value)); \
+        }                                                                      \
+    } while (0)
+
+static void check_optional_direct_and_indirect(void)
+{
+    size_t baseline = allocation_state.active;
+    unsigned long before_nodes = node_free_calls;
+    unsigned long getter_calls = 0u;
+    struct accesskit_node *node = accesskit_node_new(ACCESSKIT_ROLE_WINDOW);
+
+    CHECK(accesskit_last_error() == ACCESSKIT_ERROR_NONE);
+    CHECK(node != NULL);
+    if (node == NULL) {
+        return;
+    }
+    accesskit_node_set_label(node, "optional ABI input survives");
+    CHECK(accesskit_last_error() == ACCESSKIT_ERROR_NONE);
+    accesskit_node_set_children(node, COUNT(optional_control_children),
+                               optional_control_children);
+    CHECK(accesskit_last_error() == ACCESSKIT_ERROR_NONE);
+    accesskit_node_set_font_weight(node, 12.5f);
+    CHECK(accesskit_last_error() == ACCESSKIT_ERROR_NONE);
+    check_optional_input(node);
+
+#define CHECK_NODE(property)                                                   \
+    CHECK_OPTIONAL_INTEGER(accesskit_opt_node_id, property, opt_node_id_get_fn, \
+                           optional_node_cases)
+    CHECK_NODE(active_descendant);
+    CHECK_NODE(error_message);
+    CHECK_NODE(in_page_link_target);
+    CHECK_NODE(member_of);
+    CHECK_NODE(next_on_line);
+    CHECK_NODE(popup_for);
+    CHECK_NODE(previous_on_line);
+#undef CHECK_NODE
+
+#define CHECK_INDEX(property)                                                  \
+    CHECK_OPTIONAL_INTEGER(accesskit_opt_index, property, opt_index_get_fn,     \
+                           optional_index_cases)
+    CHECK_INDEX(row_count);
+    CHECK_INDEX(column_count);
+    CHECK_INDEX(row_index);
+    CHECK_INDEX(column_index);
+    CHECK_INDEX(row_span);
+    CHECK_INDEX(column_span);
+    CHECK_INDEX(level);
+    CHECK_INDEX(size_of_set);
+    CHECK_INDEX(position_in_set);
+#undef CHECK_INDEX
+
+    CHECK_OPTIONAL_DOUBLE(scroll_x);
+    CHECK_OPTIONAL_DOUBLE(scroll_x_min);
+    CHECK_OPTIONAL_DOUBLE(scroll_x_max);
+    CHECK_OPTIONAL_DOUBLE(scroll_y);
+    CHECK_OPTIONAL_DOUBLE(scroll_y_min);
+    CHECK_OPTIONAL_DOUBLE(scroll_y_max);
+    CHECK_OPTIONAL_DOUBLE(numeric_value);
+    CHECK_OPTIONAL_DOUBLE(min_numeric_value);
+    CHECK_OPTIONAL_DOUBLE(max_numeric_value);
+    CHECK_OPTIONAL_DOUBLE(numeric_value_step);
+    CHECK_OPTIONAL_DOUBLE(numeric_value_jump);
+    CHECK(getter_calls == OPTIONAL_GETTER_CALLS);
+    ++node_free_calls;
+    accesskit_node_free(node);
+    CHECK(accesskit_last_error() == ACCESSKIT_ERROR_NONE);
+    CHECK_SIZE("optional node release", node_free_calls - before_nodes, 1u);
+    CHECK_SIZE("optional family allocation balance", allocation_state.active, baseline);
+}
+
+#undef CHECK_OPTIONAL_DOUBLE
+#undef CHECK_OPTIONAL_INTEGER
+#undef CHECK_OPTIONAL_PAIR
 
 static const struct accesskit_color sample_color = {0x11u, 0x22u, 0x33u, 0x44u};
 static const struct accesskit_color other_color = {0x55u, 0x66u, 0x77u, 0x88u};
@@ -1787,6 +2018,26 @@ static void check_rect_and_vectors(void)
     CHECK(accesskit_rect_contains(&rect, accesskit_vec2_to_point(
                                            (struct accesskit_vec2){1.0, 1.0})) ==
           true);
+    {
+        struct accesskit_rect bounds = accesskit_rect_new(-10.0, -20.0, 30.0, 40.0);
+        CHECK(accesskit_rect_contains(&bounds,
+                                     (struct accesskit_point){-10.0, -20.0}) == true);
+        CHECK(accesskit_rect_contains(&bounds,
+                                     (struct accesskit_point){29.999, 39.999}) == true);
+        CHECK(accesskit_rect_contains(&bounds,
+                                     (struct accesskit_point){30.0, 40.0}) == false);
+        CHECK(accesskit_rect_contains(&bounds,
+                                     (struct accesskit_point){30.0, 0.0}) == false);
+        CHECK(accesskit_rect_contains(&bounds,
+                                     (struct accesskit_point){0.0, 40.0}) == false);
+    }
+    {
+        struct accesskit_rect empty = accesskit_rect_new(5.0, 7.0, 5.0, 7.0);
+        struct accesskit_point empty_origin = accesskit_rect_origin(&empty);
+        CHECK(empty_origin.x == 5.0);
+        CHECK(empty_origin.y == 7.0);
+        CHECK(accesskit_rect_contains(&empty, empty_origin) == false);
+    }
 
     unioned = accesskit_rect_union(&rect, hit);
     CHECK(unioned.x0 == 0.0);
@@ -1843,6 +2094,16 @@ static void check_rect_and_vectors(void)
     mapped = accesskit_affine_map_unit_square(rect);
     inverse = accesskit_affine_inverse(scaled);
     CHECK(accesskit_affine_determinant(inverse) == 0.25);
+    {
+        struct accesskit_affine zero = {{0.0, 0.0, 0.0, 0.0, 0.0, 0.0}};
+        inverse = accesskit_affine_inverse(zero);
+        CHECK(isnan(inverse._0[0]));
+        CHECK(isnan(inverse._0[1]));
+        CHECK(isnan(inverse._0[2]));
+        CHECK(isnan(inverse._0[3]));
+        CHECK(isnan(inverse._0[4]));
+        CHECK(isnan(inverse._0[5]));
+    }
     product = accesskit_affine_mul(scaled, flip_x);
     CHECK(accesskit_affine_determinant(product) == -4.0);
     {
@@ -2365,6 +2626,7 @@ int main(void)
     check_opt_double();
     check_opt_float();
     check_opt_index();
+    check_optional_direct_and_indirect();
     check_opt_color();
     check_opt_text_decoration();
     check_opt_bool();

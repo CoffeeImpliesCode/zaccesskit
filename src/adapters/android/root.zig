@@ -9,8 +9,8 @@
 //! |---|---|---|
 //! | `constants.zig` | `AK/android/src/util.rs:14-68` | the 43 Android SDK constant names |
 //! | `values.zig` | the same lines | the 38 integers behind those names |
-//! | `classes.zig` | throughout | the 20 class descriptors of map section 1.4.3 |
-//! | `methods.zig` | the eight files | the 68 Java method names and the 27 lookups |
+//! | `classes.zig` | throughout | the 21 documented class descriptors |
+//! | `methods.zig` | the eight files | the 68 Java method names and the 38 lookup rows |
 //! | `jni.zig` | `inject.rs:14-23`, `:99` | 13 `JNIEnv` methods, 6 handle types, 4 scalars |
 //! | `jni_table.zig` | `inject.rs:14-23` | the 24 injectable JNI entry points |
 //! | `java_call.zig` | throughout | the checked lookup and call helpers |
@@ -217,14 +217,19 @@ pub fn androidPlatformActionFree(
 ///
 /// **The adapter must outlive this call**, which is the borrow rule the header
 /// states and the queue's `adapter` field exists for.
+/// Delivery failures retain exact tags in the adapter and the C diagnostic slot.
 pub fn androidQueuedEventsRaise(
     events: *AndroidQueuedEvents,
     env: JniEnv,
     host: JObject,
 ) void {
-    _ = events.raise(jni_table_module.realTable(env), host);
-    events.deinit();
-    allocation.release(@ptrCast(@alignCast(events)));
+    defer allocation.release(@ptrCast(@alignCast(events)));
+    defer events.deinit();
+    const report = events.raise(jni_table_module.realTable(env), host);
+    if (report.failure) |err| {
+        events.adapter.last_error = err;
+        allocation.failWithError(err);
+    }
 }
 
 /// Returns an Android adapter, or `null` when the allocation failed.
@@ -239,7 +244,7 @@ pub fn androidQueuedEventsRaise(
 pub fn androidAdapterNew() ?*AndroidAdapter {
     const gpa = allocation.allocator();
     return AndroidAdapter.create(gpa) catch |err| {
-        noteAllocationFailure(err);
+        allocation.failWithError(err);
         return null;
     };
 }
@@ -278,7 +283,7 @@ pub fn androidAdapterUpdateIfActive(
 ) ?*AndroidQueuedEvents {
     const produced = adapter.updateIfActive(update_factory, update_factory_userdata) catch |err| {
         adapter.last_error = err;
-        noteAllocationFailure(err);
+        allocation.failWithError(err);
         return null;
     };
     const events = produced orelse return null;
@@ -313,7 +318,7 @@ pub fn androidAdapterCreateAccessibilityNodeInfo(
         virtual_view_id,
     ) catch |err| {
         adapter.last_error = err;
-        noteAllocationFailure(err);
+        allocation.failWithError(err);
         return null;
     };
     return answer orelse null;
@@ -346,7 +351,7 @@ pub fn androidAdapterFindFocus(
         host,
     ) catch |err| {
         adapter.last_error = err;
-        noteAllocationFailure(err);
+        allocation.failWithError(err);
         return null;
     };
     return answer orelse null;
@@ -379,7 +384,7 @@ pub fn androidAdapterPerformAction(
         action.decoded().*,
     ) catch |err| {
         adapter.last_error = err;
-        noteAllocationFailure(err);
+        allocation.failWithError(err);
         return null;
     };
     const events = produced orelse return null;
@@ -409,7 +414,7 @@ pub fn androidAdapterOnHoverEvent(
         y,
     ) catch |err| {
         adapter.last_error = err;
-        noteAllocationFailure(err);
+        allocation.failWithError(err);
         return null;
     };
     const events = produced orelse return null;
@@ -447,7 +452,7 @@ pub fn androidInjectingAdapterNew(
         action_handler,
         action_handler_userdata,
     ) catch |err| {
-        noteAllocationFailure(err);
+        allocation.failWithError(err);
         return null;
     };
 }
@@ -492,25 +497,15 @@ pub fn androidInjectingAdapterUpdateIfActive(
 /// `error.OutOfMemory` is reported to `accesskit_last_error` here, because this
 /// is the last point where the C caller can still read it.
 fn boxEvents(events: AndroidQueuedEvents) ?*AndroidQueuedEvents {
-    const block = allocation.create(AndroidQueuedEvents) catch {
+    const block = allocation.create(AndroidQueuedEvents) catch |err| {
+        events.adapter.last_error = err;
         var owned = events;
         owned.deinit();
-        allocation.failWith(.out_of_memory);
+        allocation.failWithError(err);
         return null;
     };
     block.* = events;
     return block;
-}
-
-/// Records `ACCESSKIT_ERROR_OUT_OF_MEMORY` when the failure really was one.
-///
-/// `include/zaccesskit.h:5766-5767` promises `null` only for a failed
-/// allocation, so every other failure leaves the slot clear. A JNI lookup that
-/// fails and a tree the consumer half rejected are both ordinary answers to this
-/// surface, and reporting them as a failed allocation would tell a C consumer to
-/// retry something that cannot succeed.
-fn noteAllocationFailure(err: anyerror) void {
-    if (err == error.OutOfMemory) allocation.failWith(.out_of_memory);
 }
 
 /// How many declarations this file owns, which is the figure
@@ -540,13 +535,13 @@ pub const entry_point_names = [entry_point_count][:0]const u8{
 
 /// Every module of the boundary, re-exported so a caller reaches one namespace.
 pub const modules = struct {
-    /// The 20 Java class descriptors.
+    /// The 21 documented Java class descriptors.
     pub const classes = classes_module;
     /// The 43 Android SDK constant names.
     pub const constants = constants_module;
     /// The `JNIEnv` and `JavaVM` entry points, handle types and scalars.
     pub const jni = jni_census;
-    /// The 68 Java method names and the 27 lookups.
+    /// The 68 Java method names and the 38 lookup rows.
     pub const methods = methods_module;
     /// The 24 injectable JNI entry points.
     pub const jni_table = jni_table_module;
@@ -574,8 +569,8 @@ comptime {
         @compileError("the map gives 43 integer constants");
     }
     if (methods_module.method_name_count != 68) @compileError("the map gives 68 method names");
-    if (classes_module.descriptor_count != 20) {
-        @compileError("the map's table lists 20 descriptors");
+    if (classes_module.descriptor_count != 21) {
+        @compileError("the documented Android delivery surface has 21 descriptors");
     }
     if (jni_census.jni_env_method_count != 13) {
         @compileError("the map gives 13 JNIEnv entry points");
@@ -583,10 +578,10 @@ comptime {
     if (jni_census.handle_type_count + jni_census.scalar_type_count != 10) {
         @compileError("the map gives 10 handle and scalar types");
     }
-    if (methods_module.method_name_count - methods_module.pinned_signature_count !=
+    if (methods_module.method_name_count - methods_module.pinned_name_count !=
         methods_module.unpinned_name_count)
     {
-        @compileError("the unpinned count must be 68 minus 22");
+        @compileError("unpinned method names must exclude documented method names");
     }
 
     // The two figures the census above does not cover. `src/capi/platform.zig`
@@ -758,16 +753,16 @@ test "every module of the boundary is reachable" {
     testing.refAllDecls(modules.injecting);
 }
 
-test "the census holds the figures the map measured" {
+test "the census retains historical map counts and documented delivery descriptors" {
     try testing.expectEqual(@as(usize, 43), constants_module.constant_count);
     try testing.expectEqual(@as(usize, 68), methods_module.method_name_count);
-    try testing.expectEqual(@as(usize, 20), classes_module.descriptor_count);
+    try testing.expectEqual(@as(usize, 21), classes_module.descriptor_count);
     try testing.expectEqual(@as(usize, 19), classes_module.map_descriptor_count);
     try testing.expectEqual(@as(usize, 13), jni_census.jni_env_method_count);
     try testing.expectEqual(@as(usize, 5), registeredNativeCount());
 }
 
-test "22 of the 68 method names have a lookup row and 46 do not" {
+test "documented lookup rows cover 33 of the 68 method names" {
     // The walk is over the 68 rows of `methods_module.method_names`, so the bound
     // is `methods_module.method_name_count`.
     var covered: usize = 0;
@@ -775,7 +770,7 @@ test "22 of the 68 method names have a lookup row and 46 do not" {
         if (methods_module.findByName(name) != null) covered += 1;
     }
     try testing.expectEqual(methods_module.pinned_name_count, covered);
-    try testing.expectEqual(@as(usize, 22), covered);
+    try testing.expectEqual(@as(usize, 33), covered);
     try testing.expectEqual(
         methods_module.unpinned_name_count,
         methods_module.method_name_count - covered,
@@ -872,26 +867,65 @@ test "a factory that answers null is a contract violation, not an inactive tree"
     try testing.expectEqual(adapter_module.Error.NullTreeUpdate, active.adapter.last_error.?);
     // The header promises `null` for an inactive adapter, and this is not one.
     try testing.expect(active.adapter.isActive());
-    // A contract violation is not an allocation failure, so the slot stays clear
-    // and a C consumer is not told to retry something that cannot succeed.
-    try testing.expectEqual(allocation.Tag.none, allocation.lastError());
+    // The C category distinguishes rejection from allocation failure, while the
+    // diagnostic name preserves the exact factory contract violation.
+    try testing.expectEqual(allocation.Tag.operation_failed, allocation.lastError());
+    try testing.expectEqualStrings("NullTreeUpdate", std.mem.span(allocation.lastErrorName().?));
 }
 
-test "an update that raises nothing still answers a releasable handle" {
+test "public C update clears previous diagnostics and empty queue cleanup clears a later failure" {
+    // Standalone filtered tests must analyze the real C export module too.
+    comptime {
+        _ = @import("../../capi/platform.zig");
+    }
+    const public_update = @extern(
+        *const fn (
+            *AndroidAdapter,
+            TreeUpdateFactory,
+            ?*anyopaque,
+        ) callconv(.c) ?*AndroidQueuedEvents,
+        .{ .name = "accesskit_android_adapter_update_if_active" },
+    );
+    const public_raise = @extern(
+        *const fn (*AndroidQueuedEvents, JniEnv, JObject) callconv(.c) void,
+        .{ .name = "accesskit_android_queued_events_raise" },
+    );
     const gpa = allocation.allocator();
     allocation.clearError();
     var active = try ActiveAdapter.init(gpa);
     defer active.deinit();
+    // The fixture's null JNI node-info failure may have populated the C error
+    // slot. The actual C wrapper, not the implementation helper, resets each call.
 
     // The first update produced the activation events; a second one against the
     // same tree commits with nothing to report and still answers a handle.
-    const events = androidAdapterUpdateIfActive(
+    const events = public_update(
         active.adapter,
         probedFactory,
         &active.probe,
     ) orelse return error.NoEventsRaised;
-    androidQueuedEventsRaise(events, null, null);
+    const update_error = allocation.lastError();
+    const update_has_no_error_name = allocation.lastErrorName() == null;
+    // A real rejected factory leaves an error for raise to reset independently.
+    // Rejection does not commit a tree update, so the held empty queue stays valid.
+    var rejected_probe: Probe = .{ .gpa = gpa };
+    const rejected_events = public_update(active.adapter, probedFactory, &rejected_probe);
+    const rejection_error = allocation.lastError();
+    const rejection_has_expected_name = if (allocation.lastErrorName()) |name|
+        std.mem.eql(u8, std.mem.span(name), "NullTreeUpdate")
+    else
+        false;
+    const rejection_was_null = rejected_events == null;
+    if (rejected_events) |unexpected_events| public_raise(unexpected_events, null, null);
+    public_raise(events, null, null);
+    // Release the handle before asserting either public call's error state.
+    try testing.expectEqual(allocation.Tag.none, update_error);
+    try testing.expect(update_has_no_error_name);
+    try testing.expect(rejection_was_null);
+    try testing.expectEqual(allocation.Tag.operation_failed, rejection_error);
+    try testing.expect(rejection_has_expected_name);
     try testing.expectEqual(allocation.Tag.none, allocation.lastError());
+    try testing.expect(allocation.lastErrorName() == null);
 }
 
 test "an action on an inactive adapter answers null and raises nothing" {
@@ -908,27 +942,75 @@ test "an action on an inactive adapter answers null and raises nothing" {
     try testing.expectEqual(allocation.Tag.none, allocation.lastError());
 }
 
-test "an action on an active adapter with no such node answers an empty queue" {
+test "public C action clears previous diagnostics and empty queue cleanup clears a later failure" {
+    // Standalone filtered tests must analyze the real C export module too.
+    comptime {
+        _ = @import("../../capi/platform.zig");
+    }
+    const public_action = @extern(
+        *const fn (
+            *AndroidAdapter,
+            boundary.ActionHandler,
+            ?*anyopaque,
+            JInt,
+            *const AndroidPlatformAction,
+        ) callconv(.c) ?*AndroidQueuedEvents,
+        .{ .name = "accesskit_android_adapter_perform_action" },
+    );
+    const public_update = @extern(
+        *const fn (
+            *AndroidAdapter,
+            TreeUpdateFactory,
+            ?*anyopaque,
+        ) callconv(.c) ?*AndroidQueuedEvents,
+        .{ .name = "accesskit_android_adapter_update_if_active" },
+    );
+    const public_raise = @extern(
+        *const fn (*AndroidQueuedEvents, JniEnv, JObject) callconv(.c) void,
+        .{ .name = "accesskit_android_queued_events_raise" },
+    );
     // An id the map never minted is not an inactive adapter, so the answer is a
     // handle rather than `null`, and that handle raises nothing.
     const gpa = allocation.allocator();
     allocation.clearError();
     var active = try ActiveAdapter.init(gpa);
     defer active.deinit();
+    // The fixture's null JNI node-info failure may have populated the C error
+    // slot. The actual C wrapper, not the implementation helper, resets each call.
 
     const action = androidPlatformActionFromJava(null, values_module.ACTION_CLICK, null) orelse
         return error.NoActionBuilt;
     defer androidPlatformActionFree(action);
 
-    const events = androidAdapterPerformAction(
+    const events = public_action(
         active.adapter,
         unusedAction,
         null,
         99,
         action,
     ) orelse return error.NoQueueBuilt;
-    androidQueuedEventsRaise(events, null, null);
+    const action_error = allocation.lastError();
+    const action_has_no_error_name = allocation.lastErrorName() == null;
+    // A real rejected factory leaves an error for raise to reset independently.
+    // Rejection does not commit a tree update, so the held empty queue stays valid.
+    var rejected_probe: Probe = .{ .gpa = gpa };
+    const rejected_events = public_update(active.adapter, probedFactory, &rejected_probe);
+    const rejection_error = allocation.lastError();
+    const rejection_has_expected_name = if (allocation.lastErrorName()) |name|
+        std.mem.eql(u8, std.mem.span(name), "NullTreeUpdate")
+    else
+        false;
+    const rejection_was_null = rejected_events == null;
+    if (rejected_events) |unexpected_events| public_raise(unexpected_events, null, null);
+    public_raise(events, null, null);
+    // Release the handle before asserting either public call's error state.
+    try testing.expectEqual(allocation.Tag.none, action_error);
+    try testing.expect(action_has_no_error_name);
+    try testing.expect(rejection_was_null);
+    try testing.expectEqual(allocation.Tag.operation_failed, rejection_error);
+    try testing.expect(rejection_has_expected_name);
     try testing.expectEqual(allocation.Tag.none, allocation.lastError());
+    try testing.expect(allocation.lastErrorName() == null);
 }
 
 test "an action on the tree root reaches the application" {
@@ -1079,15 +1161,21 @@ test "every failure an adapter call can report is named" {
     const adapter_errors = @typeInfo(adapter_module.Error).error_set.?;
     var seen_null_update = false;
     var seen_tree_rejected = false;
-    var seen_queue_failure = false;
+    var seen_narrow_failure = false;
+    var seen_filter_failure = false;
+    var seen_allocation_failure = false;
     for (adapter_errors) |tag| {
         if (std.mem.eql(u8, tag.name, "NullTreeUpdate")) seen_null_update = true;
         if (std.mem.eql(u8, tag.name, "TreeRejected")) seen_tree_rejected = true;
-        if (std.mem.eql(u8, tag.name, "TreeEventQueueFailed")) seen_queue_failure = true;
+        if (std.mem.eql(u8, tag.name, "OutOfRange")) seen_narrow_failure = true;
+        if (std.mem.eql(u8, tag.name, "TreeCycle")) seen_filter_failure = true;
+        if (std.mem.eql(u8, tag.name, "OutOfMemory")) seen_allocation_failure = true;
     }
     try testing.expect(seen_null_update);
     try testing.expect(seen_tree_rejected);
-    try testing.expect(seen_queue_failure);
+    try testing.expect(seen_narrow_failure);
+    try testing.expect(seen_filter_failure);
+    try testing.expect(seen_allocation_failure);
 }
 
 test "the five injecting natives agree with what methods.zig records" {
@@ -1100,12 +1188,326 @@ test "the five injecting natives agree with what methods.zig records" {
     try testing.expectEqual(@as(usize, 5), registeredNativeCount());
 }
 
-/// How many of the 27 lookup rows are registered native methods. The walk is
-/// over the 27 rows, so the bound is `methods_module.method_id_count`.
+/// Counts native registrations within the `method_id_count` lookup rows.
 fn registeredNativeCount() usize {
     var total: usize = 0;
     for (methods_module.method_ids) |row| {
         if (row.kind == .registered_native) total += 1;
     }
     return total;
+}
+
+// The raw slot array drives the C-facing raise through realTable, not a VM.
+const RaiseConsumerFixture = struct {
+    slots: [jni_table_module.jni_slot_count]?*const anyopaque =
+        .{null} ** jni_table_module.jni_slot_count,
+    enabled: bool = true,
+    failure: ?java_call_module.CallError = null,
+    detached: bool = false,
+    parent_failure: ?java_call_module.CallError = null,
+    string_throws: bool = false,
+    pending_exception: bool = false,
+    parent_calls: usize = 0,
+    acquired: usize = 0,
+    released: usize = 0,
+    live_refs: [64]JObject = @splat(null),
+    sends: usize = 0,
+    refuse_alloc: bool = false,
+    allocs: usize = 0,
+    frees: usize = 0,
+    used: usize = 0,
+    store: [4096]u8 align(16) = undefined,
+
+    fn prepare(self: *RaiseConsumerFixture) JniEnv {
+        self.slots[0] = self;
+        self.slots[jni_table_module.slotOf("FindClass")] = @ptrCast(&findClass);
+        self.slots[jni_table_module.slotOf("GetMethodID")] = @ptrCast(&methodId);
+        self.slots[jni_table_module.slotOf("GetStaticMethodID")] = @ptrCast(&methodId);
+        self.slots[jni_table_module.slotOf("CallObjectMethodA")] = @ptrCast(&object);
+        self.slots[jni_table_module.slotOf("CallStaticObjectMethodA")] = @ptrCast(&object);
+        self.slots[jni_table_module.slotOf("CallBooleanMethodA")] = @ptrCast(&boolean);
+        self.slots[jni_table_module.slotOf("CallVoidMethodA")] = @ptrCast(&voidCall);
+        self.slots[jni_table_module.slotOf("NewString")] = @ptrCast(&newString);
+        self.slots[jni_table_module.slotOf("ExceptionCheck")] = @ptrCast(&exception);
+        self.slots[jni_table_module.slotOf("DeleteLocalRef")] = @ptrCast(&deleteLocal);
+        return @ptrCast(&self.slots);
+    }
+
+    fn of(env: JniEnv) *RaiseConsumerFixture {
+        const slots: [*]const ?*const anyopaque = @ptrCast(@alignCast(env.?));
+        return @ptrCast(@alignCast(@constCast(slots[0].?)));
+    }
+
+    fn findClass(env: JniEnv, _: [*c]const u8) callconv(.c) JObject {
+        if (of(env).failure) |cause| {
+            if (cause == error.JavaMemberMissing) return null;
+        }
+        return of(env).acquire();
+    }
+
+    fn methodId(
+        env: JniEnv,
+        _: JObject,
+        name: [*c]const u8,
+        _: [*c]const u8,
+    ) callconv(.c) jni_table_module.JMethodId {
+        const terminated: [*:0]const u8 = @ptrCast(name);
+        const method = std.mem.span(terminated);
+        if (std.mem.eql(u8, method, "getParent")) {
+            if (of(env).parent_failure) |cause| {
+                if (cause == error.JavaException) of(env).pending_exception = true;
+                return null;
+            }
+            return @ptrFromInt(0x7013);
+        }
+        if (std.mem.eql(u8, method, "isEnabled")) return @ptrFromInt(0x7010);
+        if (std.mem.eql(u8, method, "requestSendAccessibilityEvent")) {
+            return @ptrFromInt(0x7011);
+        }
+        return @ptrFromInt(0x7012);
+    }
+
+    fn object(
+        env: JniEnv,
+        _: JObject,
+        method: jni_table_module.JMethodId,
+        _: [*c]const jni_table_module.JValue,
+    ) callconv(.c) JObject {
+        const self = of(env);
+        if (@intFromPtr(method) == 0x7013) {
+            self.parent_calls += 1;
+            if (self.detached) return null;
+        }
+        return self.acquire();
+    }
+
+    fn boolean(
+        env: JniEnv,
+        _: JObject,
+        method: jni_table_module.JMethodId,
+        _: [*c]const jni_table_module.JValue,
+    ) callconv(.c) jni_table_module.JBoolean {
+        const self = of(env);
+        if (@intFromPtr(method) == 0x7011) {
+            self.sends += 1;
+            return 1;
+        }
+        return @intFromBool(self.enabled);
+    }
+
+    fn voidCall(
+        env: JniEnv,
+        _: JObject,
+        method: jni_table_module.JMethodId,
+        _: [*c]const jni_table_module.JValue,
+    ) callconv(.c) void {
+        if (@intFromPtr(method) == 0x7011) of(env).sends += 1;
+    }
+
+    fn newString(
+        env: JniEnv,
+        _: [*c]const u16,
+        _: jni_table_module.JSize,
+    ) callconv(.c) JObject {
+        if (of(env).failure) |cause| {
+            if (cause == error.OutOfMemory) return null;
+        }
+        if (of(env).string_throws) {
+            of(env).pending_exception = true;
+            return null;
+        }
+        return of(env).acquire();
+    }
+
+    fn exception(env: JniEnv) callconv(.c) jni_table_module.JBoolean {
+        if (of(env).pending_exception) return 1;
+        if (of(env).failure) |cause| return @intFromBool(cause == error.JavaException);
+        return 0;
+    }
+
+    fn acquire(self: *RaiseConsumerFixture) JObject {
+        std.debug.assert(self.acquired < self.live_refs.len);
+        const result: JObject = @ptrFromInt(0x7100 + self.acquired);
+        self.live_refs[self.acquired] = result;
+        self.acquired += 1;
+        return result;
+    }
+
+    fn deleteLocal(env: JniEnv, reference: JObject) callconv(.c) void {
+        const self = of(env);
+        for (self.live_refs[0..self.acquired]) |*live| {
+            if (live.* == reference and reference != null) {
+                live.* = null;
+                self.released += 1;
+                return;
+            }
+        }
+        @panic("local reference released twice or never acquired");
+    }
+
+    fn alloc(size: usize, context: ?*anyopaque) callconv(.c) ?*anyopaque {
+        const self: *RaiseConsumerFixture = @ptrCast(@alignCast(context.?));
+        if (self.refuse_alloc) return null;
+        const start = std.mem.alignForward(usize, self.used, 16);
+        if (size > self.store.len -| start) return null;
+        self.used = start + size;
+        self.allocs += 1;
+        return self.store[start..][0..size].ptr;
+    }
+
+    fn free(_: ?*anyopaque, context: ?*anyopaque) callconv(.c) void {
+        const self: *RaiseConsumerFixture = @ptrCast(@alignCast(context.?));
+        self.frees += 1;
+    }
+};
+
+test "root raise consumes its boxed queue once on enabled disabled and exact failures" {
+    // Queue storage is leak-checked; only its C box uses the counted pair.
+    const cases = [_]struct {
+        enabled: bool = true,
+        failure: ?java_call_module.CallError = null,
+        sends: usize = 0,
+    }{
+        .{ .sends = 1 },
+        .{ .enabled = false },
+        .{ .failure = error.JavaMemberMissing },
+        .{ .failure = error.OutOfMemory },
+        .{ .failure = error.JavaException },
+    };
+    for (cases) |case| {
+        var adapter = try AndroidAdapter.init(testing.allocator);
+        defer adapter.deinit();
+        var queue = AndroidQueuedEvents.init(testing.allocator, &adapter);
+        try queue.append(.simple(values_module.EVENT_VIEW_CLICKED, null));
+        var fixture: RaiseConsumerFixture = .{
+            .enabled = case.enabled,
+            .failure = case.failure,
+        };
+        const env = fixture.prepare();
+        allocation.installAllocator(RaiseConsumerFixture.alloc, RaiseConsumerFixture.free, &fixture);
+        defer allocation.installAllocator(null, null, null);
+        const boxed = boxEvents(queue) orelse return error.NoQueueBuilt;
+        androidQueuedEventsRaise(boxed, env, @ptrFromInt(0x7003));
+        if (case.failure) |failure| {
+            try testing.expectEqual(@as(adapter_module.Error, failure), adapter.last_error.?);
+        } else {
+            try testing.expect(adapter.last_error == null);
+        }
+        try testing.expectEqual(case.sends, fixture.sends);
+        try testing.expectEqual(@as(usize, 1), fixture.allocs);
+        try testing.expectEqual(@as(usize, 1), fixture.frees);
+    }
+}
+
+test "detached parent public C raise skips null but latches exact lookup failures" {
+    comptime {
+        _ = @import("../../capi/platform.zig");
+    }
+    const public_raise = @extern(
+        *const fn (*AndroidQueuedEvents, JniEnv, JObject) callconv(.c) void,
+        .{ .name = "accesskit_android_queued_events_raise" },
+    );
+    const cases = [_]?java_call_module.CallError{
+        null, error.JavaMemberMissing, error.JavaException,
+    };
+    for (cases) |failure| {
+        var adapter = try AndroidAdapter.init(testing.allocator);
+        defer adapter.deinit();
+        var queue = AndroidQueuedEvents.init(testing.allocator, &adapter);
+        try queue.append(.simple(values_module.EVENT_VIEW_CLICKED, null));
+        try queue.append(.contentChanged(null, values_module.CONTENT_CHANGE_TYPE_SUBTREE));
+        var fixture: RaiseConsumerFixture = .{
+            .detached = true,
+            .parent_failure = failure,
+        };
+        const env = fixture.prepare();
+        allocation.installAllocator(RaiseConsumerFixture.alloc, RaiseConsumerFixture.free, &fixture);
+        defer allocation.installAllocator(null, null, null);
+        defer allocation.clearError();
+        const boxed = boxEvents(queue) orelse return error.NoQueueBuilt;
+        allocation.failWithError(error.OutOfMemory);
+        public_raise(boxed, env, @ptrFromInt(0x7003));
+        try testing.expectEqual(@as(usize, 0), fixture.sends);
+        try testing.expectEqual(@as(usize, 1), fixture.frees);
+        try testing.expectEqual(fixture.acquired, fixture.released);
+        if (failure) |cause| {
+            try testing.expectEqual(@as(adapter_module.Error, cause), adapter.last_error.?);
+            try testing.expectEqual(allocation.Tag.operation_failed, allocation.lastError());
+            try testing.expectEqualStrings(@errorName(cause), std.mem.span(allocation.lastErrorName().?));
+        } else {
+            try testing.expect(adapter.last_error == null);
+            try testing.expectEqual(allocation.Tag.none, allocation.lastError());
+            try testing.expect(allocation.lastErrorName() == null);
+            try testing.expectEqual(@as(usize, 1), fixture.parent_calls);
+        }
+    }
+}
+
+test "public C raise reports actual accessibility string JavaException and frees queue once" {
+    comptime {
+        _ = @import("../../capi/platform.zig");
+    }
+    const public_raise = @extern(
+        *const fn (*AndroidQueuedEvents, JniEnv, JObject) callconv(.c) void,
+        .{ .name = "accesskit_android_queued_events_raise" },
+    );
+    var adapter = try AndroidAdapter.init(testing.allocator);
+    defer adapter.deinit();
+    var queue = AndroidQueuedEvents.init(testing.allocator, &adapter);
+    try queue.append(.simple(values_module.EVENT_VIEW_CLICKED, null));
+    var fixture: RaiseConsumerFixture = .{ .string_throws = true };
+    const env = fixture.prepare();
+    allocation.installAllocator(RaiseConsumerFixture.alloc, RaiseConsumerFixture.free, &fixture);
+    defer allocation.installAllocator(null, null, null);
+    defer allocation.clearError();
+    const boxed = boxEvents(queue) orelse return error.NoQueueBuilt;
+    public_raise(boxed, env, @ptrFromInt(0x7003));
+    try testing.expectEqual(@as(adapter_module.Error, error.JavaException), adapter.last_error.?);
+    try testing.expectEqual(allocation.Tag.operation_failed, allocation.lastError());
+    try testing.expectEqualStrings("JavaException", std.mem.span(allocation.lastErrorName().?));
+    try testing.expectEqual(@as(usize, 0), fixture.sends);
+    try testing.expectEqual(@as(usize, 0), fixture.parent_calls);
+    try testing.expect(fixture.pending_exception);
+    try testing.expectEqual(fixture.acquired, fixture.released);
+    try testing.expectEqual(@as(usize, 1), fixture.allocs);
+    try testing.expectEqual(@as(usize, 1), fixture.frees);
+}
+
+test "injecting update retains the exact factory error in its owning adapter" {
+    var active = try ActiveAdapter.init(testing.allocator);
+    defer active.deinit();
+    var target: AndroidInjectingAdapter = .{
+        .gpa = testing.allocator,
+        .inner = active.adapter,
+        .env = null,
+        .host = @ptrFromInt(0x7003),
+        .runnable = null,
+        .delegate = null,
+        .activation_handler = probedActivation,
+        .activation_handler_userdata = &active.probe,
+        .action_handler = unusedAction,
+        .action_handler_userdata = null,
+        .pending_events = .empty,
+    };
+    defer target.pending_events.deinit(testing.allocator);
+    var probe: Probe = .{ .gpa = testing.allocator };
+    target.updateIfActive(probedFactory, &probe);
+    try testing.expectEqual(@as(usize, 1), probe.calls);
+    try testing.expectEqual(adapter_module.Error.NullTreeUpdate, active.adapter.last_error.?);
+    try testing.expectEqual(@as(usize, 0), target.pending_events.items.len);
+}
+
+test "root boxing failure releases the unboxed queue and retains OutOfMemory" {
+    var adapter = try AndroidAdapter.init(testing.allocator);
+    defer adapter.deinit();
+    var queue = AndroidQueuedEvents.init(testing.allocator, &adapter);
+    try queue.append(.simple(values_module.EVENT_VIEW_CLICKED, null));
+    var fixture: RaiseConsumerFixture = .{ .refuse_alloc = true };
+    allocation.installAllocator(RaiseConsumerFixture.alloc, RaiseConsumerFixture.free, &fixture);
+    defer allocation.installAllocator(null, null, null);
+    defer allocation.clearError();
+    try testing.expect(boxEvents(queue) == null);
+    try testing.expectEqual(adapter_module.Error.OutOfMemory, adapter.last_error.?);
+    try testing.expectEqual(allocation.Tag.out_of_memory, allocation.lastError());
+    try testing.expectEqual(@as(usize, 0), fixture.frees);
 }
