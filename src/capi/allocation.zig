@@ -2,29 +2,25 @@
 //!
 //! **What this module is for.** It owns the only two pieces of mutable state
 //! the C surface needs: the allocator every exported function allocates
-//! through, and the failure tag a call that cannot report a failure through its
-//! return value writes for `accesskit_last_error`. Nothing else in the C ABI
-//! holds state.
+//! through, and the failure category and exact name that a call writes for
+//! `accesskit_last_error` and `accesskit_last_error_name`. Both diagnostics belong
+//! to the calling thread.
 //!
-//! **The allocator contract, in two sentences.** Every allocation the library
-//! hands to C comes from the one declared allocator, which is the C allocator
-//! until `accesskit_set_allocator` installs a pair, and every such allocation
-//! goes back through `release` and never through `free`. A `release` of
-//! `null`, of a pointer this library never returned, or of a pointer this
-//! library already released is refused, and a refused `release` terminates the
-//! process rather than corrupting the heap.
+//! **The allocator contract.** Every allocation the library hands to C comes
+//! from the declared allocator. The matching public free releases it through
+//! that allocator, never through the host's `free`. Head-tracked blocks from
+//! `create` use `release`. Raw allocator blocks, including action requests and
+//! their strings, use the allocator's teardown. A refused `release` terminates
+//! the process rather than corrupting the heap.
 //!
-//! **The error-slot lifetime, in two sentences.** The tag belongs to one
-//! thread, because `include/zaccesskit.h:121` fixes it that way: it is the tag
-//! of the most recent call on the calling thread. It is valid only until the
-//! next call on that thread, so a C consumer reads it immediately after the
-//! call that failed and before it makes another call.
+//! **The error-slot lifetime.** The category and name describe the most recent
+//! call on the calling thread. Read both before the next non-diagnostic call.
+//! The two diagnostic getters do not clear the slot. Names use static,
+//! NUL-terminated storage and must not be released.
 //!
-//! **Which exports this module contributes.** It has no `export fn`. The three
-//! C symbols that reach it, `accesskit_set_allocator` at
-//! `include/zaccesskit.h:6472`, `accesskit_last_error` at `:6484`, and each of
-//! the 17 `*_free` functions, are thin forwarders declared in `capi/root.zig`,
-//! which owns every other `export fn` in this library.
+//! **Which exports this module contributes.** It has no `export fn`.
+//! `capi/root.zig` owns `accesskit_set_allocator`, `accesskit_last_error`, and
+//! `accesskit_last_error_name`. Each owning module declares its public frees.
 //!
 //! **What this module deliberately does not do.** It does not declare the C
 //! types a `*_free` owns, and it does not decide which nested blocks one of
@@ -79,6 +75,9 @@ pub const Tag = enum(c_int) {
     /// The call that just returned failed to allocate. Nothing it would have
     /// produced survives.
     out_of_memory = 1,
+
+    /// A non-allocation operation failed. The exact cause is in `lastErrorName`.
+    operation_failed = 2,
 };
 
 /// Why `release` refused a pointer.
@@ -212,12 +211,13 @@ const Head = struct {
     bytes: usize,
 };
 
-/// The tag of the most recent call on the calling thread.
-///
-/// One thread-local variable, not a plain global: `include/zaccesskit.h:121`
-/// scopes the tag to the calling thread, and a plain global is wrong the moment
-/// the library is called from two threads.
-threadlocal var slot: Tag = .none;
+/// One complete diagnostic for the most recent call on this thread.
+const ErrorSlot = struct {
+    tag: Tag = .none,
+    name: ?[*:0]const u8 = null,
+};
+
+threadlocal var slot: ErrorSlot = .{};
 
 /// The installed pair, or `null` while the C allocator is declared.
 ///
@@ -235,23 +235,56 @@ const Pair = struct {
 
 /// The tag of the most recent call on this thread.
 ///
-/// The value belongs to the call that just returned and nothing older, because
-/// every entry point clears the slot on entry.
+/// Diagnostic getters do not clear the slot. Other entry points clear it on entry.
 pub fn lastError() Tag {
-    return slot;
+    return slot.tag;
 }
 
-/// Clears the tag for this thread. Every exported function calls it on entry.
-pub fn clearError() void {
-    slot = .none;
-}
-
-/// Records `value` as the failure of the call in progress.
+/// Returns the exact error name, or `null` when the latest call did not fail.
 ///
-/// Only a failing path calls it. A `null` from a string getter because the
-/// property was unset is an ordinary answer and leaves the tag at `Tag.none`.
+/// The pointer names static NUL-terminated storage. Do not release or modify it.
+/// Later calls can replace the slot but do not invalidate a previously returned name.
+pub fn lastErrorName() ?[*:0]const u8 {
+    return slot.name;
+}
+
+/// Clears both the failure category and name on this thread.
+pub fn clearError() void {
+    slot = .{};
+}
+
+/// Records absence of failure or the exact `error.OutOfMemory` cause.
+///
+/// `Tag.operation_failed` requires an original error value. Pass it to
+/// `failWithError` instead. A category-only failure is a programmer error.
 pub fn failWith(value: Tag) void {
-    slot = value;
+    slot = switch (value) {
+        .none => .{},
+        .out_of_memory => .{ .tag = .out_of_memory, .name = "OutOfMemory" },
+        .operation_failed => @panic("Use failWithError to preserve the original failure"),
+    };
+}
+
+/// Records a value from a finite named error set without allocation.
+///
+/// Only `error.OutOfMemory` maps to `Tag.out_of_memory`. Every other error maps
+/// to `Tag.operation_failed`, preserving its exact static `@errorName`.
+/// Error unions, non-error values, and `anyerror` are not accepted.
+pub fn failWithError(err: anytype) void {
+    comptime {
+        switch (@typeInfo(@TypeOf(err))) {
+            .error_set => |members| {
+                if (members == null) {
+                    @compileError("failWithError requires a finite named error set, not anyerror");
+                }
+            },
+            else => @compileError("failWithError requires a value from a named error set"),
+        }
+    }
+    slot = .{
+        .tag = if (err == error.OutOfMemory) .out_of_memory else .operation_failed,
+        .name = @errorName(err).ptr,
+    };
 }
 
 /// Installs the pair every allocation and every release goes through.
@@ -282,12 +315,11 @@ pub fn installAllocator(alloc: ?AllocFn, free: ?FreeFn, context: ?*anyopaque) vo
     installed = .{ .alloc = a, .free = f, .context = context };
 }
 
-/// The declared allocator, for a Zig lifetime no C caller ever sees.
+/// The declared allocator for raw owned blocks, including C action requests.
 ///
-/// A block from this allocator is released with `std.mem.Allocator.free` and
-/// not with `release`, because `release` reads the head `create` writes and this
-/// path does not write one. Every pointer that crosses the C boundary comes
-/// from `create`, `createBytes` or `createCString` instead.
+/// Raw blocks use this allocator's `free` or `destroy`, not `release`.
+/// `release` reads the head written only by `create`, `createBytes`, and
+/// `createCString`. An action request and its nested string are raw blocks.
 ///
 /// The result is `std.heap.c_allocator` while no pair is installed, so this
 /// module requires a libc link on every target.
@@ -323,9 +355,9 @@ pub fn sameDomain(options: struct {
 
 /// Allocates one `T` and returns it zeroed.
 ///
-/// The caller owns the result and releases it with `release`. `error.OutOfMemory`
-/// leaves nothing allocated. This is the only route to a pointer that crosses
-/// the C boundary, so every `*_free` in the catalogue ends in `release`.
+/// The caller owns the result and releases it with `release`.
+/// `error.OutOfMemory` leaves nothing allocated. This route adds a tracking head.
+/// Raw blocks from `allocator()` instead require their matching allocator teardown.
 pub fn create(comptime T: type) Error!*T {
     const head = try carve(@sizeOf(T), @alignOf(T));
     const payload: *T = @ptrCast(@alignCast(payloadOf(head, @alignOf(T))));
@@ -707,6 +739,7 @@ test "the error slot is per thread, not one global" {
 test "the tag values are the ones the C enum names" {
     try testing.expectEqual(@as(c_int, 0), @intFromEnum(Tag.none));
     try testing.expectEqual(@as(c_int, 1), @intFromEnum(Tag.out_of_memory));
+    try testing.expectEqual(@as(c_int, 2), @intFromEnum(Tag.operation_failed));
 }
 
 test "the enumerable domains are swept at compile time" {
@@ -797,4 +830,72 @@ test "registered allocator domains compare only defined pair contexts" {
     };
     const other: std.mem.Allocator = .{ .ptr = &other_pair, .vtable = &pair_vtable };
     try testing.expect(!sameDomain(.{ .source = registered, .destination = other }));
+}
+
+test "failure names distinguish allocation transport query and conversion errors" {
+    // Each named cause must remain distinct even when the C category is shared.
+    const Failures = error{ OutOfMemory, TransportClosed, UnknownNode, InteriorNul };
+    defer clearError();
+    clearError();
+    try testing.expect(lastErrorName() == null);
+    const failures = [_]Failures{
+        error.OutOfMemory, error.TransportClosed, error.UnknownNode, error.InteriorNul,
+    };
+    for (failures) |failure| {
+        failWithError(failure);
+        const expected: Tag = if (failure == error.OutOfMemory)
+            .out_of_memory
+        else
+            .operation_failed;
+        try testing.expectEqual(expected, lastError());
+        const name = lastErrorName() orelse return error.MissingFailureName;
+        try testing.expectEqualStrings(@errorName(failure), std.mem.span(name));
+        try testing.expectEqual(@as(u8, 0), name[std.mem.span(name).len]);
+        // Both diagnostics can be read repeatedly without changing the failure.
+        try testing.expectEqual(name, lastErrorName().?);
+        try testing.expectEqual(expected, lastError());
+    }
+    const prior_name = lastErrorName().?;
+    failWithError(@as(Failures, error.TransportClosed));
+    try testing.expectEqualStrings("TransportClosed", std.mem.span(lastErrorName().?));
+    try testing.expectEqualStrings("InteriorNul", std.mem.span(prior_name));
+    failWith(.out_of_memory);
+    try testing.expectEqualStrings("OutOfMemory", std.mem.span(lastErrorName().?));
+    // Error names have static storage, not a shared buffer overwritten by later calls.
+    try testing.expectEqualStrings("InteriorNul", std.mem.span(prior_name));
+    clearError();
+    try testing.expectEqual(Tag.none, lastError());
+    try testing.expect(lastErrorName() == null);
+    failWithError(@as(Failures, error.InteriorNul));
+    failWith(.none);
+    try testing.expectEqual(Tag.none, lastError());
+    try testing.expect(lastErrorName() == null);
+}
+
+test "exact failure name and category are isolated between threads" {
+    const Seen = struct {
+        tag: Tag = .none,
+        name: ?[*:0]const u8 = null,
+
+        fn body(self: *@This()) void {
+            self.tag = lastError();
+            self.name = lastErrorName();
+            if (self.tag != .none or self.name != null) return;
+            const Failure = error{TransportClosed};
+            failWithError(@as(Failure, error.TransportClosed));
+            self.tag = lastError();
+            self.name = lastErrorName();
+            clearError();
+        }
+    };
+    defer clearError();
+    const Failure = error{InteriorNul};
+    failWithError(@as(Failure, error.InteriorNul));
+    var seen: Seen = .{};
+    const thread = try std.Thread.spawn(.{}, Seen.body, .{&seen});
+    thread.join();
+    try testing.expectEqual(Tag.operation_failed, seen.tag);
+    try testing.expectEqualStrings("TransportClosed", std.mem.span(seen.name.?));
+    try testing.expectEqual(Tag.operation_failed, lastError());
+    try testing.expectEqualStrings("InteriorNul", std.mem.span(lastErrorName().?));
 }
