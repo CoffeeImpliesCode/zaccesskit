@@ -493,13 +493,9 @@ pub fn iosQueuedEventsRaise(events: *IosQueuedEvents) void {
 /// `AdapterState.inactive` and registers one observer for the nine
 /// notifications at `AK/ios/src/adapter.rs:373`.
 ///
-/// `null` means the allocation failed, which is what `include/zaccesskit.h:5898`
-/// promises. It also covers the two cases that have no other channel: the UIKit
-/// or the Objective-C image that would not open, and a view that is not an
-/// object. `accesskit_last_error` stays at `none` on those two, because
-/// `allocation.Tag` has one failure and it says allocation, so this module does
-/// not write a tag that would be false. A caller that needs to tell them apart
-/// needs a tag this header does not have.
+/// Allocation failures record `out_of_memory`. An image that cannot be opened or
+/// resolved records `operation_failed` with its exact error name. An absent view
+/// remains an ordinary `null` answer.
 pub fn iosAdapterNew(
     view: ?*anyopaque,
     activation_handler: boundary.ActivationHandler,
@@ -564,8 +560,8 @@ pub fn iosAdapterFree(adapter: *IosAdapter) void {
 /// A `null` factory answer violates `src/capi/boundary.zig:44-51` and terminates
 /// the process. Nothing is built on that path.
 ///
-/// A tree that cannot hold the update leaves the adapter in the state it was
-/// in, sets `accesskit_last_error` to `out_of_memory`, and returns `null`.
+/// A rejected update returns `null` and records its exact failure name.
+/// Only `error.OutOfMemory` records the allocation-failure category.
 pub fn iosAdapterUpdateIfActive(
     adapter: *IosAdapter,
     update_factory: boundary.TreeUpdateFactory,
@@ -583,8 +579,8 @@ pub fn iosAdapterUpdateIfActive(
         terminate();
     };
     defer adapter.metadata_owners.reap(currentTree(adapter));
-    const update = adapter.metadata_owners.consume(adapter.gpa, block, currentTree(adapter)) catch {
-        allocation.failWith(.out_of_memory);
+    const update = adapter.metadata_owners.consume(adapter.gpa, block, currentTree(adapter)) catch |err| {
+        allocation.failWithError(err);
         return null;
     };
     switch (adapter.state) {
@@ -602,8 +598,8 @@ pub fn iosAdapterUpdateIfActive(
             // value is the one the tree holds afterwards, because the first
             // update sets the focus at `AK/ios/src/adapter.rs:396`.
             const focus_id = treeUpdateFocusId(update);
-            const next = buildTree(adapter.gpa, update) orelse {
-                allocation.failWith(.out_of_memory);
+            const next = buildTree(adapter.gpa, update) catch |err| {
+                allocation.failWithError(err);
                 return null;
             };
             releaseState(adapter.gpa, &adapter.state);
@@ -625,8 +621,8 @@ pub fn iosAdapterUpdateIfActive(
             };
             defer generator.releaseEvents();
             var handler = generator.changeHandler();
-            tree.updateAndProcessChanges(update, &handler) catch {
-                allocation.failWith(.out_of_memory);
+            tree.updateAndProcessChanges(update, &handler) catch |err| {
+                allocation.failWithError(err);
                 return null;
             };
             return generator.intoEvents();
@@ -746,9 +742,8 @@ pub fn iosAdapterHitTest(adapter: *IosAdapter, x: f64, y: f64) ?*anyopaque {
 /// `AK/ios/src/adapter.rs:327-333`. The caller releases the result with
 /// `accesskit_string_free`, once, and the text borrows nothing from the
 /// adapter, so the adapter may be released first
-/// (`include/zaccesskit.h:5981`). The result comes from
-/// `allocation.createCString`, which is the only allocation a `char *` a getter
-/// returns may come from.
+/// (`include/zaccesskit.h:5981`). The result is a raw sentinel-terminated buffer
+/// from `allocation.allocator()`, matching the public string destructor.
 ///
 /// The three rows are upstream's three states. `root` and `focus` are the
 /// `accesskit_node_id` values of the tree's root and its focus, and `none`
@@ -758,17 +753,11 @@ pub fn iosAdapterDebug(adapter: *const IosAdapter) ?[*:0]u8 {
         terminate();
     }
     const gpa = allocation.allocator();
-    const text = debugText(gpa, adapter.state) orelse {
-        allocation.failWith(.out_of_memory);
+    const text = debugText(gpa, adapter.state) catch |err| {
+        allocation.failWithError(err);
         return null;
     };
-    defer gpa.free(text);
-    return allocation.createCString(text) catch |err| switch (err) {
-        error.OutOfMemory => {
-            allocation.failWith(.out_of_memory);
-            return null;
-        },
-    };
+    return text.ptr;
 }
 
 /// Returns a subclassing adapter for `view`, or `null` when the allocation
@@ -1074,31 +1063,19 @@ pub fn getOrCreatePlatformNode(
     return created;
 }
 
-/// What `doAction` can report.
-///
-/// The two members are the two `schema.actionDataToC` can raise plus the one
-/// `allocation.create` can. The set is named here rather than inferred at the
-/// call, so a caller can tell an exhausted allocator from a text no C string
-/// can spell.
-pub const DoActionError = error{
-    /// The declared allocator could not supply the request block or the buffer
-    /// a `value` payload owns. The handler was not called.
-    OutOfMemory,
-    /// The `value` bytes hold a 0 byte, so no `char *` spells the rest of the
-    /// text. The handler was not called.
-    InteriorNul,
-};
+/// Request conversion failures: `error.OutOfMemory` and `error.InteriorNul`.
+/// Neither error calls the handler or leaves a partial C request allocated.
+pub const DoActionError = schema.ActionDataToCError;
 
 /// Hands one platform action to the handler the caller registered, upstream
 /// `Context::do_action` at `AK/ios/src/context.rs:92-94`.
 ///
 /// **The request crosses the C ABI by transfer.** `boundary.ActionHandler` takes
-/// a `*CActionRequest` it owns from the moment it is called, and it must release
-/// it with `accesskit_action_request_free`, which is `schema.cActionRequestDeinit`
-/// followed by `allocation.release`. So the block comes from `allocation.create`,
-/// the payload from `adapter.gpa`, and nothing after the call releases either.
-/// A callback that keeps the pointer has a use-after-free and one that releases
-/// it twice has a double free.
+/// a `*CActionRequest` it owns from the moment it is called and must release it
+/// with `accesskit_action_request_free`: payload deinit, then allocator destroy.
+/// Both allocations use `allocation.allocator()`, independently of `adapter.gpa`.
+/// Native `request` remains borrowed and unchanged; nothing after the callback
+/// releases either C allocation. A retained pointer is invalid after its release.
 ///
 /// **Who calls it.** Upstream reaches this from the activate action at
 /// `AK/ios/src/node.rs:375-391` and from the scroll action at `:388`. Both are
@@ -1106,30 +1083,10 @@ pub const DoActionError = error{
 /// this directory calls it yet. This function is the half that owns the
 /// request, so it is here and the callers arrive with the class.
 ///
-/// **Errors.** `error.OutOfMemory` and `error.InteriorNul`, from
-/// `schema.actionDataToC` and from `allocation.create`. On either one the
-/// handler is not called, so no request exists to free.
+/// `error.OutOfMemory` and `error.InteriorNul` preserve the borrowed input, free
+/// any partial C copy, and leave the handler uncalled.
 pub fn doAction(adapter: *const IosAdapter, request: schema.ActionRequest) DoActionError!void {
-    const gpa = adapter.gpa;
-    var payload: ?schema.CActionData = null;
-    if (request.data) |data| payload = try schema.actionDataToC(gpa, data);
-    // The conversion above is the only allocation before the block exists, so a
-    // block that cannot be made must hand the payload back.
-    const built = allocation.create(schema.CActionRequest) catch |err| switch (err) {
-        error.OutOfMemory => {
-            if (payload) |*owned| schema.cActionDataDeinit(gpa, owned);
-            return error.OutOfMemory;
-        },
-    };
-    built.* = .{
-        .action = request.action,
-        .target_tree = request.target_tree,
-        .target_node = request.target_node,
-        .data = .{
-            .has_value = payload != null,
-            .value = payload orelse std.mem.zeroes(schema.CActionData),
-        },
-    };
+    const built = try boundary.createActionRequest(allocation.allocator(), request);
     // Ownership moves to the callback here. Nothing after this line releases the
     // request.
     action_request.callActionHandler(adapter.action_handler, built, adapter.action_userdata);
@@ -1151,23 +1108,12 @@ pub const WalkError = consumer.tree.QueryError || error{
     NoCoordinateSpace,
 };
 
-/// Records a walk failure where the C ABI records one.
-///
-/// `accesskit_last_error` has two tags and one of them is an allocation, so an
-/// allocation failure is recorded and a walk that reached its bound is not: the
-/// port would have to invent a tag to say more.
+/// Records exact query failures; missing coordinate context remains ordinary
+/// absence, matching the optional platform answers.
 fn reportQueryFailure(failure: WalkError) void {
     switch (failure) {
-        error.OutOfMemory => allocation.failWith(.out_of_memory),
-        error.InvalidPosition,
-        error.IndexOutOfRange,
-        error.LineChainCycle,
-        error.WrongPropertyKind,
-        error.NoSuchNode,
-        error.TreeCycle,
-        error.NoWindow,
-        error.NoCoordinateSpace,
-        => {},
+        error.NoWindow, error.NoCoordinateSpace => {},
+        else => allocation.failWithError(failure),
     }
 }
 
@@ -1325,7 +1271,7 @@ fn platformObjectFor(adapter: *const IosAdapter, id: FullNodeId) ?*anyopaque {
 /// **A `null` answer from the activation handler is ordinary.** It means "no
 /// tree", which is what `src/capi/boundary.zig:56-62` states and what the port
 /// answers with a one-node window. A tree that cannot be built leaves the
-/// adapter inactive, records `out_of_memory` and returns `null`.
+/// adapter inactive, records the exact failure and returns `null`.
 fn getOrInitContext(adapter: *IosAdapter) ?*Tree {
     switch (adapter.state) {
         .inactive => {},
@@ -1338,23 +1284,23 @@ fn getOrInitContext(adapter: *IosAdapter) ?*Tree {
             adapter.gpa,
             block,
             currentTree(adapter),
-        ) catch {
-            allocation.failWith(.out_of_memory);
+        ) catch |err| {
+            allocation.failWithError(err);
             return null;
         };
-        const tree = buildTree(adapter.gpa, update) orelse {
-            allocation.failWith(.out_of_memory);
+        const tree = buildTree(adapter.gpa, update) catch |err| {
+            allocation.failWithError(err);
             return null;
         };
         adapter.state = .{ .active = tree };
         return tree;
     }
-    const placeholder = placeholderUpdate(adapter.gpa) catch {
-        allocation.failWith(.out_of_memory);
+    const placeholder = placeholderUpdate(adapter.gpa) catch |err| {
+        allocation.failWithError(err);
         return null;
     };
-    const tree = buildTree(adapter.gpa, placeholder) orelse {
-        allocation.failWith(.out_of_memory);
+    const tree = buildTree(adapter.gpa, placeholder) catch |err| {
+        allocation.failWithError(err);
         return null;
     };
     adapter.state = .{ .placeholder = tree };
@@ -1400,22 +1346,16 @@ fn currentTree(adapter: *const IosAdapter) ?*const Tree {
     };
 }
 
-/// Builds a tree from `update`, which the call consumes on every path.
-///
-/// `Tree.init` takes the update by value and releases it whatever it answers,
-/// which is the contract at `consumer/tree.zig:267-283`, so a caller must not
-/// release it again. `null` means the tree could not be built and the update is
-/// already gone.
-fn buildTree(gpa: Allocator, update: schema.TreeUpdate) ?*Tree {
-    const slot = gpa.create(Tree) catch {
+/// Builds a tree from `update`, consuming it on success and every failure.
+/// Propagates the original finite `Tree.init` error; nothing partial survives.
+fn buildTree(gpa: Allocator, update: schema.TreeUpdate) consumer.tree.UpdateError!*Tree {
+    const slot = gpa.create(Tree) catch |err| {
         var owned = update;
         owned.deinit(gpa);
-        return null;
+        return err;
     };
-    slot.* = Tree.init(gpa, update, true) catch {
-        gpa.destroy(slot);
-        return null;
-    };
+    errdefer gpa.destroy(slot);
+    slot.* = try Tree.init(gpa, update, true);
     return slot;
 }
 
@@ -1468,13 +1408,13 @@ fn genericEvent(notification: u64, node_id: ?FullNodeId) QueuedEvent {
 /// `IosQueuedEvents`.
 fn queueEvents(adapter: *IosAdapter, events: []const QueuedEvent) ?*IosQueuedEvents {
     const gpa = adapter.gpa;
-    const slot = gpa.create(IosQueuedEvents) catch {
-        allocation.failWith(.out_of_memory);
+    const slot = gpa.create(IosQueuedEvents) catch |err| {
+        allocation.failWithError(err);
         return null;
     };
-    const copy = gpa.dupe(QueuedEvent, events) catch {
+    const copy = gpa.dupe(QueuedEvent, events) catch |err| {
         gpa.destroy(slot);
-        allocation.failWith(.out_of_memory);
+        allocation.failWithError(err);
         return null;
     };
     slot.* = .{ .gpa = gpa, .platform = &adapter.platform, .events = copy };
@@ -1491,8 +1431,8 @@ fn queueOwnedEvents(
 ) ?*IosQueuedEvents {
     const gpa = adapter.gpa;
     errdefer releaseEventList(gpa, events);
-    const slot = gpa.create(IosQueuedEvents) catch {
-        allocation.failWith(.out_of_memory);
+    const slot = gpa.create(IosQueuedEvents) catch |err| {
+        allocation.failWithError(err);
         return null;
     };
     slot.* = .{ .gpa = gpa, .platform = &adapter.platform, .events = events.items };
@@ -1589,8 +1529,9 @@ fn subclassingAdapterNew(
         deactivation_handler,
         deactivation_handler_userdata,
     ) orelse return null;
-    const slot = gpa.create(IosSubclassingAdapter) catch {
+    const slot = gpa.create(IosSubclassingAdapter) catch |err| {
         iosAdapterFree(adapter);
+        allocation.failWithError(err);
         return null;
     };
     slot.* = .{
@@ -1625,7 +1566,10 @@ fn subclassName(
 ) ?[:0]u8 {
     const base = platform.class_name(platform.context, previous) orelse return null;
     const parts = [_][]const u8{ view_subclass_prefix, std.mem.span(base) };
-    return std.mem.concatWithSentinel(gpa, u8, &parts, 0) catch null;
+    return std.mem.concatWithSentinel(gpa, u8, &parts, 0) catch |err| {
+        allocation.failWithError(err);
+        return null;
+    };
 }
 
 /// Builds an adapter over `platform`, which the call consumes on every path.
@@ -1658,9 +1602,9 @@ fn adapterNew(
         };
         break :blk built;
     };
-    const slot = gpa.create(IosAdapter) catch {
+    const slot = gpa.create(IosAdapter) catch |err| {
         platform.release(platform.context);
-        allocation.failWith(.out_of_memory);
+        allocation.failWithError(err);
         return null;
     };
     slot.* = .{
@@ -1723,28 +1667,29 @@ fn focusLocalId(tree: *const Tree) u64 {
 
 /// The debug text for `state`, as a buffer the declared allocator made.
 ///
-/// `null` when the allocation failed, and the caller records
-/// `Tag.out_of_memory`. **Every arm allocates**, because the caller releases
-/// the buffer with `gpa.free` and a string literal is not a block the declared
-/// allocator made. An arm that answered a literal left `iosAdapterDebug`
+/// `error.OutOfMemory` is reported by the caller. Every arm allocates, because
+/// the caller releases the buffer with `gpa.free`; a literal is not allocator
+/// storage. An arm that answered a literal left `iosAdapterDebug`
 /// freeing a pointer into the read-only image, which is the
 /// `free(): invalid pointer` glibc reports on the inactive state.
-fn debugText(gpa: Allocator, state: AdapterState) ?[]u8 {
+fn debugText(gpa: Allocator, state: AdapterState) Allocator.Error![:0]u8 {
     return switch (state) {
-        .inactive => gpa.dupe(
+        .inactive => gpa.dupeZ(
             u8,
             "IosAdapter { state: inactive, root: none, focus: none }",
-        ) catch null,
-        .placeholder => |tree| std.fmt.allocPrint(
+        ),
+        .placeholder => |tree| std.fmt.allocPrintSentinel(
             gpa,
             "IosAdapter {{ state: placeholder, root: {d}, focus: {d} }}",
             .{ rootLocalId(tree), focusLocalId(tree) },
-        ) catch null,
-        .active => |tree| std.fmt.allocPrint(
+            0,
+        ),
+        .active => |tree| std.fmt.allocPrintSentinel(
             gpa,
             "IosAdapter {{ state: active, root: {d}, focus: {d} }}",
             .{ rootLocalId(tree), focusLocalId(tree) },
-        ) catch null,
+            0,
+        ),
     };
 }
 
@@ -1763,18 +1708,21 @@ fn stateName(state: AdapterState) []const u8 {
 
 /// Opens the two images the adapter needs and resolves every symbol in them.
 ///
-/// `null` when an image did not open or when the UIKit image exports none of the
-/// nine required symbols, and nothing survives: the binding layer closes what
-/// it opened. The caller reports that as the `null` the header reserves for a
-/// failed construction, because `accesskit_last_error` has one failure tag and
-/// it says allocation.
+/// Construction failures return `null` and retain their exact finite error
+/// names. The binding layer closes all images opened before a failure.
 fn openPlatform(gpa: Allocator) ?objc.Platform {
-    return objc.platform(
+    const platform = objc.platform(
         gpa,
         objc.default_objective_c_image_path,
         objc.default_uikit_image_path,
         callbacks,
-    ) catch null;
+    ) catch |err| {
+        allocation.failWithError(err);
+        return null;
+    };
+    // This binding's optional failure denotes allocation refusal, not absence.
+    if (platform == null) allocation.failWithError(@as(Allocator.Error, error.OutOfMemory));
+    return platform;
 }
 
 /// Ends the process for a violation the header says ends it.
@@ -1906,7 +1854,8 @@ const EventGenerator = struct {
     /// after the commit, when the tree is consistent, and it wants the tag that
     /// stopped the walk rather than the last one to arrive.
     fn fail(self: *EventGenerator, failure: WalkError) void {
-        if (self.failure == null) self.failure = failure;
+        if (self.failure != null) return;
+        self.failure = failure;
         reportQueryFailure(failure);
     }
 
@@ -2634,13 +2583,8 @@ fn actionHandler() boundary.ActionHandler {
 /// three scalars out first, then runs the two releases
 /// `accesskit_action_request_free` runs, in that order.
 ///
-/// **No payload is read here.** The block comes from `allocation.create`, so it
-/// has to go back through `allocation.release`, and a payload the adapter built
-/// from `testing.allocator` could not go back through
-/// `cActionRequestDeinit(allocation.allocator(), …)`. A test that sends a
-/// payload must build its adapter with the C ABI's declared allocator, and the
-/// one that checks the refusal path sends none because nothing is allocated
-/// there.
+/// The request and any payload use the configured C allocator, not the adapter's
+/// native allocator. The callback releases both even when no payload is present.
 const RequestProbe = struct {
     /// How many requests arrived.
     calls: usize = 0,
@@ -2663,7 +2607,7 @@ const RequestProbe = struct {
         self.has_value = request.data.has_value;
         // The two halves of `accesskit_action_request_free`, in its order.
         schema.cActionRequestDeinit(allocation.allocator(), request);
-        allocation.release(request);
+        allocation.allocator().destroy(request);
     }
 };
 
@@ -2834,13 +2778,9 @@ fn adapterWithAction(
 // --- Tests -------------------------------------------------------------------
 
 test "a slot records the tag it failed with, and keeps the first one" {
-    // A `TreeChangeHandler` slot returns `void`, so a failure has nowhere to
-    // go but this field. `WalkError` carries nine tags and only `OutOfMemory`
-    // reaches `accesskit_last_error`, so a field that could only say that
-    // something failed would read as an exhausted allocator for every other
-    // one of them. A second failure must not overwrite the first either:
-    // `intoEvents` reads the field once, after the commit, and the tag that
-    // stopped the walk is the one it wants.
+    // A slot returns void, so its field and C diagnostic preserve the first
+    // exact cause after publication. A later allocation failure must not replace
+    // a query failure already recorded.
     const gpa = testing.allocator;
     var state: Fake = .{ .gpa = gpa };
     defer state.deinit();
@@ -2855,6 +2795,8 @@ test "a slot records the tag it failed with, and keeps the first one" {
         .platform_focus = adapter.platform_focus,
     };
     defer generator.releaseEvents();
+    allocation.clearError();
+    defer allocation.clearError();
     try testing.expectEqual(@as(?WalkError, null), generator.failure);
 
     generator.fail(error.TreeCycle);
@@ -2862,6 +2804,8 @@ test "a slot records the tag it failed with, and keeps the first one" {
 
     generator.fail(error.OutOfMemory);
     try testing.expectEqual(@as(?WalkError, error.TreeCycle), generator.failure);
+    try testing.expectEqual(allocation.Tag.operation_failed, allocation.lastError());
+    try testing.expectEqualStrings("TreeCycle", std.mem.span(allocation.lastErrorName().?));
 }
 
 test "the five binding modules and the node layer are reachable and analysed" {
@@ -3135,6 +3079,44 @@ test "an update out of the placeholder state becomes active and queues a screen 
     try testing.expectEqual(@as(usize, 1), state.posted.items.len);
 }
 
+test "iOS public update preserves OrphanChild in the C diagnostic slot" {
+    // Both the initial-tree replacement and existing-tree update paths must
+    // expose the structural cause instead of claiming allocation exhaustion.
+    const gpa = testing.allocator;
+    for ([_]bool{ true, false }) |initially_active| {
+        var state: Fake = .{ .gpa = gpa, .assistive_tech_running = true };
+        defer state.deinit();
+        var activation: ActivationFixture = .{ .gpa = gpa };
+        var deactivation: DeactivationFixture = .{};
+        const adapter = adapterFor(&state, gpa, &activation, &deactivation) orelse
+            return error.NoAdapter;
+        defer teardown(adapter);
+        if (initially_active) {
+            activation.answer = try fixtureUpdate(gpa, .window, &.{}, .{ .value = 0 }, false);
+        }
+        raiseEvents(iosAdapterViewDidAppear(adapter));
+        const update = blk: {
+            var built = try fixtureUpdate(gpa, .window, &.{}, .{ .value = 0 }, false);
+            errdefer built.deinit(gpa);
+            try schema.ids_props.setChildren(
+                &built.nodes.items[0].node.properties,
+                &.{.{ .value = 99 }},
+            );
+            break :blk built;
+        };
+        var factory: FactoryFixture = .{ .gpa = gpa, .answer = update };
+        defer factory.deinit();
+        allocation.clearError();
+        defer allocation.clearError();
+        const result = iosAdapterUpdateIfActive(adapter, updateFactory(), &factory);
+        defer raiseEvents(result);
+        try testing.expect(result == null);
+        try testing.expectEqual(@as(usize, 1), factory.calls);
+        try testing.expectEqual(allocation.Tag.operation_failed, allocation.lastError());
+        try testing.expectEqualStrings("OrphanChild", std.mem.span(allocation.lastErrorName().?));
+    }
+}
+
 test "the last assistive technology stopping deactivates the adapter exactly once" {
     const gpa = testing.allocator;
     var state: Fake = .{ .gpa = gpa, .assistive_tech_running = true };
@@ -3169,6 +3151,7 @@ test "the last assistive technology stopping deactivates the adapter exactly onc
 
 test "the debug text names the state, the root and the focus, and the adapter may go first" {
     const gpa = testing.allocator;
+    const public_free = @extern(*const fn ([*:0]u8) callconv(.c) void, .{ .name = "accesskit_string_free" });
     var state: Fake = .{ .gpa = gpa, .assistive_tech_running = true };
     defer state.deinit();
     var activation: ActivationFixture = .{ .gpa = gpa };
@@ -3178,7 +3161,7 @@ test "the debug text names the state, the root and the focus, and the adapter ma
     defer teardown(adapter);
 
     const inactive = iosAdapterDebug(adapter) orelse return error.NoText;
-    defer allocation.release(inactive);
+    defer public_free(inactive);
     try testing.expectEqualStrings(
         "IosAdapter { state: inactive, root: none, focus: none }",
         std.mem.span(inactive),
@@ -3193,7 +3176,7 @@ test "the debug text names the state, the root and the focus, and the adapter ma
     );
     raiseEvents(iosAdapterViewDidAppear(adapter));
     const active = iosAdapterDebug(adapter) orelse return error.NoText;
-    defer allocation.release(active);
+    defer public_free(active);
     try testing.expectEqualStrings(
         "IosAdapter { state: active, root: 0, focus: 2 }",
         std.mem.span(active),
@@ -3202,6 +3185,7 @@ test "the debug text names the state, the root and the focus, and the adapter ma
 
 test "the debug text names the placeholder state and the one-node tree under it" {
     const gpa = testing.allocator;
+    const public_free = @extern(*const fn ([*:0]u8) callconv(.c) void, .{ .name = "accesskit_string_free" });
     var state: Fake = .{ .gpa = gpa, .assistive_tech_running = true };
     defer state.deinit();
     var activation: ActivationFixture = .{ .gpa = gpa };
@@ -3216,11 +3200,94 @@ test "the debug text names the placeholder state and the one-node tree under it"
     raiseEvents(iosAdapterViewDidAppear(adapter));
     try testing.expectEqualStrings("placeholder", stateName(adapter.state));
     const text = iosAdapterDebug(adapter) orelse return error.NoText;
-    defer allocation.release(text);
+    defer public_free(text);
     try testing.expectEqualStrings(
         "IosAdapter { state: placeholder, root: 0, focus: 0 }",
         std.mem.span(text),
     );
+}
+
+const DebugCStringPair = struct {
+    gpa: Allocator,
+    lengths: std.AutoHashMapUnmanaged(usize, usize) = .empty,
+    last_allocation: ?usize = null,
+    last_free: ?usize = null,
+    recognized_frees: usize = 0,
+    unrecognized_frees: usize = 0,
+
+    fn alloc(size: usize, context: ?*anyopaque) callconv(.c) ?*anyopaque {
+        const self: *DebugCStringPair = @ptrCast(@alignCast(context.?));
+        const bytes = self.gpa.alloc(u8, size) catch return null;
+        self.lengths.put(self.gpa, @intFromPtr(bytes.ptr), size) catch {
+            self.gpa.free(bytes);
+            return null;
+        };
+        self.last_allocation = @intFromPtr(bytes.ptr);
+        return bytes.ptr;
+    }
+
+    fn free(ptr: ?*anyopaque, context: ?*anyopaque) callconv(.c) void {
+        const self: *DebugCStringPair = @ptrCast(@alignCast(context.?));
+        const address = @intFromPtr(ptr orelse return);
+        self.last_free = address;
+        const length = self.lengths.fetchRemove(address) orelse {
+            self.unrecognized_frees += 1;
+            return;
+        };
+        self.recognized_frees += 1;
+        self.gpa.free(@as([*]u8, @ptrCast(ptr.?))[0..length.value]);
+    }
+};
+
+test "iOS public debug string belongs to the configured public string destructor" {
+    // Render a real activated tree and use the shipped C destructor. The tracker
+    // rejects interior pointers without freeing them, making the old header
+    // recipe a safe, consumer-visible assertion failure rather than allocator UB.
+    const gpa = testing.allocator;
+    var state: Fake = .{ .gpa = gpa, .assistive_tech_running = true };
+    defer state.deinit();
+    var activation: ActivationFixture = .{ .gpa = gpa };
+    var deactivation: DeactivationFixture = .{};
+    const adapter = adapterFor(&state, gpa, &activation, &deactivation) orelse
+        return error.NoAdapter;
+    var adapter_live = true;
+    defer if (adapter_live) teardown(adapter);
+    var update = try fixtureUpdate(gpa, .window, &.{.{ .value = 2 }}, .{ .value = 2 }, false);
+    update.nodes.items[0].node_id = .{ .value = 42 };
+    update.tree = schema.TreeInfo.init(.{ .value = 42 });
+    activation.answer = update;
+    raiseEvents(iosAdapterViewDidAppear(adapter));
+
+    var pair: DebugCStringPair = .{ .gpa = gpa };
+    defer pair.lengths.deinit(gpa);
+    allocation.installAllocator(DebugCStringPair.alloc, DebugCStringPair.free, &pair);
+    defer allocation.installAllocator(null, null, null);
+    const live_before = pair.lengths.count();
+    const rendered = iosAdapterDebug(adapter) orelse return error.NoText;
+    const output_base = pair.last_allocation orelse return error.NoOutputAllocation;
+    defer if (pair.lengths.contains(output_base)) {
+        // Baseline-only header cleanup follows a rejected public free. A raw
+        // output still live after an earlier assertion uses its matching domain.
+        if (output_base == @intFromPtr(rendered)) {
+            allocation.allocator().free(std.mem.span(rendered));
+        } else {
+            allocation.release(rendered);
+        }
+    };
+    const captured = try gpa.dupe(u8, std.mem.span(rendered));
+    defer gpa.free(captured);
+    teardown(adapter);
+    adapter_live = false;
+    try testing.expectEqualSlices(u8, captured, std.mem.span(rendered));
+    try testing.expectEqual(live_before + 1, pair.lengths.count());
+    const frees_before = pair.recognized_frees;
+    const public_free = @extern(*const fn ([*:0]u8) callconv(.c) void, .{ .name = "accesskit_string_free" });
+    public_free(rendered);
+    try testing.expectEqual(@as(usize, 0), pair.unrecognized_frees);
+    try testing.expectEqual(@as(?usize, output_base), pair.last_free);
+    try testing.expectEqual(frees_before + 1, pair.recognized_frees);
+    try testing.expect(!pair.lengths.contains(output_base));
+    try testing.expectEqual(live_before, pair.lengths.count());
 }
 
 test "the element walk answers with the root or with the filtered children" {
@@ -3448,6 +3515,115 @@ test "a text with an interior zero reports InteriorNul and sends nothing" {
         .data = .{ .value = &text },
     }));
     try testing.expectEqual(@as(usize, 0), probe.calls);
+}
+
+const CallbackRequestFixture = struct {
+    store: [512]u8 align(8) = undefined,
+    used: usize = 0,
+    starts: [4]?*anyopaque = @splat(null),
+    allocs: usize = 0,
+    frees: usize = 0,
+    calls: usize = 0,
+    source: []u8,
+    independent: bool = false,
+
+    fn alloc(size: usize, context: ?*anyopaque) callconv(.c) ?*anyopaque {
+        const self: *CallbackRequestFixture = @ptrCast(@alignCast(context.?));
+        if (self.allocs == self.starts.len) return null;
+        const start = std.mem.alignForward(usize, self.used, 8);
+        if (size > self.store.len -| start) return null;
+        const ptr: *anyopaque = self.store[start..][0..size].ptr;
+        self.used = start + size;
+        self.starts[self.allocs] = ptr;
+        self.allocs += 1;
+        return ptr;
+    }
+
+    fn free(ptr: ?*anyopaque, context: ?*anyopaque) callconv(.c) void {
+        const self: *CallbackRequestFixture = @ptrCast(@alignCast(context.?));
+        for (&self.starts) |*start| {
+            if (start.* == ptr and ptr != null) {
+                start.* = null;
+                self.frees += 1;
+                return;
+            }
+        }
+    }
+
+    fn call(request: *boundary.CActionRequest, context: ?*anyopaque) callconv(.c) void {
+        const self: *CallbackRequestFixture = @ptrCast(@alignCast(context.?));
+        self.calls += 1;
+        const text = request.data.value.payload.value.?;
+        self.source[0] = 'X';
+        self.independent = @intFromPtr(text) != @intFromPtr(self.source.ptr) and
+            std.mem.eql(u8, std.mem.span(text), "value") and
+            request.action == .set_value and request.target_node.value == 73;
+        schema.cActionRequestDeinit(allocation.allocator(), request);
+        allocation.allocator().destroy(request);
+    }
+};
+
+test "iOS producer callback owns an independent value in the configured C domain" {
+    // Drive doAction itself; retained fixture storage detects wrong-base frees
+    // without attempting to release an invalid pointer on the red path.
+    const gpa = testing.allocator;
+    var state: Fake = .{ .gpa = gpa };
+    defer state.deinit();
+    var activation: ActivationFixture = .{ .gpa = gpa };
+    var deactivation: DeactivationFixture = .{};
+    var source: [5]u8 = "value".*;
+    var fixture: CallbackRequestFixture = .{ .source = &source };
+    const adapter = adapterWithAction(
+        &state,
+        allocation.allocator(),
+        &activation,
+        &deactivation,
+        CallbackRequestFixture.call,
+        &fixture,
+    ) orelse return error.NoAdapter;
+    defer teardown(adapter);
+    allocation.installAllocator(CallbackRequestFixture.alloc, CallbackRequestFixture.free, &fixture);
+    defer allocation.installAllocator(null, null, null);
+    try doAction(adapter, .{
+        .action = .set_value,
+        .target_tree = schema.tree_id_root,
+        .target_node = .{ .value = 73 },
+        .data = .{ .value = &source },
+    });
+    try testing.expectEqual(@as(usize, 1), fixture.calls);
+    try testing.expect(fixture.independent);
+    try testing.expectEqual(fixture.allocs, fixture.frees);
+    try testing.expectEqualSlices(u8, "Xalue", &source);
+}
+
+test "iOS producer InteriorNul preserves borrowed bytes and leaves no live C allocation" {
+    const gpa = testing.allocator;
+    var state: Fake = .{ .gpa = gpa };
+    defer state.deinit();
+    var activation: ActivationFixture = .{ .gpa = gpa };
+    var deactivation: DeactivationFixture = .{};
+    var source: [5]u8 = "va\x00ue".*;
+    var fixture: CallbackRequestFixture = .{ .source = &source };
+    const adapter = adapterWithAction(
+        &state,
+        allocation.allocator(),
+        &activation,
+        &deactivation,
+        CallbackRequestFixture.call,
+        &fixture,
+    ) orelse return error.NoAdapter;
+    defer teardown(adapter);
+    allocation.installAllocator(CallbackRequestFixture.alloc, CallbackRequestFixture.free, &fixture);
+    defer allocation.installAllocator(null, null, null);
+    try testing.expectError(error.InteriorNul, doAction(adapter, .{
+        .action = .set_value,
+        .target_tree = schema.tree_id_root,
+        .target_node = .{ .value = 73 },
+        .data = .{ .value = &source },
+    }));
+    try testing.expectEqual(@as(usize, 0), fixture.calls);
+    try testing.expectEqual(fixture.allocs, fixture.frees);
+    try testing.expectEqualSlices(u8, "va\x00ue", &source);
 }
 
 test "the point conversion scales by the content scale and inverts the tree transform" {
@@ -3683,7 +3859,7 @@ test "consuming a real C handle retains toolkit metadata until its native tree d
     var metadata_owners: c_tree_update.LiveMetadataOwners = .{};
     defer metadata_owners.deinit();
     const update = try metadata_owners.consume(gpa, @ptrCast(block), null);
-    const tree = buildTree(gpa, update) orelse return error.NoTree;
+    const tree = try buildTree(gpa, update);
     defer {
         releaseTree(gpa, tree);
         metadata_owners.reap(null);

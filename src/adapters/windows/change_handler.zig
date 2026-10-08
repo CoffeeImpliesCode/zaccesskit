@@ -19,11 +19,8 @@
 //! `takeFailure` once the update has committed. This is the port's translation
 //! of the Rust panic at the same sites.
 //!
-//! **What this file does not do.** It does not raise anything, and it does not
-//! queue the per-node property changes: upstream raises those from
-//! `NodeWrapper::enqueue_property_changes` at `node.rs`, which builds a
-//! `VARIANT` and belongs to the node layer. Every event `adapter.rs` itself
-//! queues is here.
+//! Per-node properties come from an injected synchronous calculator. It borrows NodeRefs only
+//! during the callback. The queue owns the resulting VARIANTs and provider references.
 //!
 //! **Loop bounds.** Three walks outside a test, each with the bound named
 //! beside it: the filtered-children cursor inside `enqueueSelectionChanges`,
@@ -36,13 +33,14 @@ const std = @import("std");
 const consumer = @import("../../consumer/root.zig");
 const schema = @import("../../schema/root.zig");
 const elements = @import("elements.zig");
+const context_mod = @import("context.zig");
 const filters = @import("filters.zig");
 const queued_events = @import("queued_events.zig");
 const syscalls = @import("syscalls.zig");
+const util = @import("util.zig");
 
 const EventId = syscalls.EventId;
 const Platform = syscalls.Platform;
-const PropertyValue = schema.PropertyValue;
 const ProviderSlot = syscalls.ProviderSlot;
 
 const FullNodeId = consumer.tree_index.FullNodeId;
@@ -58,30 +56,26 @@ const TreeState = consumer.tree_state.TreeState;
 /// and a hashed set does not define one.
 const NodeSet = std.array_hash_map.Auto(FullNodeId, void);
 
-/// Everything a handler operation can fail with.
-///
-/// It is `error.OutOfMemory` plus the consumer half's `QueryError`, and it is
-/// written down so `adapter.zig` can name it in its own error set instead of
-/// widening it by inference.
-pub const HandlerError = std.mem.Allocator.Error || QueryError;
+/// Exact query, provider, allocation, and automation errors from event construction.
+pub const HandlerError = context_mod.ProviderError;
 
-/// What the handler could not do, recorded on the first failure.
-///
-/// A slot cannot report an error, so it records here and returns. Both fields
-/// stay readable after the update commits, because the caller reads them once
-/// at the end of `processChanges`.
+/// Runs on the update thread after inclusion filtering, before implied and live-region events.
+/// NodeRefs are borrowed only for this call. The callback must not retain them or reenter the tree.
+pub const PropertyCalculator = *const fn (
+    gpa: std.mem.Allocator,
+    platform: Platform,
+    registry: *elements.Registry,
+    queue: *queued_events.QueuedEvents,
+    old: NodeRef,
+    new: NodeRef,
+) HandlerError!void;
+
+/// The first exact cause. A nonempty failure means the partial queue must be cancelled, not raised.
 pub const Failure = struct {
-    /// A provider slot or an event could not be allocated, so the events that
-    /// would have named them are missing.
-    out_of_memory: bool = false,
+    first_error: ?HandlerError = null,
 
-    /// A query over the tree reported an error, so the handler stopped there.
-    query_error: ?QueryError = null,
-
-    /// Whether anything failed. A `true` answer means the queue is incomplete
-    /// and the caller must not raise it as if it were whole.
     pub fn isEmpty(self: Failure) bool {
-        return !self.out_of_memory and self.query_error == null;
+        return self.first_error == null;
     }
 };
 
@@ -133,6 +127,9 @@ pub const Handler = struct {
     registry: *elements.Registry,
     /// The queue the events go into. The handler does not own it.
     queue: *queued_events.QueuedEvents,
+    /// Null disables per-node calculations for injected event-only tests.
+    /// Native adapters must set their factory's calculator before processing changes.
+    property_calculator: ?PropertyCalculator = null,
     /// The nodes whose text change is queued once already. Upstream
     /// `text_changed` at `adapter.rs:38`.
     text_changed: NodeSet = .empty,
@@ -150,7 +147,9 @@ pub const Handler = struct {
         platform: Platform,
         registry: *elements.Registry,
         queue: *queued_events.QueuedEvents,
+        automation: *const util.AutomationApi,
     ) Handler {
+        std.debug.assert(queue.automation == automation);
         return .{ .gpa = gpa, .platform = platform, .registry = registry, .queue = queue };
     }
 
@@ -210,25 +209,8 @@ pub const Handler = struct {
         return recorded;
     }
 
-    /// Records `err` in the field its tag names, and keeps the first failure.
-    ///
-    /// `HandlerError` is `error.OutOfMemory` plus `QueryError`, and `QueryError`
-    /// carries `OutOfMemory` of its own, so one prong on the allocation tag and
-    /// one `else` reach the two fields with no overlap. A second failure never
-    /// clears the first: both fields are written with an assignment, and
-    /// `takeFailure` is what resets them.
-    ///
-    /// **Why this is one method and not four assignments.** A slot cannot
-    /// report, so it records and returns. When each slot wrote
-    /// `failure.out_of_memory` whatever the tag was, every `QueryError` reached
-    /// `adapter.zig` as `error.OutOfMemory` and the `query_error` field was
-    /// never written outside a test. The caller maps the two fields onto two
-    /// different C error tags, so the tag is behaviour, not bookkeeping.
     fn record(self: *Handler, err: HandlerError) void {
-        switch (err) {
-            error.OutOfMemory => self.failure.out_of_memory = true,
-            else => |query| self.failure.query_error = query,
-        }
+        if (self.failure.first_error == null) self.failure.first_error = err;
     }
 
     /// Turns the selection sets into events, once the update has committed.
@@ -238,9 +220,7 @@ pub const Handler = struct {
     /// hands the queue out, because a selection event names a node the
     /// committed tree holds.
     ///
-    /// **Errors.** `error.OutOfMemory` and `QueryError`. A container the walk
-    /// could not read is skipped and the error is recorded, because one
-    /// unreadable container must not swallow the others.
+    /// Exact HandlerError tags are returned. The caller cancels the partial queue on failure.
     pub fn enqueueSelectionChanges(self: *Handler, state: *const TreeState) HandlerError!void {
         var containers = self.selection_changed.iterator();
         while (containers.next()) |entry| {
@@ -290,14 +270,13 @@ pub const Handler = struct {
             // Upstream's optimized path at `adapter.rs:149-175`: one selection
             // event and one property change for the child, and one property
             // change for every node that stopped being selected.
-            if (self.registry.slotFor(self.platform, child.id())) |slot| {
-                try self.pushSimple(slot, .selection_item_element_selected);
-                try self.pushSelected(slot, false, true);
-            } else |_| {}
+            const slot = try self.registry.slotFor(self.platform, child.id());
+            try self.pushSimple(slot, .selection_item_element_selected);
+            try self.pushSelected(slot, false, true);
             var removed = changes.removed.iterator();
             while (removed.next()) |entry| {
-                const slot = try self.detachedSlotFor(entry.key_ptr.*, state);
-                try self.pushSelected(slot, true, false);
+                const removed_slot = try self.detachedSlotFor(entry.key_ptr.*, state);
+                try self.pushSelected(removed_slot, true, false);
             }
             return;
         }
@@ -309,9 +288,8 @@ pub const Handler = struct {
             // comparison is strict, so exactly `invalidate_limit` changes are
             // still enumerated one by one.
             if (changes.added.count() + changes.removed.count() > invalidate_limit) {
-                if (self.registry.slotFor(self.platform, node.id())) |slot| {
-                    try self.pushSimple(slot, .selection_invalidated);
-                } else |_| {}
+                const slot = try self.registry.slotFor(self.platform, node.id());
+                try self.pushSimple(slot, .selection_invalidated);
                 return;
             }
         }
@@ -338,8 +316,8 @@ pub const Handler = struct {
 
     /// One node the update added. Upstream `node_added` at `adapter.rs:238-267`.
     ///
-    /// **Errors.** `error.OutOfMemory` and `QueryError`.
-    pub fn nodeAdded(self: *Handler, node: NodeRef) !void {
+    /// Returns exact HandlerError tags; queued owners remain available for cancellation.
+    pub fn nodeAdded(self: *Handler, node: NodeRef) HandlerError!void {
         try self.insertTextChangeIfNeeded(node);
         if (try filters.filter(node) != .include) return;
 
@@ -359,8 +337,10 @@ pub const Handler = struct {
     /// One node the update rewrote. Upstream `node_updated` at
     /// `adapter.rs:269-339`.
     ///
-    /// **Errors.** `error.OutOfMemory` and `QueryError`.
-    pub fn nodeUpdated(self: *Handler, old: NodeRef, new: NodeRef) !void {
+    /// Calculates properties, then implied selection, live, dialog, and selection-item changes.
+    /// Returns exact HandlerError tags; no NodeRef escapes this call.
+    pub fn nodeUpdated(self: *Handler, old: NodeRef, new: NodeRef) HandlerError!void {
+        if (!rawValuesEqual(old, new)) try self.insertTextChangeIfNeeded(new);
         const old_filtered = try filters.filter(old);
         if (try filters.filter(new) != .include) {
             if (old_filtered == .include) {
@@ -373,6 +353,16 @@ pub const Handler = struct {
                 }
             }
             return;
+        }
+
+        if (self.property_calculator) |calculate| {
+            try calculate(self.gpa, self.platform, self.registry, self.queue, old, new);
+        }
+        if (try consumer.text.query.supportsTextRanges(old)) {
+            if (try consumer.text.query.supportsTextRanges(new) and !rawSelectionsEqual(old, new)) {
+                const slot = try self.registry.slotFor(self.platform, new.id());
+                try self.pushSimple(slot, .text_text_selection_changed);
+            }
         }
 
         if (try liveRegionChanged(self.gpa, old, new, old_filtered != .include)) {
@@ -397,8 +387,8 @@ pub const Handler = struct {
     /// Upstream raises nothing when the focus is lost, and so does this: a focus
     /// change with no new node names no provider.
     ///
-    /// **Errors.** `error.OutOfMemory`.
-    pub fn focusMoved(self: *Handler, new: ?NodeRef) !void {
+    /// Returns exact HandlerError tags from provider creation and queue growth.
+    pub fn focusMoved(self: *Handler, new: ?NodeRef) HandlerError!void {
         const node = new orelse return;
         const slot = try self.registry.slotFor(self.platform, node.id());
         try self.pushSimple(slot, .automation_focus_changed);
@@ -407,13 +397,15 @@ pub const Handler = struct {
     /// One node the update removed. Upstream `node_removed` at
     /// `adapter.rs:347-369`.
     ///
-    /// **Errors.** `error.OutOfMemory` and `QueryError`.
-    pub fn nodeRemoved(self: *Handler, node: NodeRef) !void {
+    /// Drops registry ownership before any fallible notification work.
+    pub fn nodeRemoved(self: *Handler, node: NodeRef) HandlerError!void {
+        // Removal must release registry ownership even when a later tree query fails.
+        _ = self.registry.removeSlot(self.platform, node.id());
         try self.insertTextChangeIfNeeded(node);
         if (try filters.filter(node) != .include) return;
 
         if (consumer.node_ref.predicates.isDialog(node)) {
-            const slot = try self.detachedSlotFor(node.id(), node.tree_state);
+            const slot = try self.newDetachedSlot(node.id());
             try self.pushSimple(slot, .window_window_closed);
         }
         if (supportsSelectionItemPattern(node)) {
@@ -427,8 +419,8 @@ pub const Handler = struct {
     ///
     /// Upstream `insert_text_change_if_needed` at `adapter.rs:77-84`.
     ///
-    /// **Errors.** `error.OutOfMemory` and `QueryError`.
-    fn insertTextChangeIfNeeded(self: *Handler, node: NodeRef) !void {
+    /// Returns exact HandlerError tags from tree queries, provider creation, and queue growth.
+    fn insertTextChangeIfNeeded(self: *Handler, node: NodeRef) HandlerError!void {
         if (consumer.node_ref.properties.role(node) != .text_run) return;
         const parent = try consumer.node_ref.hierarchy.filteredParent(
             node,
@@ -441,11 +433,15 @@ pub const Handler = struct {
     ///
     /// Upstream `insert_text_change_if_needed_parent` at `adapter.rs:54-75`.
     ///
-    /// **Errors.** `error.OutOfMemory` and `QueryError`.
-    fn insertTextChangeForParent(self: *Handler, parent: NodeRef) !void {
+    /// Returns exact HandlerError tags. Failed enqueue rolls back text-change deduplication.
+    fn insertTextChangeForParent(self: *Handler, parent: NodeRef) HandlerError!void {
         if (!try consumer.text.query.supportsTextRanges(parent)) return;
         const entry = try self.text_changed.getOrPut(self.gpa, parent.id());
         if (entry.found_existing) return;
+        errdefer {
+            const removed = self.text_changed.orderedRemove(parent.id());
+            std.debug.assert(removed);
+        }
         const slot = try self.registry.slotFor(self.platform, parent.id());
         // Inserted at the front, because a text change must come before a
         // selection change whatever order the selection changes arrive in.
@@ -480,36 +476,56 @@ pub const Handler = struct {
     /// node the state still holds reuses its provider, and a node it no longer
     /// holds gets a fresh one that the event keeps alive.
     ///
-    /// **Errors.** `error.OutOfMemory`.
+    /// Returns exact HandlerError tags. Detached slots are queue-owned after transfer succeeds.
     fn detachedSlotFor(
         self: *Handler,
         node_id: FullNodeId,
         state: *const TreeState,
     ) HandlerError!*const ProviderSlot {
         if (state.nodeById(node_id) != null) return self.registry.slotFor(self.platform, node_id);
+        return self.newDetachedSlot(node_id);
+    }
+
+    fn newDetachedSlot(self: *Handler, node_id: FullNodeId) HandlerError!*const ProviderSlot {
         const slot = try self.registry.detachedSlotFor(self.platform, node_id);
         self.queue.takeOwnership(slot) catch |err| {
-            self.registry.releaseDetached(self.platform, node_id, slot);
+            elements.Registry.releaseSlot(self.platform, self.registry.gpa, slot);
             return err;
         };
         return slot;
     }
 
-    fn pushSimple(self: *Handler, slot: *const ProviderSlot, event_id: EventId) !void {
+    fn pushSimple(
+        self: *Handler,
+        slot: *const ProviderSlot,
+        event_id: EventId,
+    ) HandlerError!void {
         try self.queue.append(.{ .simple = .{ .slot = slot, .event_id = event_id } });
     }
 
-    fn pushSelected(self: *Handler, slot: *const ProviderSlot, old: bool, new: bool) !void {
-        try self.queue.append(.{
-            .property_changed = .{
-                .slot = slot,
-                .property_id = .selection_item_is_selected,
-                .old = PropertyValue{ .bool_ = old },
-                .new = PropertyValue{ .bool_ = new },
-            },
-        });
+    fn pushSelected(
+        self: *Handler,
+        slot: *const ProviderSlot,
+        old: bool,
+        new: bool,
+    ) HandlerError!void {
+        try self.queue.appendBoolProperty(slot, .selection_item_is_selected, .{ .old = old, .new = new });
     }
 };
+
+fn rawValuesEqual(old: NodeRef, new: NodeRef) bool {
+    const before = consumer.node_ref.set_state.rawValue(old);
+    const after = consumer.node_ref.set_state.rawValue(new);
+    if (before) |text| return std.mem.eql(u8, text, after orelse return false);
+    return after == null;
+}
+
+fn rawSelectionsEqual(old: NodeRef, new: NodeRef) bool {
+    const before = consumer.node_ref.set_state.rawTextSelection(old);
+    const after = consumer.node_ref.set_state.rawTextSelection(new);
+    if (before) |selection| return selection.*.eql((after orelse return false).*);
+    return after == null;
+}
 
 /// Whether `node` announces a name at all.
 ///
@@ -700,6 +716,30 @@ fn nodeRemovedSlot(context: *anyopaque, node: NodeRef) void {
 
 const testing = std.testing;
 
+const adapter = @import("adapter.zig");
+
+const ProviderFixture = struct {
+    runtime: *std.Io.Threaded,
+    owner: *adapter.WindowsAdapter,
+
+    fn init() !ProviderFixture {
+        if (!@import("bindings.zig").winapi_resolves) return error.SkipZigTest;
+        const runtime = try testing.allocator.create(std.Io.Threaded);
+        errdefer testing.allocator.destroy(runtime);
+        runtime.* = .init(testing.allocator, .{});
+        errdefer runtime.deinit();
+        const owner = try adapter.testOwner(testing.allocator, runtime.io(), queued_events.testAutomationApi());
+        return .{ .runtime = runtime, .owner = owner };
+    }
+
+    fn deinit(self: *ProviderFixture) void {
+        self.owner.deinit();
+        self.runtime.deinit();
+        testing.allocator.destroy(self.runtime);
+        self.* = undefined;
+    }
+};
+
 /// One node of a fixture tree.
 const NodeSpec = struct {
     /// The identifier inside the root tree.
@@ -723,6 +763,7 @@ const NodeSpec = struct {
     value: ?[]const u8 = null,
     /// The local identifiers whose labels name this node, in order.
     labelled_by: []const u64 = &.{},
+    text_selection: ?schema.TextSelection = null,
 };
 
 /// Builds the tree one fixture describes.
@@ -738,6 +779,8 @@ fn buildTree(gpa: std.mem.Allocator, root_local: u64, specs: []const NodeSpec) !
         if (spec.is_selected) |value| try schema.enums.setSelected(&node.properties, value);
         if (spec.toggled) |value| try schema.enums.setToggled(&node.properties, value);
         if (spec.value) |text| try schema.strings.setValue(&node.properties, text);
+        if (spec.text_selection) |selection|
+            try schema.option.setTextSelection(&node.properties, selection);
         var labelled_by_ids: std.ArrayList(schema.NodeId) = .empty;
         defer labelled_by_ids.deinit(gpa);
         for (spec.labelled_by) |local| {
@@ -800,7 +843,9 @@ const upstream_pattern_roles = [_]schema.Role{
 
 test "a dialog node added queues the window opened event" {
     const gpa = testing.allocator;
-    const platform = syscalls.unavailablePlatform();
+    var fixture = try ProviderFixture.init();
+    defer fixture.deinit();
+    const platform = adapter.testPlatform();
     const specs = [_]NodeSpec{
         .{ .local = 1, .role = .window, .children = &.{2} },
         .{ .local = 2, .role = .dialog },
@@ -808,11 +853,11 @@ test "a dialog node added queues the window opened event" {
     var tree = try buildTree(gpa, 1, &specs);
     defer tree.deinit();
 
-    var registry = elements.Registry.init(gpa);
+    var registry = elements.Registry.init(gpa, fixture.owner.context.weak());
     defer registry.deinit(platform);
-    var queue = queued_events.QueuedEvents.init(gpa);
-    defer queue.deinit(platform);
-    var handler = Handler.init(gpa, platform, &registry, &queue);
+    var queue = queued_events.QueuedEvents.init(gpa, queued_events.testAutomationApi());
+    defer expectCleanup(queue.deinit(platform));
+    var handler = Handler.init(gpa, platform, &registry, &queue, queued_events.testAutomationApi());
     defer handler.deinit();
 
     const state = tree.stateOf();
@@ -832,7 +877,9 @@ test "a dialog node added queues the window opened event" {
 
 test "a text run queues its parent's text change at the front" {
     const gpa = testing.allocator;
-    const platform = syscalls.unavailablePlatform();
+    var fixture = try ProviderFixture.init();
+    defer fixture.deinit();
+    const platform = adapter.testPlatform();
     const specs = [_]NodeSpec{
         .{ .local = 1, .role = .window, .children = &.{ 2, 3 } },
         .{ .local = 2, .role = .document, .children = &.{4} },
@@ -842,11 +889,11 @@ test "a text run queues its parent's text change at the front" {
     var tree = try buildTree(gpa, 1, &specs);
     defer tree.deinit();
 
-    var registry = elements.Registry.init(gpa);
+    var registry = elements.Registry.init(gpa, fixture.owner.context.weak());
     defer registry.deinit(platform);
-    var queue = queued_events.QueuedEvents.init(gpa);
-    defer queue.deinit(platform);
-    var handler = Handler.init(gpa, platform, &registry, &queue);
+    var queue = queued_events.QueuedEvents.init(gpa, queued_events.testAutomationApi());
+    defer expectCleanup(queue.deinit(platform));
+    var handler = Handler.init(gpa, platform, &registry, &queue, queued_events.testAutomationApi());
     defer handler.deinit();
 
     const state = tree.stateOf();
@@ -873,7 +920,9 @@ test "a text run queues its parent's text change at the front" {
 
 test "a text change is queued once however many runs changed" {
     const gpa = testing.allocator;
-    const platform = syscalls.unavailablePlatform();
+    var fixture = try ProviderFixture.init();
+    defer fixture.deinit();
+    const platform = adapter.testPlatform();
     const specs = [_]NodeSpec{
         .{ .local = 1, .role = .window, .children = &.{ 2, 4 } },
         .{ .local = 2, .role = .document, .children = &.{3} },
@@ -883,11 +932,11 @@ test "a text change is queued once however many runs changed" {
     var tree = try buildTree(gpa, 1, &specs);
     defer tree.deinit();
 
-    var registry = elements.Registry.init(gpa);
+    var registry = elements.Registry.init(gpa, fixture.owner.context.weak());
     defer registry.deinit(platform);
-    var queue = queued_events.QueuedEvents.init(gpa);
-    defer queue.deinit(platform);
-    var handler = Handler.init(gpa, platform, &registry, &queue);
+    var queue = queued_events.QueuedEvents.init(gpa, queued_events.testAutomationApi());
+    defer expectCleanup(queue.deinit(platform));
+    var handler = Handler.init(gpa, platform, &registry, &queue, queued_events.testAutomationApi());
     defer handler.deinit();
 
     const state = tree.stateOf();
@@ -907,7 +956,9 @@ test "a text change is queued once however many runs changed" {
 
 test "the focus move queues the automation focus changed event" {
     const gpa = testing.allocator;
-    const platform = syscalls.unavailablePlatform();
+    var fixture = try ProviderFixture.init();
+    defer fixture.deinit();
+    const platform = adapter.testPlatform();
     const specs = [_]NodeSpec{
         .{ .local = 1, .role = .window, .children = &.{2} },
         .{ .local = 2, .role = .button },
@@ -915,11 +966,11 @@ test "the focus move queues the automation focus changed event" {
     var tree = try buildTree(gpa, 1, &specs);
     defer tree.deinit();
 
-    var registry = elements.Registry.init(gpa);
+    var registry = elements.Registry.init(gpa, fixture.owner.context.weak());
     defer registry.deinit(platform);
-    var queue = queued_events.QueuedEvents.init(gpa);
-    defer queue.deinit(platform);
-    var handler = Handler.init(gpa, platform, &registry, &queue);
+    var queue = queued_events.QueuedEvents.init(gpa, queued_events.testAutomationApi());
+    defer expectCleanup(queue.deinit(platform));
+    var handler = Handler.init(gpa, platform, &registry, &queue, queued_events.testAutomationApi());
     defer handler.deinit();
 
     const state = tree.stateOf();
@@ -942,7 +993,9 @@ test "the focus move queues the automation focus changed event" {
 
 test "a live region queues the live region changed event once" {
     const gpa = testing.allocator;
-    const platform = syscalls.unavailablePlatform();
+    var fixture = try ProviderFixture.init();
+    defer fixture.deinit();
+    const platform = adapter.testPlatform();
     const specs = [_]NodeSpec{
         .{ .local = 1, .role = .window, .children = &.{ 2, 3 } },
         .{ .local = 2, .role = .button, .label = "Save", .live = .polite },
@@ -951,11 +1004,11 @@ test "a live region queues the live region changed event once" {
     var tree = try buildTree(gpa, 1, &specs);
     defer tree.deinit();
 
-    var registry = elements.Registry.init(gpa);
+    var registry = elements.Registry.init(gpa, fixture.owner.context.weak());
     defer registry.deinit(platform);
-    var queue = queued_events.QueuedEvents.init(gpa);
-    defer queue.deinit(platform);
-    var handler = Handler.init(gpa, platform, &registry, &queue);
+    var queue = queued_events.QueuedEvents.init(gpa, queued_events.testAutomationApi());
+    defer expectCleanup(queue.deinit(platform));
+    var handler = Handler.init(gpa, platform, &registry, &queue, queued_events.testAutomationApi());
     defer handler.deinit();
 
     const state = tree.stateOf();
@@ -979,7 +1032,9 @@ test "a live region queues the live region changed event once" {
 
 test "one selected child takes the optimized selection path" {
     const gpa = testing.allocator;
-    const platform = syscalls.unavailablePlatform();
+    var fixture = try ProviderFixture.init();
+    defer fixture.deinit();
+    const platform = adapter.testPlatform();
     const specs = [_]NodeSpec{
         .{ .local = 1, .role = .window, .children = &.{2} },
         .{ .local = 2, .role = .list_box, .children = &.{ 3, 4 } },
@@ -989,11 +1044,11 @@ test "one selected child takes the optimized selection path" {
     var tree = try buildTree(gpa, 1, &specs);
     defer tree.deinit();
 
-    var registry = elements.Registry.init(gpa);
+    var registry = elements.Registry.init(gpa, fixture.owner.context.weak());
     defer registry.deinit(platform);
-    var queue = queued_events.QueuedEvents.init(gpa);
-    defer queue.deinit(platform);
-    var handler = Handler.init(gpa, platform, &registry, &queue);
+    var queue = queued_events.QueuedEvents.init(gpa, queued_events.testAutomationApi());
+    defer expectCleanup(queue.deinit(platform));
+    var handler = Handler.init(gpa, platform, &registry, &queue, queued_events.testAutomationApi());
     defer handler.deinit();
 
     const state = tree.stateOf();
@@ -1015,13 +1070,15 @@ test "one selected child takes the optimized selection path" {
         syscalls.PropertyId.selection_item_is_selected,
         change.property_changed.property_id,
     );
-    try testing.expectEqual(false, change.property_changed.old.bool_);
-    try testing.expectEqual(true, change.property_changed.new.bool_);
+    try testing.expectEqual(@as(i16, 0), change.property_changed.old.raw.Anonymous.Anonymous.Anonymous.boolVal);
+    try testing.expectEqual(@as(i16, -1), change.property_changed.new.raw.Anonymous.Anonymous.Anonymous.boolVal);
 }
 
 test "two selected children take the enumerated selection path" {
     const gpa = testing.allocator;
-    const platform = syscalls.unavailablePlatform();
+    var fixture = try ProviderFixture.init();
+    defer fixture.deinit();
+    const platform = adapter.testPlatform();
     const specs = [_]NodeSpec{
         .{ .local = 1, .role = .window, .children = &.{2} },
         .{ .local = 2, .role = .list_box, .children = &.{ 3, 4 } },
@@ -1031,11 +1088,11 @@ test "two selected children take the enumerated selection path" {
     var tree = try buildTree(gpa, 1, &specs);
     defer tree.deinit();
 
-    var registry = elements.Registry.init(gpa);
+    var registry = elements.Registry.init(gpa, fixture.owner.context.weak());
     defer registry.deinit(platform);
-    var queue = queued_events.QueuedEvents.init(gpa);
-    defer queue.deinit(platform);
-    var handler = Handler.init(gpa, platform, &registry, &queue);
+    var queue = queued_events.QueuedEvents.init(gpa, queued_events.testAutomationApi());
+    defer expectCleanup(queue.deinit(platform));
+    var handler = Handler.init(gpa, platform, &registry, &queue, queued_events.testAutomationApi());
     defer handler.deinit();
 
     const state = tree.stateOf();
@@ -1058,7 +1115,9 @@ test "two selected children take the enumerated selection path" {
 
 test "more changes than the limit invalidate the container instead of enumerating" {
     const gpa = testing.allocator;
-    const platform = syscalls.unavailablePlatform();
+    var fixture = try ProviderFixture.init();
+    defer fixture.deinit();
+    const platform = adapter.testPlatform();
     var specs: std.ArrayList(NodeSpec) = .empty;
     defer specs.deinit(gpa);
     // One more option than `invalidate_limit` is what tips the comparison over,
@@ -1084,11 +1143,11 @@ test "more changes than the limit invalidate the container instead of enumeratin
     var tree = try buildTree(gpa, 1, specs.items);
     defer tree.deinit();
 
-    var registry = elements.Registry.init(gpa);
+    var registry = elements.Registry.init(gpa, fixture.owner.context.weak());
     defer registry.deinit(platform);
-    var queue = queued_events.QueuedEvents.init(gpa);
-    defer queue.deinit(platform);
-    var handler = Handler.init(gpa, platform, &registry, &queue);
+    var queue = queued_events.QueuedEvents.init(gpa, queued_events.testAutomationApi());
+    defer expectCleanup(queue.deinit(platform));
+    var handler = Handler.init(gpa, platform, &registry, &queue, queued_events.testAutomationApi());
     defer handler.deinit();
 
     const state = tree.stateOf();
@@ -1113,7 +1172,9 @@ test "more changes than the limit invalidate the container instead of enumeratin
 
 test "a removed dialog queues the closed event on a provider the queue owns" {
     const gpa = testing.allocator;
-    const platform = syscalls.unavailablePlatform();
+    var fixture = try ProviderFixture.init();
+    defer fixture.deinit();
+    const platform = adapter.testPlatform();
     const specs = [_]NodeSpec{
         .{ .local = 1, .role = .window, .children = &.{2} },
         .{ .local = 2, .role = .dialog },
@@ -1121,10 +1182,11 @@ test "a removed dialog queues the closed event on a provider the queue owns" {
     var tree = try buildTree(gpa, 1, &specs);
     defer tree.deinit();
 
-    var registry = elements.Registry.init(gpa);
+    var registry = elements.Registry.init(gpa, fixture.owner.context.weak());
     defer registry.deinit(platform);
-    var queue = queued_events.QueuedEvents.init(gpa);
-    var handler = Handler.init(gpa, platform, &registry, &queue);
+    var queue = queued_events.QueuedEvents.init(gpa, queued_events.testAutomationApi());
+    defer expectCleanup(queue.deinit(platform));
+    var handler = Handler.init(gpa, platform, &registry, &queue, queued_events.testAutomationApi());
     defer handler.deinit();
 
     const state = tree.stateOf();
@@ -1135,23 +1197,21 @@ test "a removed dialog queues the closed event on a provider the queue owns" {
     try testing.expectEqual(@as(usize, 1), queue.len());
     const only = queue.at(0) orelse return error.NoQueuedEvent;
     try testing.expectEqual(EventId.window_window_closed, only.simple.event_id);
-    // Upstream's first branch at `adapter.rs:87-92`: a node the state still
-    // holds reuses the provider it already had, so the event names the registry
-    // slot rather than a fresh one.
-    try testing.expectEqual(
-        try slotForLocal(&registry, platform, 2),
-        only.simple.slot,
-    );
+    try testing.expect(registry.existingSlot(dialog.id()) == null);
+    try testing.expectEqual(@as(usize, 0), registry.slots.count());
+    try testing.expectEqual(dialog.id(), only.simple.slot.node_id.?);
+    try testing.expectEqual(@as(u32, 2), only.simple.slot.ref_count.load(.monotonic));
 
-    // Raising releases the queue, and the queue owns no provider here, so the
-    // registry is the only owner and the test allocator sees no leak.
+    // Delivery releases both the event reference and its detached baseline reference.
     const report = queue.raise(platform);
     try testing.expectEqual(@as(usize, 1), report.total());
 }
 
 test "a slot that runs out of memory records it and the caller reads it" {
     const gpa = testing.allocator;
-    const platform = syscalls.unavailablePlatform();
+    var fixture = try ProviderFixture.init();
+    defer fixture.deinit();
+    const platform = adapter.testPlatform();
     const specs = [_]NodeSpec{
         .{ .local = 1, .role = .window, .children = &.{2} },
         .{ .local = 2, .role = .dialog },
@@ -1160,11 +1220,11 @@ test "a slot that runs out of memory records it and the caller reads it" {
     defer tree.deinit();
 
     var failing: std.testing.FailingAllocator = .init(gpa, .{ .fail_index = 0 });
-    var registry = elements.Registry.init(failing.allocator());
+    var registry = elements.Registry.init(failing.allocator(), fixture.owner.context.weak());
     defer registry.deinit(platform);
-    var queue = queued_events.QueuedEvents.init(failing.allocator());
-    defer queue.deinit(platform);
-    var handler = Handler.init(failing.allocator(), platform, &registry, &queue);
+    var queue = queued_events.QueuedEvents.init(failing.allocator(), queued_events.testAutomationApi());
+    defer expectCleanup(queue.deinit(platform));
+    var handler = Handler.init(failing.allocator(), platform, &registry, &queue, queued_events.testAutomationApi());
     defer handler.deinit();
 
     const state = tree.stateOf();
@@ -1176,57 +1236,43 @@ test "a slot that runs out of memory records it and the caller reads it" {
     try testing.expectEqual(@as(?Failure, null), handler.takeFailure());
     handler.nodeAdded(dialog) catch |err| handler.record(err);
     const recorded = handler.takeFailure() orelse return error.NoFailureRecorded;
-    try testing.expect(recorded.out_of_memory);
+    try testing.expectEqual(@as(?HandlerError, error.OutOfMemory), recorded.first_error);
     try testing.expect(!recorded.isEmpty());
     try testing.expectEqual(@as(?Failure, null), handler.takeFailure());
 }
 
-test "a query error is recorded as a query error and not as a failure of the allocator" {
-    // The defect this pins. All four slots ran
-    // `catch { self.failure.out_of_memory = true; }`, so every tag of
-    // `HandlerError` that a tree walk raises reached `adapter.zig` as
-    // `error.OutOfMemory` and nothing but the test below ever wrote the
-    // `query_error` field. `adapter.zig:305` maps that field onto
-    // `error.TreeQueryFailed`, so the tag decides what a C caller sees.
-    //
-    // `Tree.init` refuses an update that leaves a node unattached, and no
-    // `QueryError` is reachable from a well-formed tree, so the tag is driven
-    // through `record` rather than through a slot. `record` is the one function
-    // the four slots share, and the four one-line bodies are what call it.
+test "every handler error is recorded without changing its exact tag" {
+    // Malformed trees are rejected before delivery; drive each tag through the shared recorder.
     const gpa = testing.allocator;
-    const platform = syscalls.unavailablePlatform();
-    var registry = elements.Registry.init(gpa);
+    var fixture = try ProviderFixture.init();
+    defer fixture.deinit();
+    const platform = adapter.testPlatform();
+    var registry = elements.Registry.init(gpa, fixture.owner.context.weak());
     defer registry.deinit(platform);
-    var queue = queued_events.QueuedEvents.init(gpa);
-    defer queue.deinit(platform);
-    var handler = Handler.init(gpa, platform, &registry, &queue);
+    var queue = queued_events.QueuedEvents.init(gpa, queued_events.testAutomationApi());
+    defer expectCleanup(queue.deinit(platform));
+    var handler = Handler.init(gpa, platform, &registry, &queue, queued_events.testAutomationApi());
     defer handler.deinit();
 
-    // The sweep is the one `schema/geometry/rect.zig:483` uses, so a tag added
-    // to `QueryError` is named here without an edit. `error.OutOfMemory` is the
-    // only member that is an allocation failure, so it is the only one that
-    // reaches `out_of_memory`; the test says that rather than assuming it.
+    // Include newly added provider and automation tags without duplicating the error set.
     inline for (@typeInfo(HandlerError).error_set.?) |member| {
         const tag: HandlerError = @field(HandlerError, member.name);
-        const is_allocation = std.mem.eql(u8, member.name, "OutOfMemory");
         handler.record(tag);
         const recorded = handler.takeFailure() orelse return error.NoFailureRecorded;
-        try testing.expectEqual(is_allocation, recorded.out_of_memory);
-        try testing.expectEqual(
-            if (is_allocation) @as(?QueryError, null) else @as(?QueryError, tag),
-            recorded.query_error,
-        );
+        try testing.expectEqual(@as(?HandlerError, tag), recorded.first_error);
     }
 }
 
 test "the four slots of the change handler are all bound" {
     const gpa = testing.allocator;
-    const platform = syscalls.unavailablePlatform();
-    var registry = elements.Registry.init(gpa);
+    var fixture = try ProviderFixture.init();
+    defer fixture.deinit();
+    const platform = adapter.testPlatform();
+    var registry = elements.Registry.init(gpa, fixture.owner.context.weak());
     defer registry.deinit(platform);
-    var queue = queued_events.QueuedEvents.init(gpa);
-    defer queue.deinit(platform);
-    var handler = Handler.init(gpa, platform, &registry, &queue);
+    var queue = queued_events.QueuedEvents.init(gpa, queued_events.testAutomationApi());
+    defer expectCleanup(queue.deinit(platform));
+    var handler = Handler.init(gpa, platform, &registry, &queue, queued_events.testAutomationApi());
     defer handler.deinit();
 
     const bound = handler.changeHandler();
@@ -1246,8 +1292,8 @@ test "the selection limit is the value upstream names" {
 
 test "a failure reports itself as not empty in both arms" {
     const neither: Failure = .{};
-    const no_memory: Failure = .{ .out_of_memory = true };
-    const query: Failure = .{ .query_error = error.TreeCycle };
+    const no_memory: Failure = .{ .first_error = error.OutOfMemory };
+    const query: Failure = .{ .first_error = error.TreeCycle };
     try testing.expect(neither.isEmpty());
     try testing.expect(!no_memory.isEmpty());
     try testing.expect(!query.isEmpty());
@@ -1398,7 +1444,9 @@ test "a radio button reads its selection from the pressed state" {
     // a radio button that states `aria-checked=true` and no `aria-selected` is
     // selected upstream and was not selected in the port.
     const gpa = testing.allocator;
-    const platform = syscalls.unavailablePlatform();
+    var fixture = try ProviderFixture.init();
+    defer fixture.deinit();
+    const platform = adapter.testPlatform();
     const specs = [_]NodeSpec{
         .{ .local = 1, .role = .window, .children = &.{ 2, 3, 4 } },
         .{ .local = 2, .role = .radio_button, .toggled = .true_ },
@@ -1408,11 +1456,11 @@ test "a radio button reads its selection from the pressed state" {
     var tree = try buildTree(gpa, 1, &specs);
     defer tree.deinit();
 
-    var registry = elements.Registry.init(gpa);
+    var registry = elements.Registry.init(gpa, fixture.owner.context.weak());
     defer registry.deinit(platform);
-    var queue = queued_events.QueuedEvents.init(gpa);
-    defer queue.deinit(platform);
-    var handler = Handler.init(gpa, platform, &registry, &queue);
+    var queue = queued_events.QueuedEvents.init(gpa, queued_events.testAutomationApi());
+    defer expectCleanup(queue.deinit(platform));
+    var handler = Handler.init(gpa, platform, &registry, &queue, queued_events.testAutomationApi());
     defer handler.deinit();
 
     const state = tree.stateOf();
@@ -1437,8 +1485,8 @@ test "a radio button reads its selection from the pressed state" {
     const event = queue.at(0) orelse return error.NoQueuedEvent;
     try testing.expectEqual(EventId.selection_item_element_selected, event.simple.event_id);
     const change = queue.at(1) orelse return error.NoQueuedEvent;
-    try testing.expectEqual(false, change.property_changed.old.bool_);
-    try testing.expectEqual(true, change.property_changed.new.bool_);
+    try testing.expectEqual(@as(i16, 0), change.property_changed.old.raw.Anonymous.Anonymous.Anonymous.boolVal);
+    try testing.expectEqual(@as(i16, -1), change.property_changed.new.raw.Anonymous.Anonymous.Anonymous.boolVal);
 }
 
 test "a node names itself through a labelled by contributor and through its value" {
@@ -1450,7 +1498,9 @@ test "a node names itself through a labelled by contributor and through its valu
     // contributor and a `label`-role node carrying a value were both nameless
     // in the port, and neither announced itself as a live region.
     const gpa = testing.allocator;
-    const platform = syscalls.unavailablePlatform();
+    var fixture = try ProviderFixture.init();
+    defer fixture.deinit();
+    const platform = adapter.testPlatform();
     const specs = [_]NodeSpec{
         .{ .local = 1, .role = .window, .children = &.{ 2, 3, 4, 5 } },
         // Named by node 5's label, with no label of its own.
@@ -1469,11 +1519,11 @@ test "a node names itself through a labelled by contributor and through its valu
     var tree = try buildTree(gpa, 1, &specs);
     defer tree.deinit();
 
-    var registry = elements.Registry.init(gpa);
+    var registry = elements.Registry.init(gpa, fixture.owner.context.weak());
     defer registry.deinit(platform);
-    var queue = queued_events.QueuedEvents.init(gpa);
-    defer queue.deinit(platform);
-    var handler = Handler.init(gpa, platform, &registry, &queue);
+    var queue = queued_events.QueuedEvents.init(gpa, queued_events.testAutomationApi());
+    defer expectCleanup(queue.deinit(platform));
+    var handler = Handler.init(gpa, platform, &registry, &queue, queued_events.testAutomationApi());
     defer handler.deinit();
 
     const state = tree.stateOf();
@@ -1501,7 +1551,9 @@ test "an update announces a live region only when the live setting or the name c
     // nothing upstream and announced itself in the port, and a screen reader
     // repeated itself on every update.
     const gpa = testing.allocator;
-    const platform = syscalls.unavailablePlatform();
+    var fixture = try ProviderFixture.init();
+    defer fixture.deinit();
+    const platform = adapter.testPlatform();
     // Two trees with the same shape: one named "Save" and polite, the other
     // named "Saved" and polite. Node 2 is the live region in both.
     const before_specs = [_]NodeSpec{
@@ -1517,11 +1569,11 @@ test "an update announces a live region only when the live setting or the name c
     var new_tree = try buildTree(gpa, 1, &after_specs);
     defer new_tree.deinit();
 
-    var registry = elements.Registry.init(gpa);
+    var registry = elements.Registry.init(gpa, fixture.owner.context.weak());
     defer registry.deinit(platform);
-    var queue = queued_events.QueuedEvents.init(gpa);
-    defer queue.deinit(platform);
-    var handler = Handler.init(gpa, platform, &registry, &queue);
+    var queue = queued_events.QueuedEvents.init(gpa, queued_events.testAutomationApi());
+    defer expectCleanup(queue.deinit(platform));
+    var handler = Handler.init(gpa, platform, &registry, &queue, queued_events.testAutomationApi());
     defer handler.deinit();
 
     const old_state = old_tree.stateOf();
@@ -1558,4 +1610,305 @@ test "an update announces a live region only when the live setting or the name c
     const bare_node = bare_state.nodeById(bare_state.rootId().withSameTree(.{ .value = 2 })) orelse
         return error.MissingNode;
     try testing.expect(!try liveRegionChanged(gpa, old_node, bare_node, false));
+}
+
+test "updated raw text runs prepend one parent event before focus" {
+    const gpa = testing.allocator;
+    var fixture = try ProviderFixture.init();
+    defer fixture.deinit();
+    const platform = adapter.testPlatform();
+    const before = [_]NodeSpec{
+        .{ .local = 1, .role = .window, .children = &.{2} },
+        .{ .local = 2, .role = .document, .children = &.{ 3, 4 } },
+        .{ .local = 3, .role = .text_run, .value = "before" },
+        .{ .local = 4, .role = .text_run, .value = "before" },
+    };
+    const after = [_]NodeSpec{
+        .{ .local = 1, .role = .window, .children = &.{2} },
+        .{ .local = 2, .role = .document, .children = &.{ 3, 4 } },
+        .{ .local = 3, .role = .text_run, .value = "after" },
+        .{ .local = 4, .role = .text_run, .value = "after" },
+    };
+    var old_tree = try buildTree(gpa, 1, &before);
+    defer old_tree.deinit();
+    var new_tree = try buildTree(gpa, 1, &after);
+    defer new_tree.deinit();
+    var registry = elements.Registry.init(gpa, fixture.owner.context.weak());
+    defer registry.deinit(platform);
+    var queue = queued_events.QueuedEvents.init(gpa, queued_events.testAutomationApi());
+    defer expectCleanup(queue.deinit(platform));
+    var handler = Handler.init(gpa, platform, &registry, &queue, queued_events.testAutomationApi());
+    defer handler.deinit();
+    const old_state = old_tree.stateOf();
+    const new_state = new_tree.stateOf();
+    try handler.focusMoved(new_state.root());
+    for ([_]u64{ 3, 4 }) |local| {
+        const id = new_state.rootId().withSameTree(.{ .value = local });
+        try handler.nodeUpdated(old_state.nodeById(id).?, new_state.nodeById(id).?);
+    }
+    try testing.expectEqual(@as(usize, 2), queue.len());
+    try testing.expectEqual(EventId.text_text_changed, queue.at(0).?.simple.event_id);
+    try testing.expectEqual(EventId.automation_focus_changed, queue.at(1).?.simple.event_id);
+    try testing.expectEqual(try slotForLocal(&registry, platform, 2), queue.at(0).?.simple.slot);
+}
+
+test "removing a node drops its registry ownership but preserves queued events" {
+    const gpa = testing.allocator;
+    var fixture = try ProviderFixture.init();
+    defer fixture.deinit();
+    const platform = adapter.testPlatform();
+    var tree = try buildTree(gpa, 1, &.{
+        .{ .local = 1, .role = .window, .children = &.{2} },
+        .{ .local = 2, .role = .dialog },
+    });
+    defer tree.deinit();
+    var registry = elements.Registry.init(gpa, fixture.owner.context.weak());
+    defer registry.deinit(platform);
+    var queue = queued_events.QueuedEvents.init(gpa, queued_events.testAutomationApi());
+    defer expectCleanup(queue.deinit(platform));
+    var handler = Handler.init(gpa, platform, &registry, &queue, queued_events.testAutomationApi());
+    defer handler.deinit();
+    const state = tree.stateOf();
+    const dialog = state.nodeById(state.rootId().withSameTree(.{ .value = 2 })).?;
+    try handler.nodeAdded(dialog);
+    try handler.nodeRemoved(dialog);
+    try testing.expectEqual(@as(usize, 0), registry.nodeCount());
+    try testing.expect(registry.existingSlot(dialog.id()) == null);
+    try testing.expectEqual(@as(usize, 2), queue.len());
+    try testing.expectEqual(EventId.window_window_opened, queue.at(0).?.simple.event_id);
+    try testing.expectEqual(EventId.window_window_closed, queue.at(1).?.simple.event_id);
+    const report = queue.raise(platform);
+    try testing.expectEqual(@as(usize, 2), report.unavailable);
+    queue = queued_events.QueuedEvents.init(gpa, queued_events.testAutomationApi());
+}
+
+test "text selection events require range support on both nodes and changed raw selection" {
+    const gpa = testing.allocator;
+    var fixture = try ProviderFixture.init();
+    defer fixture.deinit();
+    const platform = adapter.testPlatform();
+    const position: schema.TextPosition = .{
+        .node_id = .{ .value = 3 },
+        .character_index = 0,
+    };
+    const selection: schema.TextSelection = .{ .anchor = position, .focus = position };
+    const extended: schema.TextSelection = .{
+        .anchor = position,
+        .focus = .{ .node_id = position.node_id, .character_index = 1 },
+    };
+    const cases = [_]struct {
+        old_role: schema.Role,
+        new_role: schema.Role,
+        old_selection: ?schema.TextSelection,
+        new_selection: ?schema.TextSelection,
+        old_run: bool = true,
+        new_run: bool = true,
+        expected: bool,
+    }{
+        .{ .old_role = .document, .new_role = .document, .old_selection = null, .new_selection = selection, .expected = true },
+        .{ .old_role = .document, .new_role = .document, .old_selection = selection, .new_selection = null, .expected = true },
+        .{ .old_role = .document, .new_role = .document, .old_selection = selection, .new_selection = extended, .expected = true },
+        .{ .old_role = .document, .new_role = .document, .old_selection = selection, .new_selection = selection, .expected = false },
+        .{ .old_role = .button, .new_role = .document, .old_selection = null, .new_selection = selection, .expected = false },
+        .{ .old_role = .document, .new_role = .button, .old_selection = selection, .new_selection = null, .expected = false },
+        .{ .old_role = .document, .new_role = .document, .old_run = false, .old_selection = null, .new_selection = selection, .expected = false },
+        .{ .old_role = .document, .new_role = .document, .new_run = false, .old_selection = selection, .new_selection = null, .expected = false },
+    };
+    for (cases) |case| {
+        var old_tree = try buildTree(gpa, 1, &.{
+            .{ .local = 1, .role = .window, .children = &.{2} },
+            .{ .local = 2, .role = case.old_role, .children = &.{3}, .text_selection = case.old_selection },
+            .{ .local = 3, .role = if (case.old_run) .text_run else .button, .value = "text" },
+        });
+        defer old_tree.deinit();
+        var new_tree = try buildTree(gpa, 1, &.{
+            .{ .local = 1, .role = .window, .children = &.{2} },
+            .{ .local = 2, .role = case.new_role, .children = &.{3}, .text_selection = case.new_selection },
+            .{ .local = 3, .role = if (case.new_run) .text_run else .button, .value = "text" },
+        });
+        defer new_tree.deinit();
+        var registry = elements.Registry.init(gpa, fixture.owner.context.weak());
+        defer registry.deinit(platform);
+        var queue = queued_events.QueuedEvents.init(gpa, queued_events.testAutomationApi());
+        defer expectCleanup(queue.deinit(platform));
+        var handler = Handler.init(gpa, platform, &registry, &queue, queued_events.testAutomationApi());
+        defer handler.deinit();
+        const id = old_tree.stateOf().rootId().withSameTree(.{ .value = 2 });
+        try handler.nodeUpdated(old_tree.stateOf().nodeById(id).?, new_tree.stateOf().nodeById(id).?);
+        try testing.expectEqual(@as(usize, if (case.expected) 1 else 0), queue.len());
+        if (case.expected) {
+            try testing.expectEqual(EventId.text_text_selection_changed, queue.at(0).?.simple.event_id);
+        }
+    }
+}
+
+test "property calculator failures preserve the first native error tag" {
+    const Calculator = struct {
+        fn calculate(_: std.mem.Allocator, _: Platform, _: *elements.Registry, _: *queued_events.QueuedEvents, _: NodeRef, _: NodeRef) HandlerError!void {
+            return error.ArrayLocked;
+        }
+    };
+    const gpa = testing.allocator;
+    var fixture = try ProviderFixture.init();
+    defer fixture.deinit();
+    const platform = adapter.testPlatform();
+    var tree = try buildTree(gpa, 1, &.{.{ .local = 1, .role = .window }});
+    defer tree.deinit();
+    var registry = elements.Registry.init(gpa, fixture.owner.context.weak());
+    defer registry.deinit(platform);
+    var queue = queued_events.QueuedEvents.init(gpa, queued_events.testAutomationApi());
+    defer expectCleanup(queue.deinit(platform));
+    var handler = Handler.init(gpa, platform, &registry, &queue, queued_events.testAutomationApi());
+    defer handler.deinit();
+    handler.property_calculator = Calculator.calculate;
+    const root = tree.stateOf().root();
+    const slots = handler.changeHandler();
+    slots.node_updated.?(slots.ptr, root, root);
+    handler.record(error.OutOfMemory);
+    const failure = handler.takeFailure().?;
+    try testing.expectEqual(error.ArrayLocked, failure.first_error.?);
+    try testing.expect(handler.takeFailure() == null);
+}
+
+fn expectCleanup(report: anytype) void {
+    testing.expect(report.first_error == null) catch @panic("Unexpected test cleanup failure");
+}
+
+test "unchanged raw text runs do not announce a text change" {
+    const gpa = testing.allocator;
+    var fixture = try ProviderFixture.init();
+    defer fixture.deinit();
+    const platform = adapter.testPlatform();
+    const specs = [_]NodeSpec{
+        .{ .local = 1, .role = .window, .children = &.{2} },
+        .{ .local = 2, .role = .document, .children = &.{3} },
+        .{ .local = 3, .role = .text_run, .value = "equal bytes" },
+    };
+    var old_tree = try buildTree(gpa, 1, &specs);
+    defer old_tree.deinit();
+    var new_tree = try buildTree(gpa, 1, &specs);
+    defer new_tree.deinit();
+    var registry = elements.Registry.init(gpa, fixture.owner.context.weak());
+    defer registry.deinit(platform);
+    var queue = queued_events.QueuedEvents.init(gpa, queued_events.testAutomationApi());
+    defer expectCleanup(queue.deinit(platform));
+    var handler = Handler.init(gpa, platform, &registry, &queue, queued_events.testAutomationApi());
+    defer handler.deinit();
+    const id = old_tree.stateOf().rootId().withSameTree(.{ .value = 3 });
+    try handler.nodeUpdated(old_tree.stateOf().nodeById(id).?, new_tree.stateOf().nodeById(id).?);
+    try testing.expectEqual(@as(usize, 0), queue.len());
+}
+
+test "removal drops registry ownership even when text notification allocation fails" {
+    const gpa = testing.allocator;
+    var fixture = try ProviderFixture.init();
+    defer fixture.deinit();
+    const platform = adapter.testPlatform();
+    var tree = try buildTree(gpa, 1, &.{
+        .{ .local = 1, .role = .window, .children = &.{2} },
+        .{ .local = 2, .role = .document, .children = &.{3} },
+        .{ .local = 3, .role = .text_run, .value = "text" },
+    });
+    defer tree.deinit();
+    var registry = elements.Registry.init(gpa, fixture.owner.context.weak());
+    defer registry.deinit(platform);
+    const state = tree.stateOf();
+    const run = state.nodeById(state.rootId().withSameTree(.{ .value = 3 })).?;
+    const stored = try registry.slotFor(platform, run.id());
+    try testing.expectEqual(stored, registry.existingSlot(run.id()).?);
+    var failing: std.testing.FailingAllocator = .init(gpa, .{ .fail_index = 0 });
+    var queue = queued_events.QueuedEvents.init(failing.allocator(), queued_events.testAutomationApi());
+    defer expectCleanup(queue.deinit(platform));
+    var handler = Handler.init(failing.allocator(), platform, &registry, &queue, queued_events.testAutomationApi());
+    defer handler.deinit();
+    try testing.expectError(error.OutOfMemory, handler.nodeRemoved(run));
+    try testing.expect(registry.existingSlot(run.id()) == null);
+    try testing.expectEqual(@as(usize, 0), registry.nodeCount());
+}
+
+test "raw text precedes calculated properties then text selection and calculator failure stops" {
+    const Calculator = struct {
+        fn calculate(_: std.mem.Allocator, platform: Platform, registry: *elements.Registry, queue: *queued_events.QueuedEvents, _: NodeRef, new: NodeRef) HandlerError!void {
+            const slot = try registry.slotFor(platform, new.id());
+            const change = try queue.beginProperty(slot, .selection_item_is_selected);
+            change.old = @import("util.zig").VariantOwner.fromI32(queue.automation, 1);
+            change.new = @import("util.zig").VariantOwner.fromI32(queue.automation, 2);
+        }
+        fn fail(_: std.mem.Allocator, _: Platform, _: *elements.Registry, _: *queued_events.QueuedEvents, _: NodeRef, _: NodeRef) HandlerError!void {
+            return error.ArrayLocked;
+        }
+    };
+    const gpa = testing.allocator;
+    var fixture = try ProviderFixture.init();
+    defer fixture.deinit();
+    const platform = adapter.testPlatform();
+    const caret: schema.TextPosition = .{
+        .node_id = .{ .value = 3 },
+        .character_index = 0,
+    };
+    const selection: schema.TextSelection = .{ .anchor = caret, .focus = caret };
+    var old_tree = try buildTree(gpa, 1, &.{
+        .{ .local = 1, .role = .window, .children = &.{2} },
+        .{ .local = 2, .role = .document, .children = &.{3} },
+        .{ .local = 3, .role = .text_run, .value = "before" },
+    });
+    defer old_tree.deinit();
+    var new_tree = try buildTree(gpa, 1, &.{
+        .{ .local = 1, .role = .window, .children = &.{2} },
+        .{ .local = 2, .role = .document, .children = &.{3}, .text_selection = selection },
+        .{ .local = 3, .role = .text_run, .value = "after" },
+    });
+    defer new_tree.deinit();
+    const old_state = old_tree.stateOf();
+    const new_state = new_tree.stateOf();
+    const document_id = old_state.rootId().withSameTree(.{ .value = 2 });
+    const run_id = old_state.rootId().withSameTree(.{ .value = 3 });
+    inline for (.{ false, true }) |fail_calculation| {
+        var registry = elements.Registry.init(gpa, fixture.owner.context.weak());
+        defer registry.deinit(platform);
+        var queue = queued_events.QueuedEvents.init(gpa, queued_events.testAutomationApi());
+        defer expectCleanup(queue.deinit(platform));
+        var handler = Handler.init(gpa, platform, &registry, &queue, queued_events.testAutomationApi());
+        defer handler.deinit();
+        handler.property_calculator = if (fail_calculation) Calculator.fail else Calculator.calculate;
+        const result = handler.nodeUpdated(old_state.nodeById(document_id).?, new_state.nodeById(document_id).?);
+        if (fail_calculation) {
+            try testing.expectError(error.ArrayLocked, result);
+            try testing.expectEqual(@as(usize, 0), queue.len());
+        } else {
+            try result;
+            try handler.nodeUpdated(old_state.nodeById(run_id).?, new_state.nodeById(run_id).?);
+            try testing.expectEqual(@as(usize, 3), queue.len());
+            try testing.expectEqual(EventId.text_text_changed, queue.at(0).?.simple.event_id);
+            try testing.expectEqual(syscalls.PropertyId.selection_item_is_selected, queue.at(1).?.property_changed.property_id);
+            try testing.expectEqual(EventId.text_text_selection_changed, queue.at(2).?.simple.event_id);
+        }
+    }
+}
+
+test "raw text changes distinguish absent and present empty values" {
+    const gpa = testing.allocator;
+    var fixture = try ProviderFixture.init();
+    defer fixture.deinit();
+    const platform = adapter.testPlatform();
+    var old_tree = try buildTree(gpa, 1, &.{
+        .{ .local = 1, .role = .document, .children = &.{2} },
+        .{ .local = 2, .role = .text_run },
+    });
+    defer old_tree.deinit();
+    var new_tree = try buildTree(gpa, 1, &.{
+        .{ .local = 1, .role = .document, .children = &.{2} },
+        .{ .local = 2, .role = .text_run, .value = "" },
+    });
+    defer new_tree.deinit();
+    var registry = elements.Registry.init(gpa, fixture.owner.context.weak());
+    defer registry.deinit(platform);
+    var queue = queued_events.QueuedEvents.init(gpa, queued_events.testAutomationApi());
+    defer expectCleanup(queue.deinit(platform));
+    var handler = Handler.init(gpa, platform, &registry, &queue, queued_events.testAutomationApi());
+    defer handler.deinit();
+    const id = old_tree.stateOf().rootId().withSameTree(.{ .value = 2 });
+    try handler.nodeUpdated(old_tree.stateOf().nodeById(id).?, new_tree.stateOf().nodeById(id).?);
+    try testing.expectEqual(@as(usize, 1), queue.len());
+    try testing.expectEqual(EventId.text_text_changed, queue.at(0).?.simple.event_id);
 }
