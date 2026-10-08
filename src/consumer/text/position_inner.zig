@@ -55,18 +55,13 @@
 //! `comparable` normalizes with `biasedToStart`, which is what makes two
 //! positions that name the same boundary compare equal.
 //!
-//! **Why this module owns the text-run walks.** `docs/33-consumer-interface-contract.md`
-//! section 1.1 row 14 gives this module the biased helpers, and every one of
-//! them needs the first following or the first preceding text run.
-//! `text/query.zig` also declares those three iterators, and this module may not
-//! import it: section 1.1 row 22 records that `text/query.zig` needs
-//! `text/position.zig`, and section 3's prohibition row for this module names
-//! `query.zig` explicitly. One of the two declarations has to be the one this
-//! module reads, and it is this one, because this module sits below every
-//! caller and every caller already imports it. The filter itself is not
-//! duplicated: `text/hit_test.zig` owns `text_run_filter` and this module uses
-//! it. The duplicate to remove is the three iterator builders in
-//! `text/query.zig`; the report names the exact lines.
+//! **Why this module owns the text-run walks.** The biased helpers need the
+//! first following or preceding text run, and `text/query.zig` depends on those
+//! helpers through `text/position.zig`. The query module therefore reuses the
+//! walks here rather than introducing a production import cycle.
+//! `text/hit_test.zig` owns both filters. Descendant cursors use the stateless
+//! text-run filter; sibling cursors own the document root ID and pass it to
+//! `textNodeFilter` only during each synchronous scan.
 //!
 //! **What this module deliberately does not own.** `Position` and the thirty
 //! movement methods are `text/position.zig`'s and `text/position_motion.zig`'s.
@@ -101,11 +96,15 @@ const node_ids = @import("../node_id.zig");
 const properties = @import("../node_ref/properties.zig");
 const tree_index = @import("../tree_index.zig");
 const tree_state = @import("../tree_state.zig");
+const filter = @import("../filter.zig");
+const children_iterators = @import("../iterators/children.zig");
+const following_iterators = @import("../iterators/following.zig");
+const sibling_scan = @import("../iterators/sibling_scan.zig");
 // The cursor types are bound from the iterator modules rather than from
 // `node_ref/hierarchy.zig`, because that file binds them privately while its own
 // three wrappers return them. A caller that names the type needs the owner.
-const FilteredChildrenIterator = @import("../iterators/children.zig").FilteredChildrenIterator;
-const FilteredSiblingsIterator = @import("../iterators/following.zig").FilteredSiblingsIterator;
+const FilteredChildrenIterator = children_iterators.FilteredChildrenIterator;
+const FilteredSiblingsIterator = following_iterators.FilteredSiblingsIterator;
 
 const FullNodeId = tree_index.FullNodeId;
 const NodeRef = node_ids.NodeRef;
@@ -390,10 +389,9 @@ pub fn textRuns(root_node: NodeRef) QueryError!FilteredChildrenIterator {
 
 /// The text runs that follow `node` among its siblings, nearest first.
 ///
-/// `root_node` is the node the document's text hangs off. Upstream threads it
-/// only to build the filter's captured root id at `text.rs:1391`, and the port's
-/// filter carries no context, so the walk depends on nothing but the sibling
-/// list and the parameter is kept for the caller to read the intent.
+/// `root_node` bounds the document even when `node` is nested in transparent
+/// containers. The returned cursor owns its root ID by value, so its filter
+/// context remains valid after the cursor is returned or copied.
 ///
 /// `error.TreeCycle` and `error.NoSuchNode` come from the sibling scan. Upstream
 /// `NodeRef::following_text_runs` at `text.rs:1386-1392`.
@@ -401,14 +399,12 @@ pub fn followingTextRuns(
     node: NodeRef,
     root_node: NodeRef,
 ) QueryError!FilteredSiblingsIterator {
-    _ = root_node;
-    return hierarchy.followingFilteredSiblings(node, hit_test.text_run_filter);
+    return textRunSiblings(node, root_node, .following);
 }
 
 /// The text runs that precede `node` among its siblings, nearest first.
 ///
-/// `root_node` is the node the document's text hangs off, and it is the root the
-/// walk is measured against; see `followingTextRuns` for why it is a parameter.
+/// The same root boundary and value-owned filter context as `followingTextRuns`.
 ///
 /// `error.TreeCycle` and `error.NoSuchNode` come from the sibling scan. Upstream
 /// `NodeRef::preceding_text_runs` at `text.rs:1394-1400`.
@@ -416,8 +412,36 @@ pub fn precedingTextRuns(
     node: NodeRef,
     root_node: NodeRef,
 ) QueryError!FilteredSiblingsIterator {
-    _ = root_node;
-    return hierarchy.precedingFilteredSiblings(node, hit_test.text_run_filter);
+    return textRunSiblings(node, root_node, .preceding);
+}
+
+fn textRunSiblings(
+    node: NodeRef,
+    root_node: NodeRef,
+    direction: following_iterators.ScanDirection,
+) QueryError!FilteredSiblingsIterator {
+    var root_id = root_node.id();
+    const root_filter: filter.FilterFn = .{
+        .context = @ptrCast(&root_id),
+        .filter = hit_test.textNodeFilter,
+    };
+    const front = switch (direction) {
+        .following => try sibling_scan.nextFilteredSibling(node, root_filter),
+        .preceding => try sibling_scan.previousFilteredSibling(node, root_filter),
+    };
+    const back = switch (direction) {
+        .following => try children_iterators.lastFilteredChild(root_node, root_filter),
+        .preceding => try children_iterators.firstFilteredChild(root_node, root_filter),
+    };
+    return .{
+        // The stack context is used only above, never retained by the cursor.
+        .filter = .{ .context = null, .filter = hit_test.textNodeFilter },
+        .filter_root_id = root_id,
+        .front = front,
+        .back = back,
+        .done = front == null or back == null,
+        .direction = direction,
+    };
 }
 
 /// The first position of `root_node`'s document: character zero of its first run.
@@ -702,6 +726,85 @@ fn runWith(text: []const u8, byte_lengths: []const u8) !Node {
     return run;
 }
 
+fn putRun(
+    state: *TreeState,
+    raw_id: u64,
+    parent: ParentAndIndex,
+    text: []const u8,
+    lengths: []const u8,
+) !void {
+    var run = try runWith(text, lengths);
+    errdefer run.deinit();
+    try put(state, localId(raw_id), parent, run);
+}
+
+fn putBranch(
+    state: *TreeState,
+    raw_id: u64,
+    parent: ?ParentAndIndex,
+    role: schema.Role,
+    children: []const NodeId,
+) !void {
+    var node = Node.init(test_allocator, role);
+    errdefer node.deinit();
+    try schema.ids_props.setChildren(&node.properties, children);
+    try put(state, localId(raw_id), parent, node);
+}
+
+/// The seven-node AT-SPI tree, with the text root before or after non-text siblings.
+fn textRootBoundaryFixture(root_first: bool) !TreeState {
+    var state = testState();
+    errdefer state.deinit(test_allocator);
+    state.root_id = fullId(localId(0));
+    state.focus_id = fullId(localId(0));
+    const children = if (root_first)
+        [_]NodeId{ localId(3), localId(1), localId(2) }
+    else
+        [_]NodeId{ localId(1), localId(2), localId(3) };
+    try putBranch(&state, 0, null, .window, &children);
+    try putBranch(&state, 1, parentOf(localId(0), if (root_first) 1 else 0), .image, &.{});
+    try putBranch(&state, 2, parentOf(localId(0), if (root_first) 2 else 1), .list_box,
+        &.{ localId(4), localId(5) });
+    try putBranch(&state, 3, parentOf(localId(0), if (root_first) 0 else 2), .text_input,
+        &.{localId(6)});
+    try putBranch(&state, 4, parentOf(localId(2), 0), .list_box_option, &.{});
+    try putBranch(&state, 5, parentOf(localId(2), 1), .list_box_option, &.{});
+    var run = try runWith("abc", &.{ 1, 1, 1 });
+    errdefer run.deinit();
+    try schema.strings.setFontFamily(&run.properties, "monospace");
+    try put(&state, localId(6), parentOf(localId(3), 0), run);
+    return state;
+}
+
+/// Transparent branches contain two document runs; an external branch contains another run.
+fn nestedTextRootFixture() !TreeState {
+    var state = testState();
+    errdefer state.deinit(test_allocator);
+    state.root_id = fullId(localId(0));
+    state.focus_id = fullId(localId(0));
+    try putBranch(&state, 0, null, .window, &.{ localId(1), localId(2), localId(7) });
+    try putBranch(&state, 1, parentOf(localId(0), 0), .image, &.{});
+    try putBranch(&state, 2, parentOf(localId(0), 1), .text_input,
+        &.{ localId(3), localId(4) });
+    try putBranch(&state, 3, parentOf(localId(2), 0), .generic_container, &.{localId(5)});
+    try putBranch(&state, 4, parentOf(localId(2), 1), .generic_container, &.{localId(6)});
+    {
+        var first = try runWith("ab", &.{ 1, 1 });
+        errdefer first.deinit();
+        try schema.strings.setFontFamily(&first.properties, "serif");
+        try put(&state, localId(5), parentOf(localId(3), 0), first);
+    }
+    {
+        var second = try runWith("cd", &.{ 1, 1 });
+        errdefer second.deinit();
+        try schema.strings.setFontFamily(&second.properties, "monospace");
+        try put(&state, localId(6), parentOf(localId(4), 0), second);
+    }
+    try putBranch(&state, 7, parentOf(localId(0), 2), .generic_container, &.{localId(8)});
+    try putRun(&state, 8, parentOf(localId(7), 0), "outside", &.{1} ** 7);
+    return state;
+}
+
 test "upgrade answers null for a node that is not a text run" {
     var state = testState();
     defer state.deinit(test_allocator);
@@ -888,6 +991,192 @@ test "isDocumentStart and isDocumentEnd answer only at the two outer ends" {
     // A middle run has both a preceding and a following run.
     try testing.expect(!try isDocumentStart(.{ .node = two, .character_index = 0 }, root));
     try testing.expect(!try isDocumentEnd(.{ .node = two, .character_index = 1 }, root));
+}
+
+test "text sibling scans stop at their document root" {
+    // Both placements retain exactly seven nodes and consistent parent/index links.
+    for ([_]bool{ false, true }) |root_first| {
+        var state = try textRootBoundaryFixture(root_first);
+        defer state.deinit(test_allocator);
+        try testing.expectEqual(@as(usize, 7), state.nodes.count());
+        const root = try refOf(&state, localId(3));
+        const run = try refOf(&state, localId(6));
+        var preceding = try precedingTextRuns(run, root);
+        try testing.expect((try preceding.next()) == null);
+        try testing.expect((try preceding.nextBack()) == null);
+        var following = try followingTextRuns(run, root);
+        try testing.expect((try following.next()) == null);
+        try testing.expect((try following.nextBack()) == null);
+        const start: InnerPosition = .{ .node = run, .character_index = 0 };
+        const end: InnerPosition = .{ .node = run, .character_index = 3 };
+        try testing.expect(try isDocumentStart(start, root));
+        try testing.expect(try isDocumentEnd(end, root));
+        try testing.expect(!try isDocumentStart(end, root));
+        try testing.expect(!try isDocumentEnd(start, root));
+        try testing.expect(eql(start, try biasedToEnd(start, root)));
+        try testing.expect(eql(end, try biasedToStart(end, root)));
+    }
+}
+
+test "text child cursors yield their final document run without leaving the root" {
+    for ([_]bool{ false, true }) |root_first| {
+        var state = try textRootBoundaryFixture(root_first);
+        defer state.deinit(test_allocator);
+        const root = try refOf(&state, localId(3));
+        const expected = fullId(localId(6));
+        var forward = try textRuns(root);
+        try testing.expectEqual(expected, (try forward.next()).?.id());
+        try testing.expect((try forward.next()) == null);
+        var backward = try textRuns(root);
+        try testing.expectEqual(expected, (try backward.nextBack()).?.id());
+        try testing.expect((try backward.nextBack()) == null);
+    }
+}
+
+test "text root range and format queries exclude surrounding nontext siblings" {
+    const query = @import("query.zig");
+    const range = @import("range.zig");
+    const inherited = @import("inherited.zig");
+    const position = @import("position.zig");
+    for ([_]bool{ false, true }) |root_first| {
+        var state = try textRootBoundaryFixture(root_first);
+        defer state.deinit(test_allocator);
+        const root = try refOf(&state, localId(3));
+        const whole = try query.documentRange(test_allocator, root);
+        try testing.expectEqual(fullId(localId(6)), whole.start.node.id());
+        try testing.expectEqual(@as(usize, 0), whole.start.character_index);
+        try testing.expectEqual(fullId(localId(6)), whole.end.node.id());
+        try testing.expectEqual(@as(usize, 3), whole.end.character_index);
+        var text = try range.text(test_allocator, whole);
+        defer text.deinit(test_allocator);
+        try testing.expectEqualStrings("abc", text.items);
+        const family = try inherited.rangeFontFamily(test_allocator, whole);
+        switch (family) {
+            .single => |value| try testing.expectEqualStrings("monospace", value.?),
+            .mixed => return error.UnexpectedMixedFontFamily,
+        }
+        const start: position.Position = .{ .root_node = root, .inner = whole.start };
+        const end: position.Position = .{ .root_node = root, .inner = whole.end };
+        try testing.expect(try position.isFormatStart(start));
+        try testing.expect(!try position.isFormatStart(end));
+        try testing.expectEqual(@as(usize, 0), try position.toGlobalUsvIndex(start));
+        try testing.expectEqual(@as(usize, 3), try position.toGlobalUsvIndex(end));
+    }
+}
+
+test "nested text root ranges retain text attributes and boundary positions" {
+    const query = @import("query.zig");
+    const range = @import("range.zig");
+    const inherited = @import("inherited.zig");
+    const position = @import("position.zig");
+    var state = try nestedTextRootFixture();
+    defer state.deinit(test_allocator);
+    const root = try refOf(&state, localId(2));
+    const whole = try query.documentRange(test_allocator, root);
+    var text = try range.text(test_allocator, whole);
+    defer text.deinit(test_allocator);
+    try testing.expectEqualStrings("abcd", text.items);
+    try testing.expect((try inherited.rangeFontFamily(test_allocator, whole)) == .mixed);
+    const left: position.Position = .{
+        .root_node = root,
+        .inner = .{ .node = try refOf(&state, localId(5)), .character_index = 2 },
+    };
+    const right: position.Position = .{
+        .root_node = root,
+        .inner = .{ .node = try refOf(&state, localId(6)), .character_index = 0 },
+    };
+    try testing.expectEqualStrings("serif", (try inherited.positionFontFamily(left)).?);
+    try testing.expectEqualStrings("monospace", (try inherited.positionFontFamily(right)).?);
+    try testing.expect(!try position.isFormatStart(left));
+    try testing.expect(try position.isFormatStart(right));
+    try testing.expectEqual(@as(usize, 2), try position.toGlobalUsvIndex(left));
+    try testing.expectEqual(@as(usize, 2), try position.toGlobalUsvIndex(right));
+}
+
+test "text sibling scans cross nested branches but never enter external runs" {
+    var state = try nestedTextRootFixture();
+    defer state.deinit(test_allocator);
+    const root = try refOf(&state, localId(2));
+    const first = try refOf(&state, localId(5));
+    const second = try refOf(&state, localId(6));
+    var following = try followingTextRuns(first, root);
+    try testing.expectEqual(second.id(), (try following.next()).?.id());
+    try testing.expect((try following.next()) == null);
+    var following_back = try followingTextRuns(first, root);
+    try testing.expectEqual(second.id(), (try following_back.nextBack()).?.id());
+    try testing.expect((try following_back.nextBack()) == null);
+    var preceding = try precedingTextRuns(second, root);
+    try testing.expectEqual(first.id(), (try preceding.next()).?.id());
+    try testing.expect((try preceding.next()) == null);
+    var preceding_back = try precedingTextRuns(second, root);
+    try testing.expectEqual(first.id(), (try preceding_back.nextBack()).?.id());
+    try testing.expect((try preceding_back.nextBack()) == null);
+    const start: InnerPosition = .{ .node = first, .character_index = 0 };
+    const left_boundary: InnerPosition = .{ .node = first, .character_index = 2 };
+    const right_boundary: InnerPosition = .{ .node = second, .character_index = 0 };
+    const end: InnerPosition = .{ .node = second, .character_index = 2 };
+    try testing.expect(try isDocumentStart(start, root));
+    try testing.expect(try isDocumentEnd(end, root));
+    try testing.expect(!try isDocumentEnd(left_boundary, root));
+    try testing.expect(!try isDocumentStart(right_boundary, root));
+    try testing.expect(eql(right_boundary, try biasedToStart(left_boundary, root)));
+    try testing.expect(eql(left_boundary, try biasedToEnd(right_boundary, root)));
+    try testing.expect(textAttributesDiffer(first, second));
+}
+
+test "text root traversal handles empty transparent branches within the document" {
+    const query = @import("query.zig");
+    const range = @import("range.zig");
+    for ([_]bool{ false, true }) |branch_first| {
+        var state = testState();
+        defer state.deinit(test_allocator);
+        const children = if (branch_first)
+            [_]NodeId{ localId(3), localId(2) }
+        else
+            [_]NodeId{ localId(2), localId(3) };
+        try putBranch(&state, 1, null, .text_input, &children);
+        try putRun(&state, 2, parentOf(localId(1), if (branch_first) 1 else 0), "a", &.{1});
+        try putBranch(&state, 3, parentOf(localId(1), if (branch_first) 0 else 1),
+            .generic_container, &.{localId(4)});
+        try putBranch(&state, 4, parentOf(localId(3), 0), .generic_container, &.{localId(5)});
+        try putBranch(&state, 5, parentOf(localId(4), 0), .generic_container, &.{localId(6)});
+        try putBranch(&state, 6, parentOf(localId(5), 0), .generic_container, &.{});
+        try testing.expectEqual(@as(usize, 6), state.nodes.count());
+        const root = try refOf(&state, localId(1));
+        const run = try refOf(&state, localId(2));
+        var preceding = try precedingTextRuns(run, root);
+        try testing.expect((try preceding.next()) == null);
+        var following = try followingTextRuns(run, root);
+        try testing.expect((try following.next()) == null);
+        try testing.expect(try isDocumentStart(.{ .node = run, .character_index = 0 }, root));
+        try testing.expect(try isDocumentEnd(.{ .node = run, .character_index = 1 }, root));
+        const whole = try query.documentRange(test_allocator, root);
+        var text = try range.text(test_allocator, whole);
+        defer text.deinit(test_allocator);
+        try testing.expectEqualStrings("a", text.items);
+    }
+}
+
+test "text sibling scans retain bounded TreeCycle and missing child errors" {
+    var state = testState();
+    defer state.deinit(test_allocator);
+    try putBranch(&state, 1, null, .text_input, &.{localId(2)});
+    try putRun(&state, 2, parentOf(localId(3), 0), "a", &.{1});
+    try putBranch(&state, 3, parentOf(localId(4), 0), .generic_container, &.{localId(2)});
+    try putBranch(&state, 4, parentOf(localId(3), 0), .generic_container, &.{localId(3)});
+    const root = try refOf(&state, localId(1));
+    const run = try refOf(&state, localId(2));
+    try testing.expectError(error.TreeCycle, precedingTextRuns(run, root));
+    try testing.expectError(error.TreeCycle, followingTextRuns(run, root));
+
+    // Repair the cycle, then name an absent sibling on each side of the run.
+    const slot = state.nodes.getPtr(fullId(localId(2))).?;
+    slot.parent_and_index = parentOf(localId(1), 1);
+    const root_slot = state.nodes.getPtr(fullId(localId(1))).?;
+    try schema.ids_props.setChildren(&root_slot.data.properties,
+        &.{ localId(9), localId(2), localId(10) });
+    try testing.expectError(error.NoSuchNode, precedingTextRuns(run, root));
+    try testing.expectError(error.NoSuchNode, followingTextRuns(run, root));
 }
 
 test "biasedToStart moves forward across a run boundary and only at a run end" {
