@@ -11,6 +11,11 @@ The corpus it reads: `docs/10`, `docs/11`, `docs/13`, `docs/15`, `docs/18`,
 repository's `build.zig`, `src/root.zig` and `cross-test.profile.sh`, and
 `~/.local/bin/zig-gate`.
 
+Sections 3–7 retain the original verification design and research-era observations.
+Their host-absence and empty-registry statements describe those earlier receipts, not the latest host state.
+Their acceptance requirements remain in force.
+Section 11 records the current source, portable, and real-peer limits.
+
 ---
 
 ## 1. The proof vocabulary
@@ -43,8 +48,8 @@ becomes an RO claim because a test binary exists.
 Sections 2 through 5 preserve the original verification design.
 Their unproven labels describe that design record, not the current source.
 Sections 6 through 9 record earlier port checks and corrections.
-Section 10 records the API integration work and its observed checks.
-Later evidence supersedes earlier counts only where it names the same check.
+Section 10 records earlier API integration work and its observed checks.
+Section 11 records steps 1–4. Later evidence supersedes earlier counts only for the same named check.
 
 The research probes remain separate from port checks.
 The goose live-bus probe ran in a separate scratch package.
@@ -233,10 +238,10 @@ Hand-computed expected values are `[INFERENCE]`, not Rust runtime output.
 
 **Integrity.** The loader checks raw byte length and SHA-256 before it parses each body.
 It then checks case identity, provenance, and exact production output.
-The geometry body contains four cases. The text body contains eight cases.
-Section 10 records their lengths, hashes, and observed checks.
+The current geometry body contains seven cases. The text body contains eight cases.
+Sections 10 and 11 distinguish the earlier twelve-case receipts from the current fifteen-case source inventory.
 
-**Proves.** The checked Zig operations match these twelve stored expected results.
+**Proves when exercised.** The checked Zig operations match the stored expected results for that receipt.
 The integrity checks detect changed fixture bytes.
 
 **Does not prove.** The loader does not execute Rust.
@@ -1195,8 +1200,148 @@ This counted native-suite PASS does not change the failed full-gate or PowerPC64
 
 The user accepted the disclosed external-checker failures and unsupported PowerPC64 C boundary for publication.
 All checks remain enabled.
-The ledger remains at 57 open rows.
+The earlier ledger had 57 open rows. The reconciled source inventory is in `docs/52-translation-ledger.md`.
 Hand-recorded reference cases remain finite source-reference evidence, not an executed Rust oracle or wire-parity proof.
-No receipt claims real-platform accessibility attachment.
+These earlier receipts do not claim real-platform accessibility attachment.
 Nogui remains source-only and was not executed.
 
+
+## 11. Steps 1–4: source integration and observed limits
+
+### 11.1 Evidence authority
+
+The source baseline for this documentation workspace is `101f912320e225626ca833626dc2895eb0343418`.
+Later owner revisions are explicit in `docs/52-translation-ledger.md`.
+Source integration is not a native SDK or bus result.
+This documentation task ran no build, test, formatter, linter, native client, or nogui program.
+
+The parent retained actual receipts under `/tmp/cache/zaccesskit/evidence/execute-1-4-red/` and `execute-1-4-green/`.
+Each JSON receipt records the command, status, stdout, and stderr.
+The directory name does not establish a PASS. The recorded status and executed test count do.
+For example, `atomic-core-all.json` records a compile failure.
+The later `atomic-core-final-fixture.json` records nine executed passing tests.
+The zero-test `main-macos-context-portable.json` establishes no Mac context behavior.
+Only the forced-import receipt below supports that claim.
+
+### 11.2 Portable and compilation receipts
+
+All focused JSON paths below are relative to `execute-1-4-green/`.
+
+| Receipt | Observed result | Scope |
+|---|---|---|
+| `atomic-core-final-fixture.json` | Exit 0, 9/9 tests passed | Fail-N transaction rejection, focus, custom action ownership, recovery, subtree registration, metadata-only graft, relocation, and retry |
+| `c-allocator-all.json` | Exit 0, 6/6 tests passed | Installed C allocator alignment and matching original-pointer release |
+| `positioned-unicode.json` | Exit 0, 1/1 test passed | Decoded optional positioned edits changed a real Unicode consumer tree |
+| `positioned-fifo.json` | Exit 0, 1/1 test passed | Ordered edits used the live host model before consumer publication |
+| `positioned-readonly.json` | Exit 0, 1/1 test passed | Disabled and read-only consumer nodes refused positioned edits |
+| `positioned-failn.json` | Exit 0, 1/1 test passed | Fail-N edits released each allocation |
+| `positioned-reply-preflight.json` | Exit 0, 1/1 test passed | Reply limits refused the edit before host mutation |
+| `mobile-owned-producers.json` | Exit 0, 3/3 tests passed | Android and iOS callbacks owned independent configured-domain values, plus the import harness |
+| `mobile-interior-nul.json` | Exit 0, 3/3 tests passed | Both producers preserved borrowed bytes and released C allocations on `InteriorNul`, plus the import harness |
+| `ios-public-diagnostic.json` | Exit 0, 2/2 tests passed | Actual public `OrphanChild` diagnostic, plus the import harness |
+| `android-null-factory.json` | Exit 0, 2/2 tests passed | Actual null-factory diagnostic, plus the import harness |
+| `ios-public-debug-raw-origin-green.json` | Exit 0, 1/1 test passed | Public string destructor released the configured raw CString after adapter free |
+| `windows-root-c-error-green.json` | Exit 0, 1/1 test passed | Rejected public C update retained exact diagnostics and committed tree |
+| `windows-root-debug-domain-green.json` | Exit 0, 1/1 test passed | Configured public string destructor owned the returned CString |
+| `subclass-refusal-threaded-runtime-green.json` | Exit 0, 1/1 test passed | Constructor refusal left the caller runtime reusable |
+| `subclass-oom-threaded-runtime-green.json` | Exit 0, 1/1 test passed | Each constructor allocation failure preserved caller runtime authority |
+| `subclass-transfer-threaded-runtime-green.json` | Exit 0, 1/1 test passed | Successful transfer retained authority through the final weak handle |
+| `macos-context-forced-import.json` | Exit 0, 10 passed, 2 skipped, 0 failed | Actual context admission, join, weak retention, payload release, pin limits, failure atomicity, scoped placeholder epoch, and Threaded runtime authority |
+| `android-all-final-fixtures-debug.json` | Exit 1, 1676 passed, 0 skipped, 2 failed | Zero scroll maximum read as null. Queue-OOM fixture rejected before the intended post-commit queue allocation |
+| `schema-sorted-merge-green.json` | Exit 0, 2/2 tests passed | Zero scroll maximum and interleaved owning strings survived sorted merge and fail-N |
+| `schema-table-all-green.json` | Exit 0, 169/169 tests passed | Unconditional full property-table test import, including dependencies |
+| `android-all-canonical-debug.json` | Exit 1, compilation failed before tests | Full declaration reachability exposed stale integration fixtures and error-domain assertions; no executed pass count |
+| `android-all-canonical-releasesafe.json` | Exit 1, compilation failed before tests | Same analysis failures in ReleaseSafe; no executed pass count |
+| `actual-daemon-sender-green.json` | Exit 0, 1/1 tests passed | Actual captured daemon Hello reply accepts the reserved driver sender and preserves the assigned unique name |
+| `dbus-codec-all-green.json` | Exit 0, 32/32 tests passed | Entire codec and signature suite, including ordinary well-known sender spoof rejection |
+
+The three Windows runtime tests used actual `Io.concurrent` filesystem work and `Future.await`.
+They did not infer runtime validity from copied function pointers.
+The Mac skips require native Objective-C activation and hit-test window reentry.
+The scoped Mac epoch covers placeholder-to-current-full publication only.
+It does not establish generic per-node generations or permanent defunct state after an ID reappears.
+
+The Android full-module receipt is not green.
+The zero-maximum failure exposed a sorted-property merge defect.
+`execute-1-4-red/schema-sorted-merge-red.json` executed both regression tests and failed both.
+The later focused and full-table receipts above passed after the insertion-order fix.
+The queue-OOM fixture also required correction to reach the intended post-commit failure.
+The later canonical full-module imports failed during compilation in both safety modes.
+The required declaration guards exposed those failures; they are not behavior proof or optional checks.
+No completed full Android Debug or ReleaseSafe receipt exists yet.
+No completed Android acceptance or JNI execution claim follows from this failing run.
+The table-only source snapshot is `e8cd20cbd2b07ab3b96bf0ce97c0c3db3aa1e14a`.
+The parent integrated it at `269a754c91f8b5efcf8d7e977777fcd827accb59`.
+The source map is `accesskit/src/lib.rs:1164-1167` to `src/schema/props/table.zig:1512-1563`.
+
+The parent observation record is `local://native-contract-and-sdk-observed.json`.
+
+| Exact parent command | Observed result | Limit |
+|---|---|---|
+| `zig build native-contract --prefix /tmp/cache/zaccesskit/execute-1-4-out` | Exit 0. Debug: 18 passed, 1 skipped. ReleaseSafe: 18 passed, 1 skipped | The custom NSWindow focus case requires a real macOS SDK and runtime |
+| `zig build windows-native-client -Dtarget=x86_64-windows-gnu --prefix /tmp/cache/zaccesskit/execute-1-4-windows-out` | Exit 0 | Cross-compilation only. No Windows client executed |
+
+Portable receipts do not prove UI Automation, AppKit, VoiceOver, or JNI behavior.
+No Mac SDK client result exists in this record.
+There is no iOS or Android SDK-client executable, app, or device run step.
+The library constructors are not native client entrypoints (`build.zig:200-275,678-707`).
+The iOS accessibility-element, hit-test, and node-notification gaps remain
+at `src/adapters/ios/root.zig:199-228,905-955`.
+Android still needs the real VM, view, delegate class, SDK/NDK, and device or emulator lane
+(`src/adapters/android/injecting.zig:79-107,145-177`, `jni.zig:10-16`, `jni_table.zig:23-36`).
+Portable mobile tests and minimal compiler probes establish none of these native prerequisites.
+
+### 11.3 Real Linux observation
+
+The earlier parent run started an actual GNOME accessibility registry.
+An independent `GetChildren` call returned `(@a(so) [],)`.
+The provider start then returned `START_REJECTED InvalidHeader remote=none`.
+That red observation is preserved in `local://native-contract-and-sdk-observed.json`.
+
+The later sender correction is `c6ac4e75eb6c3596a430e9f0f9088aee8576c56a`.
+Main compiled the CLI with exit 0 and started an owned D-Bus daemon and actual GNOME accessibility service.
+The provider reported `OUTCOME committed attachment 1 usedfull true notif none`.
+Independent `busctl` identified provider `:1.2`; independent stock `gdbus` then returned
+`[(':1.2', objectpath '/org/a11y/atspi/accessible/root')]` from registry `GetChildren`.
+This is observed registration, not inferred registration from a synthetic peer.
+The full twelve-interface, action, update, event, removal, and teardown matrix remains pending.
+
+The accepted captured frame is the actual 89-byte daemon Hello return, not a hand-derived packet.
+`src/adapters/atspi/dbus_corpus/daemon-hello-return.bin` has SHA-256
+`59de2c6f17737b660704386754a904f823fd2e5543c254277190fb12c59e39d7`.
+The capture is `execute-1-4-green/native-startup-bounded-wire-red.json`.
+`src/adapters/atspi/dbus.zig:888-897` records it as the fifth corpus descriptor.
+`actual-daemon-sender-green.json` and `dbus-codec-all-green.json` prove captured-frame decoding and the sender grammar tests.
+They do not replace the independent live matrix.
+
+### 11.4 Recorded geometry and profiling
+
+The fixture inventory now contains seven geometry cases and eight text cases.
+`test/fixtures/geometry.json:7-9` adds independent far-edge exclusion, empty-origin containment, and all-zero affine inverse classification.
+The pinned source is `accesskit/src/geometry.rs:519-521,99-113`.
+`reference_root.zig:194-209,260-280` checks the same production operations through schema and C routes.
+`test/c_consumer/consumer.c:1791-1810,1867-1876` adds independent public C assertions.
+The geometry body has 3097 bytes.
+Its SHA-256 is `6d56a673b21d02425e35adab4d23f0cfb54fd7a5afd191eb1124c21f86848e04`.
+
+These values are finite, source-derived, hand-recorded fixtures.
+They are not Rust runtime output or wire-parity proof.
+The six-NaN inverse result applies to the all-zero affine fixture, not every singular matrix.
+Earlier twelve-case receipts remain twelve-case evidence.
+
+`local://current-lbr-attribution.json` records source-attributed synthetic whole-process profiles.
+Its profiled binary predates the transaction changes.
+The attribution does not justify a production optimization.
+No speedup or native accessibility latency claim follows from these profiles.
+
+### 11.5 Public consumer usage limit
+
+The public usage contract requires explicit allocator, I/O, runtime authority, callbacks, current-full publication, and close barriers.
+The host keeps its accepted baseline unchanged after a rejected update.
+After a committed update, the host advances that baseline even when notification delivery reports an error.
+The host retains runtime authority through providers and queued notifications, not only through adapter close.
+`docs/30-port-design.md` section 12 and `docs/52-translation-ledger.md` map these contracts.
+
+The nogui migration is source-only.
+No nogui build, test, launch, headless execution, native attachment, or runtime equivalence result is claimed.
+This record publishes no private paths, source snippets, or private fixtures.

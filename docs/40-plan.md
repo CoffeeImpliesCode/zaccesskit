@@ -17,11 +17,9 @@ figure is a size somebody expects. Where a fact comes from a document that
 measured it, the label says so. Where this plan is guessing, the label says that
 too. A reader must not treat an entry gate here as a result.
 
-**What changed under this plan.** The plan was written against an empty tree on
-2026-10-05, and section 1.1 corrects the sentences that describe that tree. The
-milestone tables are not corrected, because a milestone states what a slice must
-produce and what gate it must pass, and a milestone that has been reached is still
-described by its target.
+**What changed under this plan.** The original milestones remain acceptance targets, not completion claims.
+Section 1.1 preserves a historical source census. It is not the current import graph.
+Section 1.3 records steps 1–4 against the reconciled ledger and actual receipts.
 
 ## 1. What this plan is and is not
 
@@ -42,7 +40,7 @@ code, no test, no C header and no adapter. Every line of Zig the port will
 contain does not exist yet." Every one of those sentences is now false, and
 section 1.1 carries the measurement that says so.
 
-### 1.1 The tree as it stands, measured 2026-10-05T20:02+02:00
+### 1.1 Historical tree census, measured 2026-10-05T20:02+02:00
 
 A comment-aware walk of the `@import` graph from `src/root.zig`, skipping `std`,
 `builtin`, `zio` and `build_options`. Line counts come from `wc -l`. The test
@@ -76,8 +74,10 @@ and `src/adapters/windows/root.zig:19-31` records the measurement.
 `:106`, `:115` and `:122`, which is why a green `zig build test` reaches all 24
 schema modules.
 
-This census counts files and declarations. It runs no compiler.
-`docs/50-verification.md` owns the run evidence, and this plan cites none of it.
+This historical census counts files and declarations. It runs no compiler.
+Its five-name root and unreachable Windows files do not describe the current published source.
+`docs/30-port-design.md` sections 1.3 and 12 record the current contracts.
+`docs/50-verification.md` owns the run evidence.
 
 A milestone here is a named set of upstream files translated, with an entry gate
 that can fail. It is not a sprint and it is not a date. The unit is the upstream
@@ -111,7 +111,7 @@ This table does not repeat the house gate command list.
 | `zig build integration` | Run the pure application-model command-to-Tree update tests in Debug and ReleaseSafe |
 | `zig build integration-run -Doptimize=ReleaseSafe` | Run the exact eight-node offline application scenario |
 | `zig build reference` | Load the pinned, hand-recorded JSON fixtures in Debug and ReleaseSafe |
-| `zig build reference-run -Doptimize=ReleaseSafe` | Check fixture length, SHA-256, provenance, and exact output for all twelve cases |
+| `zig build reference-run -Doptimize=ReleaseSafe` | Check fixture length, SHA-256, provenance, and exact output for all fifteen cases |
 | `zig build bench-test` | Run the benchmark harness tests in Debug and ReleaseSafe |
 | `zig build bench-build -Doptimize=ReleaseSafe` | Compile `consumer-bench` without a run. The build reports its cache artifact |
 | `zig build bench -Doptimize=ReleaseSafe -- --workload snapshot --shape balanced --nodes 65536 --work-units 8` | Run the deterministic snapshot workload without internal timing |
@@ -129,7 +129,7 @@ The C artifact explicitly selects LLVM on Zig 0.16.0.
 The native Zig module keeps its existing backend selection.
 This requirement does not lift the accepted PowerPC64 C boundary limit.
 Neither fixture checks nor offline scenarios execute Rust or a native platform accessibility bus.
-Reference checks cover twelve finite, hand-recorded source-derived cases, not an executed Rust oracle or wire-parity proof.
+Reference checks cover fifteen finite, hand-recorded source-derived cases, not an executed Rust oracle or wire-parity proof.
 The separate external-package probe exercised both dependency routes in Debug and ReleaseSafe.
 Static and dynamic linkage each passed nine steps in both modes, for four executed configurations.
 `docs/50-verification.md` section 10.5 records the outputs and no-bus limits.
@@ -138,6 +138,56 @@ The corrected-source gate exited 1 with disclosed checker failures and the unsup
 Section 10.7 records its actual stage results and strict cross summary.
 [Issue #5](https://github.com/CoffeeImpliesCode/zaccesskit/issues/5) is OPEN and tracks the future Zig 0.17 ABI check.
 It does not establish a Zig 0.17 fix.
+
+### 1.3 Steps 1–4: implemented source versus acceptance
+
+This record separates source completion from portable checks and real platform proof.
+`docs/52-translation-ledger.md` owns the measured item counts.
+`docs/30-port-design.md` section 12 owns the public contracts.
+`docs/50-verification.md` section 11 owns actual receipts.
+
+| Step | Implemented source | Acceptance still requires |
+|---|---|---|
+| 1. Public API breadth | Public `adapters` namespace and shared `Runtime` type. Windows node and text providers, Mac selectors and text, twelve AT-SPI interfaces, mobile exact-error paths, and Android scrolled axes | Reconcile each existing upstream row. Preserve exact error and payload semantics. Native SDK execution remains separate |
+| 2. Verification depth | Atomic core rejection, graft, and retry tests. C alignment and callback ownership tests. Fifteen recorded geometry/text cases. Portable native-contract and runtime-authority cases | Parent gate and focused receipts for the integrated source. Actual native-client skips cannot count as PASS |
+| 3. Consumer migration | Public neutral usage contract for explicit capabilities, borrowed current-full publication, outcome handling, and close barriers | Nogui remains source-only. No private source publication or execution result |
+| 4. Attribution | Source-attributed sparse and dense synthetic profiles | No optimization follows from the attribution. No speedup or native accessibility latency claim |
+
+The GH issue bodies are historical inventories, not current ledger counts.
+The parent read [#1](https://github.com/CoffeeImpliesCode/zaccesskit/issues/1),
+[#2](https://github.com/CoffeeImpliesCode/zaccesskit/issues/2),
+[#3](https://github.com/CoffeeImpliesCode/zaccesskit/issues/3), and
+[#4](https://github.com/CoffeeImpliesCode/zaccesskit/issues/4).
+All four were OPEN in `local://zaccesskit-current-issues-1-4.json`.
+Their bodies quote 17 Windows, 43 AT-SPI common-node, 38 Unix, and two Android open rows.
+Those counts do not describe the reconciled ledger.
+A mapped implementation does not close a GitHub issue or prove native execution.
+
+The measured original ledger inventory is 1,356 rows:
+433 ported, 738 adapted, 183 not applicable, and two open.
+The 116 supplemental mapping rows do not change that denominator.
+
+| Issue scope | Measured rows | Ported | Adapted | Not applicable | Open |
+|---|---:|---:|---:|---:|---:|
+| #1 Windows | 77 | 6 | 56 | 15 | 0 |
+| #2 AT-SPI common node | 120 | 20 | 100 | 0 | 0 |
+| #3 Unix | 86 | 0 | 76 | 9 | 1 |
+| #4 named Android items | 2 | 0 | 1 | 0 | 1 |
+
+The two open rows have source implementations but failed or pending acceptance:
+`adapters/unix/src/atspi/bus.rs:39` → `src/adapters/atspi/bus.zig:1005-1132`,
+and `adapters/android/src/event.rs:235` → `src/adapters/android/queued_events.zig:198`.
+The first awaits the full independent live matrix after observed startup and registration;
+the second awaits completed Android receipts in both safety modes.
+The earlier `InvalidHeader` failure is a red interoperability receipt, not the latest startup result.
+These measured scope totals differ from the historical issue-body open counts.
+They do not establish that every operation in an adapted item matches upstream.
+
+After the reserved-driver-sender correction, the provider started and appeared in an independent GNOME registry query.
+The full Linux interface/action/update/event/removal/teardown matrix remains unverified.
+The Windows client cross-build exited 0, but no Windows client executed.
+No Mac SDK client receipt exists.
+The accepted PowerPC64 linked-C boundary limit remains unchanged.
 
 
 ---
@@ -148,6 +198,11 @@ Twelve milestones. Each table gives the upstream lines a milestone translates,
 the Zig modules it creates, what it needs from earlier milestones, an expected
 size, and the entry gate it must pass. Every size is advice. Every command is
 one an agent would run.
+
+The tables retain the original sizes, dependency proposals, and historical host observations.
+They are acceptance requirements, not claims that a command has run or a milestone has passed.
+Earlier five-name root and absent-registry observations are not current source or host facts.
+Section 1.3 and `docs/50-verification.md` section 11 supply the later evidence.
 
 Upstream paths in these tables are relative to the checkout at
 `466e24e252103f4d82bd6fbab98141b551e46e0c`. The module paths follow

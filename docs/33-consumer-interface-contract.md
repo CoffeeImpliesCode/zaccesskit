@@ -580,13 +580,12 @@ comptime {
 }
 ```
 
-**What survives each tag.** `Tree.updateAndProcessChanges` writes only `next_state`, and
-`process_changes` folds `next_state` into `state` after the algorithm returns without an error. So
-on any `UpdateError` the committed `state` still holds the last update that succeeded, `next_state`
-is partly written, and the caller may retry with a corrected update. On `error.OutOfMemory` inside
-`cloneInto` the destination keeps its old buffers, because `cloneInto` copies into scratch and swaps
-on success. On `error.GraftChainTooLong` and `error.NodeMissingFromState` the state does not satisfy
-I1 to I4, and the caller must drop the `Tree`.
+**What survives each tag.** At owner revision `f3be8aa12fb1d210d1a4cf33139dfa25d517e7de`, `Tree` leaves committed `state` unchanged and calls no handler slot when an update or host-focus call returns an error (`src/consumer/tree.zig:455-460,481-510,606-655,657-708`).
+An update error can leave `next_state` partly written (`src/consumer/tree.zig:123-128,443-451`).
+Before the next owned update, borrowed update, or host-focus call, `Tree` restores dirty `next_state` from `state` (`src/consumer/tree.zig:443-452,467-476`).
+Therefore, `error.GraftChainTooLong` and `error.NodeMissingFromState` do not require a caller to drop the public `Tree` (`src/consumer/tree.zig:443-452,467-476`).
+Lower-level `applyUpdateBorrowed` remains nontransactional, so its caller must discard partial state and change records after an error (`src/consumer/tree_apply.zig:115-121`).
+On `error.OutOfMemory` during `cloneInto`, the destination keeps its old buffers because `cloneInto` swaps its scratch copy only after success (`src/consumer/tree_state.zig:377-417`).
 
 **The rule for adding a tag.** A tag is a change to an error union, so a caller that matches every
 tag by name stops compiling. That is the intended effect, and it is why this set is written out

@@ -1888,9 +1888,10 @@ at `:747` and `:754` are deleted.
 | `TreeState::toolkit_version` | `accesskit_consumer/src/tree.rs:560` | Toolkit version, only when the name is set | `pub fn toolkitVersion(self: *const TreeState) ?[]const u8` | none |
 | `TreeState::locate_node` | `accesskit_consumer/src/tree.rs:567` | Splits a `FullNodeId` into local id and tree id | `pub fn locateNode(self: *const TreeState, node_id: FullNodeId) ?struct { local_id: NodeId, tree_id: TreeId }` | none |
 
-`TreeState::update` is the only public function in this crate that must return an explicit
-error set. Rust panics in nine places inside it. Section 4.6 lists each panic and the error
-variant that replaces it.
+Five public `Tree` operations return `UpdateError`.
+They are `init`, `initBorrowed`, `updateAndProcessChanges`, `updateBorrowedAndProcessChanges`, and `updateHostFocusStateAndProcessChanges`.
+The contract lists the owned calls and `UpdateError` (`docs/33-consumer-interface-contract.md:256,264,266,537`). The Zig definitions are `src/consumer/tree.zig:290-311,413-435,462-476` at owner revision `f3be8aa12fb1d210d1a4cf33139dfa25d517e7de`.
+The Rust paths are pinned to AccessKit revision `466e24e252103f4d82bd6fbab98141b551e46e0c`: `accesskit_consumer/src/tree.rs:592-618,620-628,630-638`. Borrowed Zig calls reuse the constructor and update algorithms.
 
 #### `ChangeHandler` and `Tree`
 

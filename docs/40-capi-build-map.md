@@ -38,31 +38,32 @@ declarations with zero duplicates.**
 |---|---:|---|
 | Function declarations | **498** | Lexical scan, then a C fixture that takes the address of all 446 Linux-visible ones — compiles clean |
 | Duplicate declarations | **0** | Each name appears exactly once in the scan |
-| Enum declarations | **19** | See the note below |
-| Enum variants | **272** | Counted per body: 262 + 8 + 2 |
+| Enum domains | **19** | See the note below |
+| Enum tags | **273** | Counted per body: 262 + 8 + 3 |
 | Laid-out structs | **40** | `typedef struct NAME { … } NAME;` — 39 portable, 1 Windows-only |
 | Opaque structs | **18** | `typedef struct NAME NAME;` forward declarations |
 | Function-pointer typedefs | **4** | `accesskit_tree_update_factory`, `…_activation_handler_callback`, `…_action_handler_callback`, `…_deactivation_handler_callback` |
 | Exported data object | **1** | `extern const struct accesskit_tree_id ACCESSKIT_TREE_ID_ROOT;` |
 
-**The enum count is 19, and the variant count is 272.** These two come from
-different places and mixing them produces the number 18 enums with 272 variants,
-which is not a census of anything. The 19 break down as:
+At source pin `20f0a9ed5f97688d9d90b26de4895474e0222063`, the port header has 19 enum domains and 273 tags. The breakdown is:
 
 - **17** bare-tag enums, each with a `typedef uint8_t` alias under
   `#ifndef __cplusplus`, carrying **262** variants. `accesskit_role` alone
   carries 182.
 - **1** payload-carrying enum, `accesskit_action_data_Tag` at line 1606, with
   **8** variants and no alias.
-- **1** that this port adds: `accesskit_error` at line 1774, with **2**
-  variants (`ACCESSKIT_ERROR_NONE`, `ACCESSKIT_ERROR_OUT_OF_MEMORY`).
+- **1** port-owned error domain, `accesskit_error`, at `include/zaccesskit.h:1780-1784`.
+  It has three tags: `ACCESSKIT_ERROR_NONE = 0`,
+  `ACCESSKIT_ERROR_OUT_OF_MEMORY = 1`, and `ACCESSKIT_ERROR_OPERATION_FAILED = 2`.
+  `ACCESSKIT_ERROR_OPERATION_FAILED` is a port-only extension, not an upstream variant.
+  Its Zig mapping is `src/capi/allocation.zig:69-81`.
 
-`docs/31-c-abi-design.md` section 4.0 counts 18 enums and 270 variants. That is
-correct *for upstream*, which has no `accesskit_error`; the port header is that
-plus the port's own enum. Both numbers describe a real file, so the build map
-uses the port's: **19 declarations, 272 variants**. An implementer generating
-`enum(u8)` mirrors should emit 17; the eighteenth type on the boundary is
-`CActionData`, already written in `src/schema/update.zig:340`.
+`docs/31-c-abi-design.md` section 4.0 records the upstream header count at pin
+`8b6ed37c20ed4c59390e253407983333053662ba`: 18 enums and 270 variants. The
+upstream header has no `accesskit_error`; the current port header has 19 enum
+domains and 273 tags. An implementer generating `enum(u8)` mirrors should emit
+17; `CActionData` is the 18th upstream domain and is already written in
+`src/schema/update.zig:340`.
 
 ### 1.1 Platform gating — what a build actually has to produce
 
@@ -142,7 +143,8 @@ Three facts the table depends on, each measured:
   `accesskit_opt_lresult` and is the only `_WIN32` by-value return, so the 103
   are 102 on Linux and 103 on Windows.
 - **`accesskit_last_error` is not one of the 103.** It returns
-  `accesskit_error`, a bare-tag C enum of two variants, not a struct. Any count
+  `accesskit_error`, a bare-tag C enum with three tags, not a struct. Its tags
+  are `NONE = 0`, `OUT_OF_MEMORY = 1`, and `OPERATION_FAILED = 2`. Any count
   that folds it into a struct figure is counting something else.
 
 Nine of the 103 return `accesskit_affine` by value. The tenth appearance of the
