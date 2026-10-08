@@ -42,19 +42,16 @@
 //! `text/position.zig` can spell a degenerate range only as its three fields.
 //!
 //! **What this module deliberately does not own.** The text-run iterators and
-//! the transform walk belong to `text/query.zig` and `node_ref/geometry.zig`,
-//! and the walk that gives a position its ordering key belongs to
-//! `text/position_inner.zig`. The run walk below is bounded by
-//! `node_ref/hierarchy.zig`, which bounds its own sibling scan.
+//! ordering keys belong to `text/position_inner.zig`; the transform walk belongs
+//! to `node_ref/geometry.zig`. The run walk reuses the document-root-scoped
+//! sibling cursor and its bounded scan.
 
 const std = @import("std");
 const schema = @import("../../schema/root.zig");
 const affine = @import("../../schema/geometry/affine.zig");
 
 const geometry = @import("../node_ref/geometry.zig");
-const hierarchy = @import("../node_ref/hierarchy.zig");
 const properties = @import("../node_ref/properties.zig");
-const hit_test = @import("hit_test.zig");
 const position = @import("position.zig");
 const position_inner = @import("position_inner.zig");
 const tree_index = @import("../tree_index.zig");
@@ -261,17 +258,10 @@ pub fn isDegenerate(gpa: std.mem.Allocator, range: Range) QueryError!bool {
 /// normalized, so a caret at the end of a wrapped line reports the line it sits
 /// on rather than the next one. This is `Range::walk` at `text.rs:649-678`.
 ///
-/// The run loop is bounded by `node_ref/hierarchy.zig`, which bounds its own
-/// sibling scan with `treeWalkStepBound`.
-///
-/// **The sibling filter is the plain text-run filter.** Upstream builds its
-/// filter at `text.rs:1391` out of the id of the range's own node, so that the
-/// root is one of the nodes the filter includes. The port does not need that
-/// clause here, and passing it would be wrong: the filter answers "may this
-/// node be a run in the walk", and the document node is not one, so a scan that
-/// climbed out of the last run would hand the walk the document itself. The
-/// far end of a sibling cursor comes from the tree and not from the filter,
-/// which is `iterators/following.zig`'s rule.
+/// The run loop uses `position_inner.followingTextRuns`, whose cursor owns the
+/// document root ID and stops ascending there. The underlying sibling scans
+/// bound candidate visits and parent ascents independently with
+/// `treeWalkStepBound`; exhaustion remains `error.TreeCycle`.
 ///
 /// `visit` runs on the calling thread before this call returns and must not
 /// modify the tree, because the borrow every `NodeRef` in the range rests on
@@ -290,10 +280,7 @@ pub fn walk(
     }
     if (!visit(context, start_position.node)) return false;
     if (sameNode(start_position.node, end_position.node)) return true;
-    var runs = try hierarchy.followingFilteredSiblings(
-        start_position.node,
-        hit_test.text_run_filter,
-    );
+    var runs = try position_inner.followingTextRuns(start_position.node, range.node);
     while (try runs.next()) |run| {
         if (!visit(context, run)) return false;
         if (sameNode(run, end_position.node)) break;

@@ -1,76 +1,39 @@
-//! The AT-SPI event model: the five-argument signal body, the four signal
-//! interfaces, and the values the fifth argument carries.
+//! Owned AT-SPI notifications, separated from their D-Bus encoder.
 //!
-//! **Upstream.** `accesskit_atspi_common/src/events.rs` declares `Event`,
-//! `ObjectEvent`, `WindowEvent`, `DocumentEvent`, `CacheEvent` and `Property`.
-//! `accesskit_unix/src/atspi/bus.rs:194-461` raises them. `docs/41-atspi-build-map.md`
-//! section 1.7 records the body signature and section 1.8 the property
-//! dictionary.
+//! Object, window and document signals have the exact five-argument
+//! `siiva{sv}` body, including the final property dictionary. Cache signals
+//! instead use `org.a11y.atspi.Cache`: AddAccessible carries a complete
+//! CacheItem snapshot and RemoveAccessible carries an object reference.
 //!
-//! **The body is five arguments and the last one is the only named one that
-//! matters.** Every event signal on every one of the four interfaces carries the
-//! same body signature:
+//! Pinned upstream: `adapters/atspi-common/src/events.rs` and
+//! `adapters/unix/src/atspi/bus.rs:269-478` at
+//! `466e24e252103f4d82bd6fbab98141b551e46e0c`.
 //!
-//! ```text
-//! siiva{sv}
-//! ```
-//!
-//! That is five arguments, in this order:
-//!
-//! | # | Type | Upstream field |
-//! |---|---|---|
-//! | 0 | `s` | `detail1` |
-//! | 1 | `i` | `detail2` |
-//! | 2 | `i` | `detail3` |
-//! | 3 | `v` | `any_data` |
-//! | 4 | `a{sv}` | `properties` |
-//!
-//! **The object path, the interface, the signal name and the sender are header
-//! fields, not body arguments.** A message that reads as "the body has six
-//! arguments, one of which is the path" is a message a client rejects, so this
-//! module keeps them apart: `Event.id` and `Event.member` and
-//! `Event.interface` are the header, and `EventBody` is the body. The `SENDER`
-//! header field is added by the bus daemon and never by this port, which is
-//! why a peer always sees a sender the application never named.
-//!
-//! **There is no `org.a11y.atspi.EventBus` interface and no `EmitEvent` method.**
-//! The AT-SPI2 specification publishes only the four `org.a11y.atspi.Event.*`
-//! signal interfaces, and the index of every D-Bus XML interface the project
-//! has does not list either name. An application emits the signals directly on
-//! the bus: it builds one message per event, with the header this module
-//! describes and the body this module describes. A design that queued events and
-//! asked a helper to raise them would depend on an interface that does not
-//! exist.
-//!
-//! **What is protocol here and what is bytes.** This module owns the *shape*:
-//! the signature string, the argument order, the interface names, the member
-//! names and the values each argument carries. It owns no bytes. The
-//! marshalling is the port's own, through `wire/rect.zig` and
-//! `object_address.zig`, and both are reachable from this adapter and both pin
-//! the byte layout against the alignment the D-Bus specification fixes. A test
-//! below pins the signature and the order, which is the part a wrong
-//! transcription breaks.
-//!
-//! **Every loop over a domain here is bounded by that domain's own length**, and
-//! each one says which length it is in its doc comment. `Properties.put` scans
-//! the entries it already holds and is bounded by `entries.items.len`;
-//! `Properties.get` scans the same list with the same bound; `Kind`'s sweep is
-//! an `inline for` over `std.enums.values(Kind)` and so has no run-time bound
-//! at all.
+//! EventQueue copies borrowed text on push. Cache snapshots already own their
+//! name and description. Successful push transfers all owned allocations;
+//! failed push retains the input owner. Drain transfers every Event to the
+//! caller, which releases each once with Event.deinit before releasing its list.
+//! Queue and dictionary scans are bounded by their respective list lengths.
 
 const std = @import("std");
 
 const object_id = @import("object_id.zig");
 const window_bounds = @import("window_bounds.zig");
+const node_module = @import("node.zig");
 
 const ObjectId = object_id.ObjectId;
 
-/// The wire signature every AT-SPI event body carries.
+/// The wire signature of object, window and document event bodies.
 ///
 /// Five arguments: a string, two 32-bit integers, a variant and a dictionary
 /// of string to variant. The `{` and `}` are the dictionary's braces and `sv`
 /// inside them is its key and its value, so the last argument is `a{sv}`.
 pub const event_body_signature: [:0]const u8 = "siiva{sv}";
+
+/// The single complete CacheItem argument, not an event-body variant.
+pub const cache_item_signature: [:0]const u8 = "((so)(so)(so)iiassusau)";
+/// The single object reference carried by Cache.RemoveAccessible.
+pub const cache_remove_signature: [:0]const u8 = "(so)";
 
 /// The signature of the dictionary the fifth argument carries.
 pub const property_dictionary_signature: [:0]const u8 = "a{sv}";
@@ -104,7 +67,7 @@ pub const Kind = enum {
     window,
     /// `org.a11y.atspi.Event.Document`, for a signal about the document tree.
     document,
-    /// `org.a11y.atspi.Event.Cache`, for a signal about the cache object.
+    /// `org.a11y.atspi.Cache`, with its separate cache-body signatures.
     cache,
 };
 
@@ -116,13 +79,9 @@ pub fn kindInterface(kind: Kind) [:0]const u8 {
         .object => "org.a11y.atspi.Event.Object",
         .window => "org.a11y.atspi.Event.Window",
         .document => "org.a11y.atspi.Event.Document",
-        .cache => "org.a11y.atspi.Event.Cache",
+        .cache => "org.a11y.atspi.Cache",
     };
 }
-
-/// The member name of the signal that says a node gained or lost focus, on
-/// `org.a11y.atspi.Event.Object`.
-pub const member_focus: [:0]const u8 = "Focus";
 
 /// The member name of the signal that says a node's bounds changed, on
 /// `org.a11y.atspi.Event.Object`.
@@ -138,11 +97,11 @@ pub const member_state_changed: [:0]const u8 = "StateChanged";
 pub const member_announcement: [:0]const u8 = "Announcement";
 
 /// The member name of the signal that adds one node to the cache, on
-/// `org.a11y.atspi.Event.Cache`.
+/// `org.a11y.atspi.Cache`.
 pub const member_add_accessible: [:0]const u8 = "AddAccessible";
 
 /// The member name of the signal that removes one node from the cache, on
-/// `org.a11y.atspi.Event.Cache`.
+/// `org.a11y.atspi.Cache`.
 pub const member_remove_accessible: [:0]const u8 = "RemoveAccessible";
 
 /// The value the fourth argument of an event body carries.
@@ -151,8 +110,7 @@ pub const member_remove_accessible: [:0]const u8 = "RemoveAccessible";
 /// an event that needs an object reference puts it here: `siiva{sv}` has no
 /// argument of type `(so)`.
 pub const AnyData = union(enum) {
-    /// The argument is absent. `FOCUS` and the cache signals on a node with no
-    /// target carry this, and its signature is the empty string.
+    /// The upstream default variant: signed integer zero (`i`).
     none,
     /// An object reference, `(so)`. The path comes from the identifier and the
     /// bus name from the connection that exports it, so the value names an
@@ -160,6 +118,8 @@ pub const AnyData = union(enum) {
     address: ObjectId,
     /// A signed 32-bit integer, `i`.
     integer: i32,
+    /// An unsigned 32-bit role value, `u`.
+    unsigned_integer: u32,
     /// A boolean, `b`.
     boolean: bool,
     /// A text value, `s`. Ownership belongs to the enclosing `Event`.
@@ -181,9 +141,10 @@ pub const AnyData = union(enum) {
     /// **Errors.** This function does not fail.
     pub fn signature(self: AnyData) [:0]const u8 {
         return switch (self) {
-            .none => "",
+            .none => "i",
             .address => "(so)",
             .integer => "i",
+            .unsigned_integer => "u",
             .boolean => "b",
             .text => "s",
             .extent => "(iiii)",
@@ -204,6 +165,7 @@ pub const AnyData = union(enum) {
             .none => other == .none,
             .address => |mine| other == .address and std.meta.eql(mine, other.address),
             .integer => |mine| other == .integer and mine == other.integer,
+            .unsigned_integer => |mine| other == .unsigned_integer and mine == other.unsigned_integer,
             .boolean => |mine| other == .boolean and mine == other.boolean,
             .text => |mine| other == .text and std.mem.eql(u8, mine, other.text),
             .extent => |mine| other == .extent and std.meta.eql(mine, other.extent),
@@ -340,9 +302,7 @@ pub const Event = struct {
     kind: Kind,
     /// The signal name, which is the header `MEMBER` field.
     member: [:0]const u8,
-    /// The object the signal is about, which is the header `PATH` field. The
-    /// cache signals are about the cache object and the node they name is in
-    /// the body's variant.
+    /// Header PATH. Cache signals use the cache object, not a node path.
     id: ObjectId,
     /// The first body argument, `s`.
     detail1: []const u8 = "",
@@ -358,6 +318,9 @@ pub const Event = struct {
     /// When present, `any_data.text` names exactly this allocation.
     /// Release with the allocator that copied it. A copy is not a second owner.
     owned_text: ?[]u8 = null,
+    /// Owned complete Cache.AddAccessible snapshot, or null for other signals.
+    /// Its text buffers use the same allocator as Event.deinit.
+    cache_item: ?node_module.CacheNode = null,
 
     /// The interface this event goes out on, which is the header `INTERFACE`
     /// field.
@@ -371,16 +334,22 @@ pub const Event = struct {
     ///
     /// **Errors.** This function does not fail.
     pub fn bodySignature(self: Event) [:0]const u8 {
-        _ = self;
+        if (self.kind == .cache) {
+            return if (std.mem.eql(u8, self.member, member_add_accessible))
+                cache_item_signature
+            else
+                cache_remove_signature;
+        }
         return event_body_signature;
     }
 
-    /// Releases the dictionary and `owned_text`, but never a borrowed text payload.
+    /// Releases the cache snapshot, dictionary and owned text; never borrowed text.
     /// After `drainInto`, the caller releases each transferred event once.
     ///
     /// **Errors.** This function does not fail.
     pub fn deinit(self: *Event, gpa: std.mem.Allocator) void {
         self.properties.deinit(gpa);
+        if (self.cache_item) |*item| item.deinit(gpa);
         if (self.owned_text) |text| {
             std.debug.assert(self.any_data == .text);
             std.debug.assert(self.any_data.text.ptr == text.ptr);
@@ -443,8 +412,8 @@ pub const EventQueue = struct {
 
     /// Appends one event, copying borrowed `any_data.text` with `gpa`.
     ///
-    /// Success transfers the dictionary and any already-owned text to the queue.
-    /// Already-owned text must use `gpa`. Other event fields remain borrowed.
+    /// Success transfers the dictionary, cache snapshot and already-owned text.
+    /// Owned buffers must use gpa. Only detail1 and constant member stay borrowed.
     /// On `error.OutOfMemory`, the queue is unchanged and the caller retains
     /// every input allocation. The queue releases a failed temporary text copy.
     pub fn push(
@@ -495,6 +464,29 @@ pub const EventQueue = struct {
 
 const testing = std.testing;
 
+fn cacheEventForTest(gpa: std.mem.Allocator) std.mem.Allocator.Error!Event {
+    const name = try gpa.dupe(u8, "Snapshot name");
+    errdefer gpa.free(name);
+    const description = try gpa.dupe(u8, "Snapshot description");
+    return .{
+        .kind = .cache,
+        .member = member_add_accessible,
+        .id = .cache,
+        .cache_item = .{
+            .adapter_id = 1,
+            .id = .init(.{ .value = 4 }, .init(0)),
+            .parent = .root,
+            .index_in_parent = 0,
+            .child_count = 0,
+            .interfaces = .{},
+            .name = name,
+            .description = description,
+            .role = .invalid,
+            .states = .{},
+        },
+    };
+}
+
 test "the event body carries five arguments in the order the reference fixes" {
     try testing.expectEqualStrings("siiva{sv}", event_body_signature);
     try testing.expectEqual(@as(usize, 5), argument_count);
@@ -527,7 +519,7 @@ test "the four signal interfaces are the ones the specification publishes" {
     try testing.expectEqualStrings("org.a11y.atspi.Event.Object", kindInterface(.object));
     try testing.expectEqualStrings("org.a11y.atspi.Event.Window", kindInterface(.window));
     try testing.expectEqualStrings("org.a11y.atspi.Event.Document", kindInterface(.document));
-    try testing.expectEqualStrings("org.a11y.atspi.Event.Cache", kindInterface(.cache));
+    try testing.expectEqualStrings("org.a11y.atspi.Cache", kindInterface(.cache));
 }
 
 test "the sweep over the four interfaces reaches every member of Kind" {
@@ -575,9 +567,11 @@ test "every variant reports the signature it puts in the fourth argument" {
     const box: AnyData = .{ .extent = .{ 1, 2, 3, 4 } };
     const number: AnyData = .{ .number = 0.0 };
 
-    try testing.expectEqualStrings("", nothing.signature());
+    try testing.expectEqualStrings("i", nothing.signature());
     try testing.expectEqualStrings("(so)", address.signature());
     try testing.expectEqualStrings("i", integer.signature());
+    const unsigned: AnyData = .{ .unsigned_integer = 127 };
+    try testing.expectEqualStrings("u", unsigned.signature());
     try testing.expectEqualStrings("b", boolean.signature());
     try testing.expectEqualStrings("s", text.signature());
     // `BoundsChanged` has nowhere else to put a box: the body is a string, two
@@ -589,7 +583,7 @@ test "every variant reports the signature it puts in the fourth argument" {
 
     // The sweep is the coverage argument, so a variant added without a
     // signature is a compile error rather than a silent omission.
-    try testing.expectEqual(@as(usize, 7), @typeInfo(AnyData).@"union".fields.len);
+    try testing.expectEqual(@as(usize, 8), @typeInfo(AnyData).@"union".fields.len);
 }
 
 test "an object reference is the only way a siiva{sv} body can carry an address" {
@@ -719,36 +713,35 @@ test "every property value carries the signature the reference declares" {
 
 test "an event splits the header from the body" {
     const gpa = std.testing.allocator;
-    var event: Event = .{
-        .kind = .cache,
-        .member = member_add_accessible,
-        .id = .root,
-        .any_data = .{ .address = .{ .node = .{
-            .adapter = 1,
-            .node = .init(.{ .value = 4 }, .init(0)),
-        } } },
-    };
+    var event = try cacheEventForTest(gpa);
     defer event.deinit(gpa);
 
     // Header: the interface, the path and the member name.
-    try testing.expectEqualStrings("org.a11y.atspi.Event.Cache", event.interface());
+    try testing.expectEqualStrings("org.a11y.atspi.Cache", event.interface());
     try testing.expectEqualStrings("AddAccessible", event.member);
     const path = try event.id.path(gpa);
     defer gpa.free(path);
-    try testing.expectEqualStrings("/org/a11y/atspi/accessible/root", path);
-    // Body: one signature, and the address is in the variant because the
-    // signature has no argument of type `(so)`.
-    try testing.expectEqualStrings("siiva{sv}", event.bodySignature());
-    try testing.expectEqualStrings("(so)", event.any_data.signature());
+    try testing.expectEqualStrings("/org/a11y/atspi/cache", path);
+    // Cache adds carry the complete item, never a siiva{sv} variant envelope.
+    try testing.expectEqualStrings(cache_item_signature, event.bodySignature());
+    try testing.expectEqualStrings("Snapshot name", event.cache_item.?.name);
+    try testing.expectEqualStrings("Snapshot description", event.cache_item.?.description);
+    const removed: Event = .{
+        .kind = .cache,
+        .member = member_remove_accessible,
+        .id = .cache,
+        .any_data = .{ .address = .root },
+    };
+    try testing.expectEqualStrings(cache_remove_signature, removed.bodySignature());
 }
 
 test "two events about different nodes are not about the same subject" {
-    const here: Event = .{ .kind = .object, .member = member_focus, .id = .root };
-    const elsewhere: Event = .{ .kind = .object, .member = member_focus, .id = .root };
+    const here: Event = .{ .kind = .object, .member = member_state_changed, .id = .root };
+    const elsewhere: Event = .{ .kind = .object, .member = member_state_changed, .id = .root };
 
     try testing.expect(here.sameSubject(elsewhere));
 
-    const other_interface: Event = .{ .kind = .cache, .member = member_focus, .id = .root };
+    const other_interface: Event = .{ .kind = .cache, .member = member_state_changed, .id = .root };
     try testing.expect(!here.sameSubject(other_interface));
 
     const other_member: Event = .{ .kind = .object, .member = member_announcement, .id = .root };
@@ -760,19 +753,24 @@ test "a queue keeps the order the update produced and empties on drain" {
     var queue = EventQueue.empty();
     defer queue.deinit(gpa);
 
-    try queue.push(gpa, .{ .kind = .cache, .member = member_add_accessible, .id = .root });
-    try queue.push(gpa, .{ .kind = .object, .member = member_focus, .id = .root });
+    var added = try cacheEventForTest(gpa);
+    queue.push(gpa, added) catch |err| {
+        added.deinit(gpa);
+        return err;
+    };
+    try queue.push(gpa, .{ .kind = .object, .member = member_state_changed, .id = .root });
     try queue.push(gpa, .{ .kind = .cache, .member = member_remove_accessible, .id = .root });
 
     try testing.expectEqual(@as(usize, 3), queue.count());
 
     var taken: std.ArrayList(Event) = .empty;
     defer taken.deinit(gpa);
+    defer for (taken.items) |*event| event.deinit(gpa);
     try queue.drainInto(gpa, &taken);
 
     try testing.expectEqual(@as(usize, 3), taken.items.len);
     try testing.expectEqualStrings(member_add_accessible, taken.items[0].member);
-    try testing.expectEqualStrings(member_focus, taken.items[1].member);
+    try testing.expectEqualStrings(member_state_changed, taken.items[1].member);
     try testing.expectEqualStrings(member_remove_accessible, taken.items[2].member);
     try testing.expectEqual(@as(usize, 0), queue.count());
 }
@@ -901,4 +899,32 @@ test "failed push retains input owned text and dictionary" {
     try testing.expectEqual(@as(usize, 0), queue.count());
     try testing.expectEqualStrings("Retained", event.any_data.text);
     try testing.expectEqual(@as(usize, 1), event.properties.count());
+}
+
+test "cache snapshot transfers exactly once on drain and survives failed push" {
+    const gpa = testing.allocator;
+    var failing = testing.FailingAllocator.init(gpa, .{ .fail_index = 0 });
+    var queue = EventQueue.empty();
+    defer queue.deinit(gpa);
+    var event = try cacheEventForTest(gpa);
+    queue.push(failing.allocator(), event) catch |err| {
+        try testing.expectEqual(error.OutOfMemory, err);
+        try testing.expectEqual(@as(usize, 0), queue.count());
+        try testing.expectEqualStrings("Snapshot name", event.cache_item.?.name);
+        queue.push(gpa, event) catch |retry_error| {
+            event.deinit(gpa);
+            return retry_error;
+        };
+        var taken: std.ArrayList(Event) = .empty;
+        defer taken.deinit(gpa);
+        defer for (taken.items) |*moved| moved.deinit(gpa);
+        const name = event.cache_item.?.name;
+        try queue.drainInto(gpa, &taken);
+        try testing.expectEqual(@as(usize, 0), queue.count());
+        try testing.expectEqual(@as(usize, 1), taken.items.len);
+        try testing.expect(taken.items[0].cache_item.?.name.ptr == name.ptr);
+        try testing.expectEqualStrings("Snapshot description", taken.items[0].cache_item.?.description);
+        return;
+    };
+    return error.ExpectedAllocationFailure;
 }
