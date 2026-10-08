@@ -1052,6 +1052,7 @@ fn placeholderUpdateFailingAt(gpa: std.mem.Allocator, index: usize) !bool {
         try testing.expect(err == error.OutOfMemory or err == error.NullTreeUpdate);
         try testing.expect(target.isActive());
         try testing.expect(target.tree() != null);
+        try testing.expect(target.isPlaceholder());
         return false;
     };
     try testing.expect(target.isActive());
@@ -1122,4 +1123,67 @@ test "deinit releases the tree, the providers and the adapter" {
     // reported as a leak instead of passing quietly. The events are raised
     // first because the adapter owns what they name.
     target.deinit();
+}
+
+test "dispatch consumes an owned value request when C conversion rejects an interior nul" {
+    var fixture: Fixture = .{ .gpa = testing.allocator };
+    const target = try buildTestAdapter(testing.allocator, &fixture, null, false);
+    defer target.deinit();
+    const value = try testing.allocator.dupe(u8, "x\x00y");
+    try testing.expectError(error.InteriorNul, target.dispatchAction(.{
+        .action = .set_value,
+        .target_tree = schema.tree_id_root,
+        .target_node = .{ .value = 1 },
+        .data = .{ .value = value },
+    }));
+}
+
+test "a provider weak context refuses all reads after adapter close" {
+    var fixture: Fixture = .{ .gpa = testing.allocator };
+    const target = try buildTestAdapter(testing.allocator, &fixture, null, false);
+    var weak = target.context.weak();
+    defer weak.deinit();
+    _ = target.handleWmGetobject(
+        0,
+        syscalls.objid_client,
+        &activateWithTree,
+        &fixture,
+    );
+    target.deinit();
+    try testing.expectError(error.ElementNotAvailable, weak.lease());
+}
+
+test "outstanding events can raise and release their providers after adapter close" {
+    var fixture: Fixture = .{ .gpa = testing.allocator };
+    const target = try buildTestAdapter(testing.allocator, &fixture, null, true);
+    _ = target.handleWmGetobject(
+        0,
+        syscalls.objid_client,
+        &activateWithNothing,
+        &fixture,
+    );
+    var events = (try target.updateIfActive(&wholeTreeFactory, &fixture)) orelse
+        return error.NoEvents;
+    target.deinit();
+    const report = events.raise();
+    try testing.expectEqual(@as(usize, 1), report.unavailable);
+    try testing.expectEqual(@as(usize, 1), report.total());
+    try testing.expectEqual(@as(usize, 0), events.len());
+}
+
+test "outstanding events can be cancelled after adapter close" {
+    var fixture: Fixture = .{ .gpa = testing.allocator };
+    const target = try buildTestAdapter(testing.allocator, &fixture, null, true);
+    _ = target.handleWmGetobject(
+        0,
+        syscalls.objid_client,
+        &activateWithNothing,
+        &fixture,
+    );
+    var events = (try target.updateIfActive(&wholeTreeFactory, &fixture)) orelse
+        return error.NoEvents;
+    target.deinit();
+    const report = events.deinit();
+    try testing.expectEqual(@as(usize, 0), report.error_count);
+    try testing.expectEqual(@as(usize, 0), events.len());
 }
