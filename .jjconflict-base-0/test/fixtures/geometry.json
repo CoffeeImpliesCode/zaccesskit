@@ -1,0 +1,8 @@
+{
+  "cases": [
+    {"name":"noncommuting-reflection-composition","source_commit":"466e24e252103f4d82bd6fbab98141b551e46e0c","source":"accesskit/src/geometry.rs:168-182","oracle_kind":"handcomputed-from-pinned-formula","claim":"[INFERENCE] Matrix multiplication by hand. No reference runtime execution.","operation":"compose","left":[1,0,0,1,5,-7],"right":[-2,0,0,4,0,0],"expected":[-2,0,0,4,5,-7],"reverse_expected":[-2,0,0,4,-10,-28]},
+    {"name":"inverse-coefficients-and-point","source_commit":"466e24e252103f4d82bd6fbab98141b551e46e0c","source":"accesskit/src/geometry.rs:99-109,157-165","oracle_kind":"handcomputed-from-pinned-formula","claim":"[INFERENCE] Determinant -8 and reciprocal -0.125. No reference runtime execution.","operation":"inverse","left":[-2,0,0,4,6,-8],"expected":[-0.5,0,0,0.25,3,2],"point":[3,-2],"point_expected":[0,-16],"return_expected":[3,-2]},
+    {"name":"shear-reflection-rectangle-envelope","source_commit":"466e24e252103f4d82bd6fbab98141b551e46e0c","source":"accesskit/src/geometry.rs:118-123,157-165","oracle_kind":"handcomputed-from-pinned-formula","claim":"[INFERENCE] Transformed corners (9,-9), (21,-1), (-1,-4), (11,4). No reference runtime execution.","operation":"rect-envelope","left":[-2,1,3,2,5,-7],"rect":[-2,0,3,4],"rect_expected":[-1,-9,21,4]},
+    {"name":"rect-abs-preserves-negative-coordinates","source_commit":"466e24e252103f4d82bd6fbab98141b551e46e0c","source":"accesskit/src/geometry.rs:498-501","oracle_kind":"handcomputed-from-pinned-formula","claim":"[INFERENCE] Coordinate min/max, not numeric absolute value. No reference runtime execution.","operation":"rect-abs","rect":[-2,-3,-8,-9],"rect_expected":[-8,-9,-2,-3]}
+  ]
+}
