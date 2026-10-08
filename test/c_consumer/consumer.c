@@ -10,6 +10,7 @@
 
 #include "zaccesskit.h"
 
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -1787,6 +1788,26 @@ static void check_rect_and_vectors(void)
     CHECK(accesskit_rect_contains(&rect, accesskit_vec2_to_point(
                                            (struct accesskit_vec2){1.0, 1.0})) ==
           true);
+    {
+        struct accesskit_rect bounds = accesskit_rect_new(-10.0, -20.0, 30.0, 40.0);
+        CHECK(accesskit_rect_contains(&bounds,
+                                     (struct accesskit_point){-10.0, -20.0}) == true);
+        CHECK(accesskit_rect_contains(&bounds,
+                                     (struct accesskit_point){29.999, 39.999}) == true);
+        CHECK(accesskit_rect_contains(&bounds,
+                                     (struct accesskit_point){30.0, 40.0}) == false);
+        CHECK(accesskit_rect_contains(&bounds,
+                                     (struct accesskit_point){30.0, 0.0}) == false);
+        CHECK(accesskit_rect_contains(&bounds,
+                                     (struct accesskit_point){0.0, 40.0}) == false);
+    }
+    {
+        struct accesskit_rect empty = accesskit_rect_new(5.0, 7.0, 5.0, 7.0);
+        struct accesskit_point empty_origin = accesskit_rect_origin(&empty);
+        CHECK(empty_origin.x == 5.0);
+        CHECK(empty_origin.y == 7.0);
+        CHECK(accesskit_rect_contains(&empty, empty_origin) == false);
+    }
 
     unioned = accesskit_rect_union(&rect, hit);
     CHECK(unioned.x0 == 0.0);
@@ -1843,6 +1864,16 @@ static void check_rect_and_vectors(void)
     mapped = accesskit_affine_map_unit_square(rect);
     inverse = accesskit_affine_inverse(scaled);
     CHECK(accesskit_affine_determinant(inverse) == 0.25);
+    {
+        struct accesskit_affine zero = {{0.0, 0.0, 0.0, 0.0, 0.0, 0.0}};
+        inverse = accesskit_affine_inverse(zero);
+        CHECK(isnan(inverse._0[0]));
+        CHECK(isnan(inverse._0[1]));
+        CHECK(isnan(inverse._0[2]));
+        CHECK(isnan(inverse._0[3]));
+        CHECK(isnan(inverse._0[4]));
+        CHECK(isnan(inverse._0[5]));
+    }
     product = accesskit_affine_mul(scaled, flip_x);
     CHECK(accesskit_affine_determinant(product) == -4.0);
     {

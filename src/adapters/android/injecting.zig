@@ -459,31 +459,40 @@ pub const AndroidInjectingAdapter = struct {
     /// returns nothing: the events belong to this adapter, which raises them
     /// from the `Runnable` the UI thread runs.
     ///
-    /// **A factory that answers `null` is dropped here**, with the same reason
-    /// as everywhere else: it is a contract violation upstream unwraps, and the
-    /// header gives this function no way to report it.
+    /// A factory that answers `null` records `NullTreeUpdate` in `inner.last_error`.
+    /// Update, pending-copy, post and delivery failures retain their exact tags there.
     pub fn updateIfActive(
         self: *AndroidInjectingAdapter,
         update_factory: TreeUpdateFactory,
         update_factory_userdata: ?*anyopaque,
     ) void {
         const table = jni.realTable(self.env);
-        const produced = self.inner.updateIfActive(update_factory, update_factory_userdata) catch
+        const produced = self.inner.updateIfActive(
+            update_factory,
+            update_factory_userdata,
+        ) catch |err| {
+            self.inner.last_error = err;
             return;
+        };
         const events = produced orelse return;
 
-        // The events are copied into a list this adapter owns and the box is
-        // released here, because no handle ever crosses the boundary for this
-        // adapter and nothing else could be the owner.
+        // The pending list owns scalar event copies after the produced queue is released.
         defer eventsRelease(events);
 
-        for (events.events.items) |event| {
-            self.pending_events.append(self.gpa, event) catch return;
-        }
+        self.appendPending(events.events.items) catch return;
         self.postRunnable(table);
     }
 
+    /// Copies scalar payloads without changing the pending list on allocation failure.
+    fn appendPending(self: *AndroidInjectingAdapter, events: []const QueuedEvent) Allocator.Error!void {
+        self.pending_events.appendSlice(self.gpa, events) catch |err| {
+            self.inner.last_error = err;
+            return err;
+        };
+    }
+
     /// Raises everything `pending_events` holds and empties it.
+    /// Every consumed batch is released, including disabled and failed delivery.
     ///
     /// This is what `runCallback` calls, and it runs on the UI thread because the
     /// `Runnable` runs there. `table` is built from the **calling** thread's
@@ -492,10 +501,11 @@ pub const AndroidInjectingAdapter = struct {
         if (self.pending_events.items.len == 0) return;
 
         var queue = QueuedEvents.init(self.gpa, self.inner);
+        queue.events = self.pending_events;
+        self.pending_events = .empty;
         defer queue.deinit();
-        queue.events.appendSlice(self.gpa, self.pending_events.items) catch return;
-        self.pending_events.clearRetainingCapacity();
-        _ = queue.raise(table, host);
+        const report = queue.raise(table, host);
+        if (report.failure) |err| self.inner.last_error = err;
     }
 
     /// Posts the `Runnable` so the UI thread drains the pending list.
@@ -503,7 +513,10 @@ pub const AndroidInjectingAdapter = struct {
         const host = self.host orelse return;
         const accepted = java_call.callBooleanChecked(table, host, view_post, &.{
             .{ .l = self.runnable },
-        }) catch return;
+        }) catch |err| {
+            self.inner.last_error = err;
+            return;
+        };
         if (!accepted) {
             // The host took no runnable, so nothing would ever drain the list.
             // Dropping it is the only honest answer: the events were produced
@@ -513,11 +526,7 @@ pub const AndroidInjectingAdapter = struct {
     }
 };
 
-/// Releases an events handle the same way the C raise does.
-///
-/// The injecting adapter never hands a handle to C, so this is the only place
-/// that releases one, and it has to go through `allocation.release` because the
-/// block came from `allocation.create`.
+/// Releases the unboxed queue value after an injecting consumer has used it.
 fn eventsRelease(events: QueuedEvents) void {
     var owned = events;
     owned.deinit();
@@ -650,16 +659,23 @@ fn performActionNative(
     const adapter = adapterOf(handle) orelse return false;
     const table = jni.realTable(env);
 
-    const decoded = platform_action.decode(table, action, arguments) catch return false;
+    const decoded = platform_action.decode(table, action, arguments) catch |err| {
+        adapter.inner.last_error = err;
+        return false;
+    };
     const produced = adapter.inner.performAction(
         adapter.action_handler,
         adapter.action_handler_userdata,
         virtual_view_id,
         decoded,
-    ) catch return false;
+    ) catch |err| {
+        adapter.inner.last_error = err;
+        return false;
+    };
     const events = produced orelse return false;
     defer eventsRelease(events);
-    _ = events.raise(table, adapter.host);
+    const report = events.raise(table, adapter.host);
+    if (report.failure) |err| adapter.inner.last_error = err;
     return true;
 }
 
@@ -680,10 +696,14 @@ fn onHoverEventNative(
         action,
         x,
         y,
-    ) catch return false;
+    ) catch |err| {
+        adapter.inner.last_error = err;
+        return false;
+    };
     const events = produced orelse return false;
     defer eventsRelease(events);
-    _ = events.raise(table, adapter.host);
+    const report = events.raise(table, adapter.host);
+    if (report.failure) |err| adapter.inner.last_error = err;
     return true;
 }
 
@@ -1200,4 +1220,202 @@ test "an update on an inactive adapter posts nothing" {
 /// A tree-update factory that answers `null`, which is a contract violation.
 fn noFactory(_: ?*anyopaque) callconv(.c) ?*boundary.CTreeUpdate {
     return null;
+}
+
+const ConsumerRaiseRecorder = struct {
+    enabled: bool = true,
+    failure: ?java_call.CallError = null,
+    sends: usize = 0,
+
+    fn of(env: JniEnv) *ConsumerRaiseRecorder {
+        return @ptrCast(@alignCast(@constCast(env.?)));
+    }
+
+    fn class(env: JniEnv, _: [:0]const u8) JObject {
+        if (of(env).failure == error.JavaMemberMissing) return null;
+        return fakeClass();
+    }
+
+    fn method(_: JniEnv, _: JObject, name: [:0]const u8, _: [:0]const u8) jni.JMethodId {
+        if (std.mem.eql(u8, name, "requestSendAccessibilityEvent")) {
+            return @ptrFromInt(handle_base + 30);
+        }
+        return @ptrFromInt(handle_base + 31);
+    }
+
+    fn object(_: JniEnv, _: JObject, _: jni.JMethodId, _: []const JValue) JObject {
+        return fakeRunnable();
+    }
+
+    fn boolean(env: JniEnv, _: JObject, method_id: jni.JMethodId, _: []const JValue) u8 {
+        const self = of(env);
+        if (@intFromPtr(method_id) == handle_base + 30) {
+            self.sends += 1;
+            return 1;
+        }
+        return @intFromBool(self.enabled);
+    }
+
+    fn string(env: JniEnv, _: []const u8) jni.JString {
+        if (of(env).failure == error.OutOfMemory) return null;
+        return fakeRunnable();
+    }
+
+    fn exception(env: JniEnv) bool {
+        return of(env).failure == error.JavaException;
+    }
+
+    fn table(self: *ConsumerRaiseRecorder) JniTable {
+        var result = jni.inertTable(@ptrCast(self));
+        result.findClassFn = class;
+        result.getMethodIdFn = method;
+        result.getStaticMethodIdFn = method;
+        result.callObjectMethodFn = object;
+        result.callStaticObjectMethodFn = object;
+        result.callBooleanMethodFn = boolean;
+        result.newStringFn = string;
+        result.exceptionCheckFn = exception;
+        return result;
+    }
+};
+
+fn consumerTarget(gpa: Allocator, inner: *AndroidAdapter) AndroidInjectingAdapter {
+    return .{
+        .gpa = gpa,
+        .env = null,
+        .inner = inner,
+        .host = fakeHost(),
+        .runnable = fakeRunnable(),
+        .delegate = null,
+        .activation_handler = noActivation,
+        .activation_handler_userdata = null,
+        .action_handler = unusedAction,
+        .action_handler_userdata = null,
+        .pending_events = .empty,
+    };
+}
+
+test "pending copy retains tagged scroll axes absent maxima and node identity" {
+    // This is the append path updateIfActive uses before releasing its produced queue.
+    var inner = try AndroidAdapter.init(testing.allocator);
+    defer inner.deinit();
+    var target = consumerTarget(testing.allocator, &inner);
+    defer target.pending_events.deinit(testing.allocator);
+    const node = @import("../../consumer/root.zig").tree_index.FullNodeId.init(
+        .{ .value = 42 },
+        .init(3),
+    );
+    const scroll: QueuedEvent = .{ .scrolled = .{
+        .node = node,
+        .x = .{ .current = -7, .delta = -12, .max = null },
+        .y = .{ .current = 91, .delta = 6, .max = 0 },
+    } };
+    var produced = QueuedEvents.init(testing.allocator, &inner);
+    try produced.append(scroll);
+    try produced.append(.{ .scrolled = .{
+        .node = null,
+        .x = null,
+        .y = .{ .current = 0, .delta = -1, .max = 10 },
+    } });
+    const simple: QueuedEvent = .simple(values.EVENT_VIEW_FOCUSED, node);
+    const content: QueuedEvent = .contentChanged(null, values.CONTENT_CHANGE_TYPE_SUBTREE);
+    try produced.append(simple);
+    try produced.append(content);
+    try target.appendPending(produced.events.items);
+    produced.deinit();
+    try testing.expectEqualDeep(scroll, target.pending_events.items[0]);
+    const host_scroll = target.pending_events.items[1].scrolled;
+    try testing.expect(host_scroll.node == null);
+    try testing.expect(host_scroll.x == null);
+    try testing.expectEqual(@as(JInt, 0), host_scroll.y.?.current);
+    try testing.expectEqual(@as(JInt, -1), host_scroll.y.?.delta);
+    try testing.expectEqual(@as(?JInt, 10), host_scroll.y.?.max);
+    try testing.expectEqualDeep(simple, target.pending_events.items[2]);
+    try testing.expectEqualDeep(content, target.pending_events.items[3]);
+}
+
+test "pending drain transfers and consumes storage without another allocation" {
+    // A copied drain would fail allocation, keep pending events, and lose the JNI failure.
+    var inner = try AndroidAdapter.init(testing.allocator);
+    defer inner.deinit();
+    var target = consumerTarget(testing.allocator, &inner);
+    try target.pending_events.append(testing.allocator, .simple(values.EVENT_VIEW_CLICKED, null));
+    var failing = testing.FailingAllocator.init(testing.allocator, .{ .fail_index = 0 });
+    target.gpa = failing.allocator();
+    defer target.pending_events.deinit(target.gpa);
+    target.drainPending(jni.inertTable(null), fakeHost());
+    try testing.expectEqual(@as(usize, 0), target.pending_events.items.len);
+    try testing.expectEqual(@as(usize, 0), target.pending_events.capacity);
+    try testing.expectEqual(adapter_module.Error.JavaMemberMissing, inner.last_error.?);
+    try testing.expectEqual(@as(usize, 0), failing.alloc_index);
+}
+
+test "pending drain releases consumed queues on success disabled and exact failure" {
+    const cases = [_]struct {
+        enabled: bool = true,
+        failure: ?java_call.CallError = null,
+        sends: usize = 0,
+    }{
+        .{ .sends = 1 },
+        .{ .enabled = false },
+        .{ .failure = error.JavaMemberMissing },
+        .{ .failure = error.OutOfMemory },
+        .{ .failure = error.JavaException },
+    };
+    for (cases) |case| {
+        var inner = try AndroidAdapter.init(testing.allocator);
+        defer inner.deinit();
+        var target = consumerTarget(testing.allocator, &inner);
+        defer target.pending_events.deinit(testing.allocator);
+        try target.pending_events.append(testing.allocator, .simple(values.EVENT_VIEW_CLICKED, null));
+        var recorder: ConsumerRaiseRecorder = .{
+            .enabled = case.enabled,
+            .failure = case.failure,
+        };
+        target.drainPending(recorder.table(), fakeHost());
+        try testing.expectEqual(@as(usize, 0), target.pending_events.capacity);
+        try testing.expectEqual(case.sends, recorder.sends);
+        if (case.failure) |failure| {
+            try testing.expectEqual(@as(adapter_module.Error, failure), inner.last_error.?);
+        } else {
+            try testing.expect(inner.last_error == null);
+        }
+        target.drainPending(recorder.table(), fakeHost());
+        try testing.expectEqual(case.sends, recorder.sends);
+    }
+}
+
+test "pending append allocation failure retains prior events and exact error" {
+    var inner = try AndroidAdapter.init(testing.allocator);
+    defer inner.deinit();
+    var failing = testing.FailingAllocator.init(testing.allocator, .{ .fail_index = 0 });
+    var target = consumerTarget(failing.allocator(), &inner);
+    defer target.pending_events.deinit(target.gpa);
+    target.pending_events = try std.ArrayList(QueuedEvent).initCapacity(testing.allocator, 1);
+    const prior: QueuedEvent = .simple(values.EVENT_VIEW_FOCUSED, null);
+    target.pending_events.appendAssumeCapacity(prior);
+    const source = [_]QueuedEvent{.simple(values.EVENT_VIEW_CLICKED, null)};
+    try testing.expectError(error.OutOfMemory, target.appendPending(&source));
+    try testing.expectEqual(@as(usize, 1), target.pending_events.items.len);
+    try testing.expectEqualDeep(prior, target.pending_events.items[0]);
+    try testing.expectEqual(adapter_module.Error.OutOfMemory, inner.last_error.?);
+}
+
+test "post checked-call failure is retained without reclassifying rejected posts" {
+    var inner = try AndroidAdapter.init(testing.allocator);
+    defer inner.deinit();
+    var target = consumerTarget(testing.allocator, &inner);
+    defer target.pending_events.deinit(testing.allocator);
+    const failures = [_]java_call.CallError{ error.JavaException, error.JavaMemberMissing };
+    for (failures) |failure| {
+        var recorder: ConsumerRaiseRecorder = .{ .failure = failure };
+        target.postRunnable(recorder.table());
+        try testing.expectEqual(@as(adapter_module.Error, failure), inner.last_error.?);
+    }
+    inner.last_error = null;
+    var recorder: ConsumerRaiseRecorder = .{ .enabled = false };
+    try target.pending_events.append(testing.allocator, .simple(values.EVENT_VIEW_CLICKED, null));
+    target.postRunnable(recorder.table());
+    try testing.expectEqual(@as(usize, 0), target.pending_events.items.len);
+    try testing.expect(inner.last_error == null);
 }
