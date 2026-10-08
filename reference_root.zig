@@ -393,7 +393,6 @@ fn verifyText(gpa: std.mem.Allocator, fixture: TextFixture, case: TextCase) Veri
             var children: [max_text_runs]schema.NodeId = undefined;
             var child_count: usize = 0;
             for (fixture.runs) |run| {
-                if (run.id == case.removed_run) continue;
                 children[child_count] = .{ .value = run.id };
                 child_count += 1;
             }
