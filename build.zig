@@ -34,11 +34,14 @@ const test_address_space_kb: u32 = 4 * 1024 * 1024;
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
+    const runs_on_host = target.result.os.tag == b.graph.host.result.os.tag and
+        target.result.cpu.arch == b.graph.host.result.cpu.arch;
     const linkage = b.option(
         std.builtin.LinkMode,
         "linkage",
         "C library linkage: static (default) or dynamic",
     ) orelse .static;
+    const macobjc = createMacObjcBindings(b, target, optimize);
 
     // zio is the async runtime the port is built around. It is a module-level
     // import rather than a whole-package import: only the library needs a
@@ -47,6 +50,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    const zio_module = zio.module("zio");
 
     // zigwin32 is the Windows type boundary: UI Automation, Win32, COM and
     // `oleaut32`. It is a module-level import like `zio`, and it is only
@@ -77,11 +81,12 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
         .imports = &.{
-            .{ .name = "zio", .module = zio.module("zio") },
+            .{ .name = "zio", .module = zio_module },
             .{ .name = "build_options", .module = options.createModule() },
             .{ .name = "win32", .module = win32.module("win32") },
         },
     });
+    linkNativeSdk(mod, target, macobjc);
 
     const library = b.addLibrary(.{
         .name = "zaccesskit",
@@ -94,12 +99,13 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
             .link_libc = true,
             .imports = &.{
-                .{ .name = "zio", .module = zio.module("zio") },
+                .{ .name = "zio", .module = zio_module },
                 .{ .name = "build_options", .module = options.createModule() },
                 .{ .name = "win32", .module = win32.module("win32") },
             },
         }),
     });
+    linkNativeSdk(library.root_module, target, macobjc);
     library.installHeader(b.path("include/zaccesskit.h"), "zaccesskit.h");
     b.installArtifact(library);
 
@@ -109,11 +115,12 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = .Debug,
         .imports = &.{
-            .{ .name = "zio", .module = zio.module("zio") },
+            .{ .name = "zio", .module = zio_module },
             .{ .name = "build_options", .module = options.createModule() },
             .{ .name = "win32", .module = win32.module("win32") },
         },
     });
+    if (debug_module != mod) linkNativeSdk(debug_module, target, macobjc);
     const test_step = b.step("test", "Run the library tests in Debug and ReleaseSafe");
 
     const test_c_step = b.step("test-c", "Link and run the offline C11 consumer");
@@ -164,10 +171,114 @@ pub fn build(b: *std.Build) void {
     if (b.args) |args| benchmark_run.addArgs(args);
     bench_step.dependOn(&benchmark_run.step);
 
+    const probe_build_step = b.step("native-atspi-probe", "Build and install the Linux AT-SPI probe");
+    const probe_run_step = b.step("native-atspi-probe-run", "Run the Linux AT-SPI probe CLI");
+    if (target.result.os.tag == .linux) {
+        const probe = b.addExecutable(.{
+            .name = "atspi-native-probe",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("tools/atspi_native_probe.zig"),
+                .target = target,
+                .optimize = optimize,
+                .imports = &.{
+                    .{ .name = "zaccesskit", .module = mod },
+                },
+            }),
+        });
+        const probe_install = b.addInstallArtifact(probe, .{});
+        probe_build_step.dependOn(&probe_install.step);
+        const probe_run = b.addRunArtifact(probe);
+        probe_run.has_side_effects = true;
+        if (b.args) |args| probe_run.addArgs(args);
+        probe_run_step.dependOn(&probe_run.step);
+    } else {
+        const unavailable = b.addFail("native-atspi-probe requires a Linux target");
+        probe_build_step.dependOn(&unavailable.step);
+        probe_run_step.dependOn(&unavailable.step);
+    }
+
+    const windows_client_build = b.step(
+        "windows-native-client",
+        "Build and install the real Windows UI Automation client",
+    );
+    const windows_client_run = b.step(
+        "windows-native-client-run",
+        "Run the real UI Automation client on a native Windows host",
+    );
+    if (target.result.os.tag == .windows) {
+        const client = b.addExecutable(.{
+            .name = "zaccesskit-windows-native-client",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("tools/windows_native_client.zig"),
+                .target = target,
+                .optimize = optimize,
+                .imports = &.{
+                    .{ .name = "zaccesskit", .module = mod },
+                    .{ .name = "win32", .module = win32.module("win32") },
+                },
+            }),
+        });
+        client.root_module.linkSystemLibrary("ole32", .{});
+        const install = b.addInstallArtifact(client, .{});
+        windows_client_build.dependOn(&install.step);
+        if (runs_on_host) {
+            const run = b.addRunArtifact(client);
+            run.has_side_effects = true;
+            if (b.args) |args| run.addArgs(args);
+            windows_client_run.dependOn(&run.step);
+        } else {
+            const unavailable = b.addFail("windows-native-client-run requires a native Windows host");
+            windows_client_run.dependOn(&unavailable.step);
+        }
+    } else {
+        const unavailable = b.addFail("windows-native-client requires a Windows target");
+        windows_client_build.dependOn(&unavailable.step);
+        windows_client_run.dependOn(&unavailable.step);
+    }
+
+    const macos_client_build = b.step(
+        "macos-native-client",
+        "Build and install the real macOS accessibility selector client",
+    );
+    const macos_client_run = b.step(
+        "macos-native-client-run",
+        "Run the real accessibility selector client on a native macOS host",
+    );
+    if (target.result.os.tag == .macos) {
+        const client = b.addExecutable(.{
+            .name = "zaccesskit-macos-native-client",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("tools/macos_native_client.zig"),
+                .target = target,
+                .optimize = optimize,
+                .imports = &.{
+                    .{ .name = "zaccesskit", .module = mod },
+                    .{ .name = "macobjc", .module = macobjc.? },
+                },
+            }),
+        });
+        const install = b.addInstallArtifact(client, .{});
+        macos_client_build.dependOn(&install.step);
+        if (runs_on_host) {
+            const run = b.addRunArtifact(client);
+            run.has_side_effects = true;
+            if (b.args) |args| run.addArgs(args);
+            macos_client_run.dependOn(&run.step);
+        } else {
+            const unavailable = b.addFail("macos-native-client-run requires a native macOS host");
+            macos_client_run.dependOn(&unavailable.step);
+        }
+    } else {
+        const unavailable = b.addFail("macos-native-client requires a macOS target");
+        macos_client_build.dependOn(&unavailable.step);
+        macos_client_run.dependOn(&unavailable.step);
+    }
+
     const debug_tests = b.addTest(.{
         .name = "test-Debug",
         .root_module = debug_module,
     });
+    linkTestApartment(debug_tests.root_module, target);
     test_step.dependOn(&addCeilingedRun(b, "test-Debug", debug_tests).step);
 
     const release_tests = b.addTest(.{
@@ -177,13 +288,37 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = .ReleaseSafe,
             .imports = &.{
-                .{ .name = "zio", .module = zio.module("zio") },
+                .{ .name = "zio", .module = zio_module },
                 .{ .name = "build_options", .module = options.createModule() },
                 .{ .name = "win32", .module = win32.module("win32") },
             },
         }),
     });
+    linkNativeSdk(release_tests.root_module, target, macobjc);
+    linkTestApartment(release_tests.root_module, target);
     test_step.dependOn(&addCeilingedRun(b, "test-ReleaseSafe", release_tests).step);
+
+    const contract_step = b.step("native-contract", "Run the published native consumer contract tests");
+    for ([_]std.builtin.OptimizeMode{ .Debug, .ReleaseSafe }) |mode| {
+        const name = b.fmt("native-contract-{s}", .{@tagName(mode)});
+        const contract_tests = b.addTest(.{
+            .name = name,
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("test/native_contract_cases.zig"),
+                .target = target,
+                .optimize = mode,
+                .imports = &.{
+                    .{
+                        .name = "zaccesskit",
+                        .module = if (mode == .Debug) debug_module else release_tests.root_module,
+                    },
+                },
+            }),
+        });
+        const contract_run = addCeilingedRun(b, name, contract_tests);
+        contract_step.dependOn(&contract_run.step);
+        test_step.dependOn(&contract_run.step);
+    }
 
     const bench_test_step = b.step("bench-test", "Test the benchmark in Debug and ReleaseSafe");
     const benchmark_test_modes = [_]std.builtin.OptimizeMode{ .Debug, .ReleaseSafe };
@@ -223,12 +358,14 @@ pub fn build(b: *std.Build) void {
                 .optimize = mode,
                 .link_libc = true,
                 .imports = &.{
-                    .{ .name = "zio", .module = zio.module("zio") },
+                    .{ .name = "zio", .module = zio_module },
                     .{ .name = "build_options", .module = options.createModule() },
                     .{ .name = "win32", .module = win32.module("win32") },
                 },
             }),
         });
+        linkNativeSdk(integration_tests.root_module, target, macobjc);
+        linkTestApartment(integration_tests.root_module, target);
         const integration_run = addCeilingedRun(b, name, integration_tests);
         integration_step.dependOn(&integration_run.step);
         test_step.dependOn(&integration_run.step);
@@ -249,12 +386,14 @@ pub fn build(b: *std.Build) void {
                 .optimize = mode,
                 .link_libc = true,
                 .imports = &.{
-                    .{ .name = "zio", .module = zio.module("zio") },
+                    .{ .name = "zio", .module = zio_module },
                     .{ .name = "build_options", .module = options.createModule() },
                     .{ .name = "win32", .module = win32.module("win32") },
                 },
             }),
         });
+        linkNativeSdk(reference_tests.root_module, target, macobjc);
+        linkTestApartment(reference_tests.root_module, target);
         const reference_run = addCeilingedRun(b, name, reference_tests);
         reference_step.dependOn(&reference_run.step);
         test_step.dependOn(&reference_run.step);
@@ -268,12 +407,13 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
             .link_libc = true,
             .imports = &.{
-                .{ .name = "zio", .module = zio.module("zio") },
+                .{ .name = "zio", .module = zio_module },
                 .{ .name = "build_options", .module = options.createModule() },
                 .{ .name = "win32", .module = win32.module("win32") },
             },
         }),
     });
+    linkNativeSdk(integration_program.root_module, target, macobjc);
     const integration_program_run = b.addRunArtifact(integration_program);
     integration_program_run.has_side_effects = true;
     const integration_run_step = b.step("integration-run", "Run the offline application scenario");
@@ -287,12 +427,13 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
             .link_libc = true,
             .imports = &.{
-                .{ .name = "zio", .module = zio.module("zio") },
+                .{ .name = "zio", .module = zio_module },
                 .{ .name = "build_options", .module = options.createModule() },
                 .{ .name = "win32", .module = win32.module("win32") },
             },
         }),
     });
+    linkNativeSdk(reference_program.root_module, target, macobjc);
     const reference_program_run = b.addRunArtifact(reference_program);
     reference_program_run.has_side_effects = true;
     const reference_run_step = b.step("reference-run", "Run the pinned reference fixture checks");
@@ -320,12 +461,14 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = .Debug,
             .imports = &.{
-                .{ .name = "zio", .module = zio.module("zio") },
+                .{ .name = "zio", .module = zio_module },
                 .{ .name = "build_options", .module = options.createModule() },
                 .{ .name = "win32", .module = win32.module("win32") },
             },
         }),
     });
+    linkNativeSdk(cross_tests.root_module, target, macobjc);
+    linkTestApartment(cross_tests.root_module, target);
     const cross_run = b.addRunArtifact(cross_tests);
     // A cached run executes no tests and cannot prove execution coverage.
     cross_run.has_side_effects = true;
@@ -354,15 +497,14 @@ pub fn build(b: *std.Build) void {
     // address-space ceiling comes with them, because a runaway sweep is the
     // failure the ceiling is for.
     //
-    // `zio`, `build_options` and `win32` are declared although nothing under
-    // the harness reaches them today, so that a `src/` module that grows a
-    // runtime or a Windows dependency does not turn this step red.
+    // The transport and the public Runtime alias share the exact pinned zio
+    // module instance with every fuzz shard; dependency types must not fork.
     //
     // The count this shard prints is larger than the harness: `zig test`
     // collects the `test` blocks of every file it analyses, and this module
     // analyses `src/schema/` and `src/consumer/`, so it re-runs the library
     // tests it pulls in.
-    const fuzz_step = b.step("fuzz", "Replay the committed corpus of the property table harness");
+    const fuzz_step = b.step("fuzz", "Replay committed schema and D-Bus decoder corpora");
 
     const fuzz_debug = b.addTest(.{
         .name = "fuzz-Debug",
@@ -371,12 +513,14 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = .Debug,
             .imports = &.{
-                .{ .name = "zio", .module = zio.module("zio") },
+                .{ .name = "zio", .module = zio_module },
                 .{ .name = "build_options", .module = options.createModule() },
                 .{ .name = "win32", .module = win32.module("win32") },
             },
         }),
     });
+    linkNativeSdk(fuzz_debug.root_module, target, macobjc);
+    linkTestApartment(fuzz_debug.root_module, target);
     const fuzz_debug_run = addCeilingedRun(b, "fuzz-Debug", fuzz_debug);
     test_step.dependOn(&fuzz_debug_run.step);
     fuzz_step.dependOn(&fuzz_debug_run.step);
@@ -388,12 +532,14 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = .ReleaseSafe,
             .imports = &.{
-                .{ .name = "zio", .module = zio.module("zio") },
+                .{ .name = "zio", .module = zio_module },
                 .{ .name = "build_options", .module = options.createModule() },
                 .{ .name = "win32", .module = win32.module("win32") },
             },
         }),
     });
+    linkNativeSdk(fuzz_release.root_module, target, macobjc);
+    linkTestApartment(fuzz_release.root_module, target);
     const fuzz_release_run = addCeilingedRun(b, "fuzz-ReleaseSafe", fuzz_release);
     test_step.dependOn(&fuzz_release_run.step);
     fuzz_step.dependOn(&fuzz_release_run.step);
@@ -493,6 +639,77 @@ pub fn build(b: *std.Build) void {
     if (b.args) |args| tables_run.addArgs(args);
     tables_run.step.dependOn(&tables_test_run.step);
     tables_step.dependOn(&tables_run.step);
+}
+
+/// SDK declarations are generated only for the real macOS target.
+fn createMacObjcBindings(
+    b: *std.Build,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+) ?*std.Build.Module {
+    if (target.result.os.tag != .macos) return null;
+    const sdk = b.option(
+        []const u8,
+        "macos-sdk",
+        "Actual macOS SDK path for Objective-C declarations and native linking",
+    ) orelse b.sysroot orelse
+        std.debug.panic(
+            "macOS native adapters require -Dmacos-sdk=<SDK> or --sysroot <SDK>",
+            .{},
+        );
+    b.sysroot = sdk;
+    const translated = b.addTranslateC(.{
+        .root_source_file = b.path("src/adapters/macos/runtime.h"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    translated.defineCMacro("OBJC_OLD_DISPATCH_PROTOTYPES", "0");
+    translated.addSystemIncludePath(.{
+        .cwd_relative = b.pathJoin(&.{ sdk, "usr/include" }),
+    });
+    translated.addSystemFrameworkPath(.{
+        .cwd_relative = b.pathJoin(&.{ sdk, "System/Library/Frameworks" }),
+    });
+    return translated.createModule();
+}
+
+/// Link only the SDK used by the selected target's real native implementation.
+fn linkNativeSdk(
+    module: *std.Build.Module,
+    target: std.Build.ResolvedTarget,
+    macobjc: ?*std.Build.Module,
+) void {
+    if (macobjc) |binding| module.addImport("macobjc", binding);
+    module.linkSystemLibrary("c", .{});
+    switch (target.result.os.tag) {
+        .windows => {
+            module.linkSystemLibrary("uiautomationcore", .{});
+            module.linkSystemLibrary("user32", .{});
+            module.linkSystemLibrary("oleaut32", .{});
+            module.linkSystemLibrary("kernel32", .{});
+        },
+        .macos => {
+            const b = module.owner;
+            const sdk = b.sysroot.?;
+            module.addSystemFrameworkPath(.{
+                .cwd_relative = b.pathJoin(&.{ sdk, "System/Library/Frameworks" }),
+            });
+            module.addCSourceFile(.{
+                .file = b.path("src/adapters/macos/foundation.m"),
+                .flags = &.{ "-fno-objc-arc", "-fvisibility=hidden" },
+            });
+            module.linkFramework("AppKit", .{});
+            module.linkFramework("Foundation", .{});
+            module.linkSystemLibrary("objc", .{});
+        },
+        else => {},
+    }
+}
+
+/// Native reserved-value regressions initialize their own COM apartment.
+fn linkTestApartment(module: *std.Build.Module, target: std.Build.ResolvedTarget) void {
+    if (target.result.os.tag == .windows) module.linkSystemLibrary("ole32", .{});
 }
 
 /// Native runs retain the address-space ceiling that bounds a runaway test.
