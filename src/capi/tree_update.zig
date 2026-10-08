@@ -106,6 +106,7 @@
 
 const std = @import("std");
 
+const abi = @import("powerpc64_abi.zig");
 const allocation = @import("allocation.zig");
 const handles = @import("handles.zig");
 const marshal = @import("marshal.zig");
@@ -480,10 +481,9 @@ pub fn treeUpdateDebug(
     defer owning.deinit();
     formatTreeUpdate(update, &owning.writer) catch |err| switch (err) {
         // `std.Io.Writer.Allocating.drain` returns `error.WriteFailed` from one
-        // place, `lib/std/Io/Writer.zig:2705`, and that place is the
-        // `ensureUnusedCapacity` call that could not make room. A writer that
-        // owns its buffer and grows it has no other way to fail, so the C
-        // layer's one failing tag answers it.
+        // place, `lib/std/Io/Writer.zig:2705`, when `ensureUnusedCapacity`
+        // cannot grow the buffer. This writer owns its buffer, so that failure
+        // means allocation growth failed and maps to `error.OutOfMemory`.
         error.WriteFailed => return error.OutOfMemory,
     };
     const text = try owning.toOwnedSliceSentinel(0);
@@ -608,9 +608,9 @@ export fn accesskit_tree_update_set_focus(
 /// The value is copied, so no release is owed.
 export fn accesskit_tree_update_get_tree_id(
     update: *const accesskit_tree_update,
-) callconv(.c) TreeId {
+) callconv(.c) abi.TreeIdValue {
     allocation.clearError();
-    return treeUpdateGetTreeId(update);
+    return abi.treeIdToValue(treeUpdateGetTreeId(update));
 }
 
 /// Sets the update's tree identifier.
@@ -619,10 +619,10 @@ export fn accesskit_tree_update_get_tree_id(
 /// the other direction. Returns nothing and cannot fail.
 export fn accesskit_tree_update_set_tree_id(
     update: *accesskit_tree_update,
-    tree_id: TreeId,
+    tree_id: abi.TreeIdValue,
 ) callconv(.c) void {
     allocation.clearError();
-    treeUpdateSetTreeId(update, tree_id);
+    treeUpdateSetTreeId(update, abi.treeIdFromValue(tree_id));
 }
 
 /// Returns a text rendering of the update, or `null` when it could not be built.
@@ -815,19 +815,17 @@ comptime {
         assertPointerShaped(exported);
     }
 
-    // The other two are the tree identifier, which the header passes and
-    // returns by value on purpose. Both sides are the same `extern struct` at
-    // the same size and the same alignment, so the conversion is the identity
-    // and the signature is the header's.
+    // The header passes and returns the tree identifier by value.
+    // Both exports lower its representation only on PowerPC64 Linux musl.
     const getter = @typeInfo(@TypeOf(accesskit_tree_update_get_tree_id)).@"fn";
     std.debug.assert(getter.params.len == 1);
     std.debug.assert(!isAggregate(getter.params[0].type.?));
-    std.debug.assert(getter.return_type.? == TreeId);
+    std.debug.assert(getter.return_type.? == abi.TreeIdValue);
 
     const setter = @typeInfo(@TypeOf(accesskit_tree_update_set_tree_id)).@"fn";
     std.debug.assert(setter.params.len == 2);
     std.debug.assert(!isAggregate(setter.params[0].type.?));
-    std.debug.assert(setter.params[1].type.? == TreeId);
+    std.debug.assert(setter.params[1].type.? == abi.TreeIdValue);
     std.debug.assert(setter.return_type.? == void);
     std.debug.assert(@sizeOf(TreeId) == 16);
     std.debug.assert(@alignOf(TreeId) == 1);
@@ -1255,12 +1253,16 @@ test "the focus and the tree identifier round trip" {
     treeUpdateSetFocus(update, 99);
     try testing.expectEqual(@as(NodeIdContent, 99), update.update.focus.value);
 
-    const wanted: TreeId = .{ .bytes = [_]u8{1} ** 16 };
-    treeUpdateSetTreeId(update, wanted);
-    try testing.expect(wanted.eql(treeUpdateGetTreeId(update)));
-    // The identifier is a value and not a handle, so a second read is the same
-    // 16 bytes and no release is owed for either read.
-    try testing.expect(treeUpdateGetTreeId(update).eql(wanted));
+    const wanted: TreeId = .{ .bytes = .{
+        0xf1, 0x82, 0xb3, 0xc4, 0xd5, 0xe6, 0x47, 0x98,
+        0xa9, 0xfa, 0x8b, 0x9c, 0xad, 0xbe, 0xcf, 0xd0,
+    } };
+    accesskit_tree_update_set_tree_id(update, abi.treeIdToValue(wanted));
+    const actual = abi.treeIdFromValue(accesskit_tree_update_get_tree_id(update));
+    try testing.expectEqualSlices(u8, &wanted.bytes, &actual.bytes);
+    // The native store retains the same bytes without owning a second handle.
+    const stored = treeUpdateGetTreeId(update);
+    try testing.expectEqualSlices(u8, &wanted.bytes, &stored.bytes);
 }
 
 test "the debug text names the type, both nodes, the tree and the focus" {
@@ -1355,9 +1357,24 @@ test "the exported constructor, pusher and accessors answer through the C layer"
     accesskit_tree_update_set_focus(update, 12);
     try testing.expectEqual(@as(NodeIdContent, 12), update.update.focus.value);
 
-    const wanted: TreeId = .{ .bytes = [_]u8{2} ** 16 };
-    accesskit_tree_update_set_tree_id(update, wanted);
-    try testing.expect(wanted.eql(accesskit_tree_update_get_tree_id(update)));
+    // Compare every stored byte against independent logical values.
+    const tree_ids = [_]TreeId{
+        .{ .bytes = [_]u8{0} ** 16 },
+        .{ .bytes = .{
+            0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef,
+            0xfe, 0xdc, 0xba, 0x98, 0x76, 0x54, 0x32, 0x10,
+        } },
+        .{ .bytes = .{
+            0xf1, 0x82, 0xb3, 0xc4, 0xd5, 0xe6, 0x47, 0x98,
+            0xa9, 0xfa, 0x8b, 0x9c, 0xad, 0xbe, 0xcf, 0xd0,
+        } },
+    };
+    for (tree_ids) |wanted| {
+        accesskit_tree_update_set_tree_id(update, abi.treeIdToValue(wanted));
+        try testing.expectEqualSlices(u8, &wanted.bytes, &update.update.tree_id.bytes);
+        const actual = abi.treeIdFromValue(accesskit_tree_update_get_tree_id(update));
+        try testing.expectEqualSlices(u8, &wanted.bytes, &actual.bytes);
+    }
 
     const text = accesskit_tree_update_debug(update) orelse return error.NoDebugText;
     defer releaseCString(gpa, text);
