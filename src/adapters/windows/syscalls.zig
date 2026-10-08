@@ -976,3 +976,33 @@ test "every raise status is distinct, so a refusal is not read as a success" {
         }
     }
 }
+
+test "unavailable provider destruction releases its COM holder" {
+    const binding = @import("bindings.zig");
+    if (!binding.winapi_resolves) return error.SkipZigTest;
+    const com_object = @import("com.zig");
+    const State = struct {
+        finalized: *u32,
+        pub fn deinit(self: *@This()) void {
+            self.finalized.* += 1;
+        }
+    };
+    const Object = com_object.Object(State, .{com_object.Descriptor{
+        .Interface = binding.IRawElementProviderSimple,
+        .Iid = binding.uia.IID_IRawElementProviderSimple,
+    }});
+    const base = Object.baseVTable(0);
+    var finalized: u32 = 0;
+    const object = try Object.create(testing.allocator, .{&base}, .{ .finalized = &finalized });
+    const unknown: *binding.IUnknown = &object.words[0];
+    try testing.expectEqual(@as(u32, 2), unknown.vtable.AddRef(unknown));
+    var slot: ProviderSlot = .{ .interface = unknown };
+    unavailableDestroyProvider(testing.allocator, .init(.{ .value = 1 }, .init(0)), &slot);
+    const remaining = unknown.vtable.Release(unknown);
+    if (remaining != 0) {
+        _ = unknown.vtable.Release(unknown);
+    }
+    try testing.expectEqual(@as(u32, 0), remaining);
+    try testing.expectEqual(@as(u32, 1), finalized);
+    try testing.expectEqual(@as(?*anyopaque, null), slot.interface);
+}

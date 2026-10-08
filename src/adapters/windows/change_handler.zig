@@ -1559,3 +1559,70 @@ test "an update announces a live region only when the live setting or the name c
         return error.MissingNode;
     try testing.expect(!try liveRegionChanged(gpa, old_node, bare_node, false));
 }
+
+test "updated raw text runs prepend one parent event before focus" {
+    const gpa = testing.allocator;
+    const platform = syscalls.unavailablePlatform();
+    const before = [_]NodeSpec{
+        .{ .local = 1, .role = .window, .children = &.{2} },
+        .{ .local = 2, .role = .document, .children = &.{ 3, 4 } },
+        .{ .local = 3, .role = .text_run, .value = "before" },
+        .{ .local = 4, .role = .text_run, .value = "before" },
+    };
+    const after = [_]NodeSpec{
+        .{ .local = 1, .role = .window, .children = &.{2} },
+        .{ .local = 2, .role = .document, .children = &.{ 3, 4 } },
+        .{ .local = 3, .role = .text_run, .value = "after" },
+        .{ .local = 4, .role = .text_run, .value = "after" },
+    };
+    var old_tree = try buildTree(gpa, 1, &before);
+    defer old_tree.deinit();
+    var new_tree = try buildTree(gpa, 1, &after);
+    defer new_tree.deinit();
+    var registry = elements.Registry.init(gpa);
+    defer registry.deinit(platform);
+    var queue = queued_events.QueuedEvents.init(gpa);
+    defer queue.deinit(platform);
+    var handler = Handler.init(gpa, platform, &registry, &queue);
+    defer handler.deinit();
+    const old_state = old_tree.stateOf();
+    const new_state = new_tree.stateOf();
+    try handler.focusMoved(new_state.root());
+    const raw_text_node_ids = [_]u64{ 3, 4 };
+    for (raw_text_node_ids) |local| {
+        const id = new_state.rootId().withSameTree(.{ .value = local });
+        try handler.nodeUpdated(old_state.nodeById(id).?, new_state.nodeById(id).?);
+    }
+    try testing.expectEqual(@as(usize, 2), queue.len());
+    try testing.expectEqual(EventId.text_text_changed, queue.at(0).?.simple.event_id);
+    try testing.expectEqual(EventId.automation_focus_changed, queue.at(1).?.simple.event_id);
+    try testing.expectEqual(try slotForLocal(&registry, platform, 2), queue.at(0).?.simple.slot);
+}
+
+test "removing a node drops its registry ownership but preserves queued events" {
+    const gpa = testing.allocator;
+    const platform = syscalls.unavailablePlatform();
+    var tree = try buildTree(gpa, 1, &.{
+        .{ .local = 1, .role = .window, .children = &.{2} },
+        .{ .local = 2, .role = .dialog },
+    });
+    defer tree.deinit();
+    var registry = elements.Registry.init(gpa);
+    defer registry.deinit(platform);
+    var queue = queued_events.QueuedEvents.init(gpa);
+    defer queue.deinit(platform);
+    var handler = Handler.init(gpa, platform, &registry, &queue);
+    defer handler.deinit();
+    const state = tree.stateOf();
+    const dialog = state.nodeById(state.rootId().withSameTree(.{ .value = 2 })).?;
+    try handler.nodeAdded(dialog);
+    try handler.nodeRemoved(dialog);
+    try testing.expectEqual(@as(usize, 0), registry.nodeCount());
+    try testing.expect(registry.existingSlot(dialog.id()) == null);
+    try testing.expectEqual(@as(usize, 2), queue.len());
+    try testing.expectEqual(EventId.window_window_opened, queue.at(0).?.simple.event_id);
+    try testing.expectEqual(EventId.window_window_closed, queue.at(1).?.simple.event_id);
+    const report = queue.raise(platform);
+    try testing.expectEqual(@as(usize, 2), report.unavailable);
+    queue = queued_events.QueuedEvents.init(gpa);
+}
