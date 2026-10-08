@@ -16,29 +16,25 @@
 //! and a cursor's borrow of a `children` slice and of a `TreeState` ends at
 //! the next call that can grow `TreeState.nodes`. Read that file for the rule.
 //!
-//! **The bound, and why one number serves both scans.** `docs/33` section 7
-//! names `treeWalkStepBound(node_count)` for these two loops at
-//! `iterators.rs:261` and `:302`, and the closing list in that section
-//! confirms one bound rather than two. I read both walks and they are mirror
-//! images, so the same argument bounds them and they take the same value.
-//! The derivation:
+//! **The two budgets.** `docs/33` section 7 names
+//! `treeWalkStepBound(node_count)` for both scans at `iterators.rs:261` and
+//! `:302`. Each scan uses that value for two separate counts: candidate visits
+//! and parent ascents.
 //!
-//! Each iteration moves to a node the walk has not yet visited as a candidate,
-//! or ascends to a parent and then leaves that parent's whole subtree to the
-//! right. A forward scan descends into the first child of a node the filter
-//! excludes with `exclude_node`, advances to the next following sibling, and
-//! on reaching the end of a level ascends to the parent to continue the level
-//! above. Once a scan has ascended past a node it never returns to that node's
-//! subtree, because the next move is to the right at the higher level. A node
-//! is therefore a candidate at most once and an ascent target at most once,
-//! and the step count cannot exceed the number of nodes the state holds. A
-//! state that repeats a node in a parent chain, which invariant I1 rules out,
-//! asks for a `node_count + 1`th step, and the count catches the repeat.
+//! A forward scan descends into the first child of an `exclude_node` node,
+//! advances to the next sibling, or ascends when a level has no more siblings.
+//! Once it ascends past a node, it never returns to that node's subtree.
+//! The backward scan follows the same rule in the opposite direction.
+//! Each node is therefore a candidate at most once and an ascent target at
+//! most once in a valid tree. A transparent node can serve both roles, so one
+//! combined count can exceed `node_count` without a cycle.
 //!
-//! That argument is `treeWalkStepBound`, and the tag is `error.TreeCycle`. The
-//! test `a parent cycle reaches the scan bound and reports TreeCycle` builds
-//! that cycle and asks for one step past the bound. Its positive half breaks
-//! the cycle and asks again, so a bound that fires early fails too.
+//! Each continuing iteration consumes one candidate visit or one parent ascent.
+//! Each count has its own `treeWalkStepBound(nodes.count())` budget.
+//! Exhaustion reports `error.TreeCycle`, so neither kind of cycle can run
+//! without a bound. The child-cycle test below exercises the candidate budget.
+//! The text sibling-scan regression in `text/position_inner.zig` exercises the
+//! parent budget and missing sibling errors.
 //!
 //! **What this module does not do.** It allocates nothing, so no function here
 //! takes an allocator. It takes no `io`, reads no clock and holds no global.
@@ -79,21 +75,24 @@ const testing = std.testing;
 /// `null` means the order is exhausted, not that the filter rejected
 /// everything.
 ///
-/// Returns `error.TreeCycle` past `treeWalkStepBound(nodes.count())` steps and
-/// `error.NoSuchNode` when the state holds no entry for an id a `children`
-/// list names. Neither leaves anything to release.
+/// Returns `error.TreeCycle` when candidate visits or parent ascents exceed
+/// their separate `treeWalkStepBound(nodes.count())` budgets.
+/// Returns `error.NoSuchNode` when a sibling id has no state entry.
+/// Neither leaves anything to release.
 pub fn nextFilteredSibling(node: ?NodeRef, filter: FilterFn) QueryError!?NodeRef {
     const start = node orelse return null;
     const bound = treeWalkStepBound(start.tree_state.nodes.count());
-    var steps: usize = 0;
+    var candidate_steps: usize = 0;
+    var parent_steps: usize = 0;
     var current = start;
     var consider_children = false;
-    // The bound is the loop test rather than a check inside an open loop, so
-    // the loop ends by exhausting its count and reporting the tag.
-    while (steps < bound) : (steps += 1) {
+    // A transparent node can cost both a candidate visit and a parent ascent.
+    while (candidate_steps < bound or parent_steps < bound) {
         if (consider_children) {
             var kids = childrenOf(current);
             if (kids.next()) |child| {
+                if (candidate_steps == bound) return error.TreeCycle;
+                candidate_steps += 1;
                 const result = try filter.call(child);
                 current = child;
                 if (result == .include) return child;
@@ -105,6 +104,8 @@ pub fn nextFilteredSibling(node: ?NodeRef, filter: FilterFn) QueryError!?NodeRef
         if (siblings.next()) |sibling| {
             const sibling_node = NodeRef.init(current.tree_state, sibling) orelse
                 return error.NoSuchNode;
+            if (candidate_steps == bound) return error.TreeCycle;
+            candidate_steps += 1;
             const result = try filter.call(sibling_node);
             current = sibling_node;
             if (result == .include) return sibling_node;
@@ -114,6 +115,8 @@ pub fn nextFilteredSibling(node: ?NodeRef, filter: FilterFn) QueryError!?NodeRef
             continue;
         }
         const parent = parentOf(current) orelse return null;
+        if (parent_steps == bound) return error.TreeCycle;
+        parent_steps += 1;
         current = parent;
         if (try filter.call(parent) != .exclude_node) return null;
         consider_children = false;
@@ -130,13 +133,16 @@ pub fn nextFilteredSibling(node: ?NodeRef, filter: FilterFn) QueryError!?NodeRef
 pub fn previousFilteredSibling(node: ?NodeRef, filter: FilterFn) QueryError!?NodeRef {
     const start = node orelse return null;
     const bound = treeWalkStepBound(start.tree_state.nodes.count());
-    var steps: usize = 0;
+    var candidate_steps: usize = 0;
+    var parent_steps: usize = 0;
     var current = start;
     var consider_children = false;
-    while (steps < bound) : (steps += 1) {
+    while (candidate_steps < bound or parent_steps < bound) {
         if (consider_children) {
             var kids = childrenOf(current);
             if (kids.nextBack()) |child| {
+                if (candidate_steps == bound) return error.TreeCycle;
+                candidate_steps += 1;
                 const result = try filter.call(child);
                 current = child;
                 if (result == .include) return child;
@@ -148,6 +154,8 @@ pub fn previousFilteredSibling(node: ?NodeRef, filter: FilterFn) QueryError!?Nod
         if (siblings.next()) |sibling| {
             const sibling_node = NodeRef.init(current.tree_state, sibling) orelse
                 return error.NoSuchNode;
+            if (candidate_steps == bound) return error.TreeCycle;
+            candidate_steps += 1;
             const result = try filter.call(sibling_node);
             current = sibling_node;
             if (result == .include) return sibling_node;
@@ -155,6 +163,8 @@ pub fn previousFilteredSibling(node: ?NodeRef, filter: FilterFn) QueryError!?Nod
             continue;
         }
         const parent = parentOf(current) orelse return null;
+        if (parent_steps == bound) return error.TreeCycle;
+        parent_steps += 1;
         current = parent;
         if (try filter.call(parent) != .exclude_node) return null;
         consider_children = false;
