@@ -1,17 +1,17 @@
 //! The per-node pass of one tree update.
 //!
-//! **Invariant.** When `applyUpdate` returns without an error, every node the
-//! update names sits in `state.nodes` with its parent, its index and its data
+//! **Invariant.** When either apply entry point returns without an error, every
+//! node the update names sits in `state.nodes` with its parent, index and data
 //! settled, and no id is named by two children lists.
 //!
 //! **What survives an update, and what does not.** A node the state already
 //! holds keeps its entry and its property buffers: an update writes the new data
 //! into the old store with `Node.cloneInto`, which keeps every buffer whose
 //! shape matches, so a node's identity and its memory both survive. A node the
-//! update adds is deep-copied out of the update rather than moved out of it,
-//! because `TreeUpdate.deinit` releases every entry it holds and a state sharing
-//! those buffers with the update would free them twice. The price is one property
-//! copy per added node, which upstream does not pay because upstream moves.
+//! update adds is deep-copied rather than moved, so the state owns no source
+//! buffers. `applyUpdate` consumes and releases the update exactly once.
+//! `applyUpdateBorrowed` leaves the update live and unchanged on every path.
+//! Neither entry point clones the complete update before the per-node pass.
 //!
 //! What does not survive is `NodeState.parent_and_index`, which is rewritten
 //! whenever a node moves, and a node the graft pass removes, which is gone from
@@ -19,16 +19,15 @@
 //! an update is therefore stale after it whatever the node did, which
 //! `node_id.zig` states at the borrow.
 //!
-//! **What an error leaves.** The pass writes `state` as it walks, exactly as
-//! upstream does, and does not roll back. On any `UpdateError` the state is
-//! half applied: a node the pass added is in the map, a node it rewrote carries
-//! the new data, and the two pending maps are discarded with the scratch. The
-//! caller's protection is the shape `Tree` gives it. `applyUpdate` runs on
-//! `Tree.next_state`, a scratch copy, and `Tree.process_changes` folds it into
-//! `Tree.state` only after the whole update returns without an error, so the tree
-//! an application reads is exactly the tree it read before. Two rejections are
-//! decided before the first write at all, `error.SubtreeWithoutGraft` and
-//! `error.SubtreeDoesNotExist`, so those two leave even the scratch untouched.
+//! **What an error leaves.** The pass writes `state` and `changes` as it walks
+//! and does not roll back. An `UpdateError` can leave partial node data, parent
+//! links, tree metadata and change records. The pending maps own only their
+//! headers and release no source nodes when the pass discards them.
+//! The caller must discard a failed working state and its change records.
+//! A transactional caller applies to a private working state and publishes only
+//! after this pass and subsequent validation succeed.
+//! `error.SubtreeWithoutGraft` and `error.SubtreeDoesNotExist` precede node and
+//! tree metadata writes, but the tree index map can already contain a new entry.
 //!
 //! **The graft pass is the last thing this file does.** `docs/33` section 3
 //! forbids this file from importing `tree.zig` and from importing
@@ -37,8 +36,8 @@
 //! module above every pass. They run after this pass and after the graft pass,
 //! because a validator called before the last mutation proves nothing.
 //!
-//! **Argument order.** `applyUpdate` and `addNode` are free functions that
-//! allocate, so they take `gpa` first per `AGENTS.md:99`. `state` is a parameter
+//! **Argument order.** The apply entry points and `addNode` are free functions
+//! that allocate, so they take `gpa` first per `AGENTS.md:99`. `state` is a parameter
 //! and not a receiver, because Zig declares a method only inside the struct body
 //! it belongs to and `tree_state.zig` owns `TreeState`.
 //!
@@ -77,51 +76,63 @@ const tree_id_root = schema.tree_id_root;
 const testing = std.testing;
 
 /// The nodes an update named that neither the state nor a children list reached.
-/// Each value is a header over the update's own node, so the map is not a second
-/// owner and `addNode` deep-copies what it takes out.
+/// The map owns only headers, not node buffers. Each value borrows the source
+/// until the apply call returns, and `addNode` deep-copies what it takes out.
 const PendingNodes = std.array_hash_map.Auto(FullNodeId, Node);
 /// The child ids an update named that no node in the update, and no children
 /// list already in the state, accounts for yet.
 const PendingChildren = std.array_hash_map.Auto(FullNodeId, ParentAndIndex);
 
-/// Applies one update to `state` and, when `changes` is not `null`, records what
-/// it changed in it.
+/// Applies and consumes one update, recording changes when `changes` is not `null`.
 ///
-/// `update` is transferred in and released on every path, including the failing
-/// ones, through `TreeUpdate.deinit` and through nothing else. The caller's
-/// binding is spent and must not be released again.
+/// Releases `update` exactly once on every path. The caller must not use or
+/// release its transferred handle again. `gpa` must be the update's allocator.
 ///
-/// `gpa` is the allocator every map this pass builds and every buffer the state
-/// gains is grown with, and it must be the allocator `update` was built with.
-///
-/// Two rejections leave `state` untouched: `error.SubtreeWithoutGraft` and
-/// `error.SubtreeDoesNotExist`. Every other tag leaves the pass half applied and
-/// the state unsatisfying I1 to I4, so the caller drops the state. The module doc
-/// says which shape makes that safe, and a test in this file pins it.
-///
-/// Nothing here recomputes the effective focus or validates the tree. `tree.zig`
-/// does both after this pass and the graft pass, which is the one place in the
-/// layer where that order is load bearing.
+/// The state allocation, borrowed-source and partial-error contracts are those
+/// of `applyUpdateBorrowed`. Only source ownership differs.
 pub fn applyUpdate(
     gpa: std.mem.Allocator,
     state: *TreeState,
     update: TreeUpdate,
     changes: ?*InternalChanges,
 ) UpdateError!void {
-    // Zig binds a parameter immutably and `TreeUpdate.deinit` takes the address of
-    // a mutable value, so the handle the caller transfers is rebound to a local
-    // the callee can release. Both names below are one value.
     var released = update;
     defer released.deinit(gpa);
+    return applyUpdateBorrowed(gpa, state, &released, changes);
+}
 
+/// Applies one borrowed update, recording changes when `changes` is not `null`.
+///
+/// `update`, its node array and its node buffers must stay live and unchanged
+/// until this call returns. They must not alias mutable storage in `state`.
+/// This call never mutates or releases them, on success or error.
+/// The state receives independent node clones or copies into existing buffers.
+///
+/// `gpa` grows the state, scratch maps and change records. It must match their
+/// existing allocation ownership, but need not match the source allocator.
+/// Existing node buffers retain their own allocators.
+///
+/// This is a nontransactional pass. Any `UpdateError` can leave partial state
+/// or change records. Discard both after failure rather than retrying this state.
+/// `error.SubtreeWithoutGraft` and `error.SubtreeDoesNotExist` precede node and
+/// tree metadata writes, but can follow insertion into the tree index map.
+///
+/// This pass resolves grafts but does not recompute effective focus or validate
+/// the tree. The caller must complete both before it publishes the working state.
+pub fn applyUpdateBorrowed(
+    gpa: std.mem.Allocator,
+    state: *TreeState,
+    update: *const schema.TreeUpdate,
+    changes: ?*InternalChanges,
+) UpdateError!void {
     const tree_number = try state.tree_index_map.getOrCreateIndex(gpa, update.tree_id);
     const tree_focus = FullNodeId.init(update.focus, tree_number);
 
     var scratch = GraftScratch.init(gpa, update.tree_id, tree_focus);
     defer scratch.deinit();
 
-    // Upstream `tree.rs:131-148`. Both conditions are checked before anything is
-    // written, so both leave the state as the caller passed it.
+    // Upstream `tree.rs:131-148`. The index lookup precedes these checks, but no
+    // node or tree metadata has changed yet.
     if (!update.tree_id.eql(tree_id_root)) {
         if (update.tree != null and !state.graft_parents.contains(update.tree_id))
             return error.SubtreeWithoutGraft;
@@ -194,7 +205,10 @@ pub fn applyUpdate(
         }
 
         if (state.nodes.getPtr(node_id)) |node_state| {
-            if (entry.node_id.eql(root_local)) node_state.parent_and_index = null;
+            if (entry.node_id.eql(root_local) and node_state.parent_and_index != null) {
+                if (changes) |recorded| try recorded.updated_node_ids.put(gpa, node_id, {});
+                node_state.parent_and_index = null;
+            }
             for (schema.ids_props.children(&node_state.data.properties)) |child_id| {
                 const mapped = mapId(child_id, tree_number);
                 if (scratch.seen_child_ids.contains(mapped)) continue;
@@ -258,10 +272,10 @@ fn retiredRoot(
 /// Inserts `id` under `parent_and_index`, claiming a graft first when `data`
 /// names a subtree. Upstream `add_node` at `tree.rs:201-227`.
 ///
-/// `data` is one of the update's nodes by reference and is deep-copied, because
-/// `TreeUpdate.deinit` releases every node it holds. An entry already under `id`
-/// is released before the put, which is what upstream's `insert` does when it
-/// returns and drops the value it displaced.
+/// `data` borrows a source node for this call. The state receives an independent
+/// clone. An entry already under `id` is released before the put, as upstream's
+/// `insert` releases its displaced value. After insertion, the state owns the
+/// clone even if change recording fails.
 ///
 /// `error.GraftWithChildren` when `data` names a subtree and also names children
 /// of its own, which is upstream's `panic!` at `tree.rs:211`. This file's other
@@ -279,10 +293,12 @@ fn addNode(
         if (schema.ids_props.children(&data.properties).len != 0) return error.GraftWithChildren;
         try scratch.recordGraft(subtree_id, id);
     }
-    var owned = try Node.clone(gpa, data);
-    errdefer owned.deinit();
-    if (state.nodes.getPtr(id)) |overwritten| overwritten.data.deinit();
-    try state.nodes.put(gpa, id, .{ .parent_and_index = parent_and_index, .data = owned });
+    {
+        var owned = try Node.clone(gpa, data);
+        errdefer owned.deinit();
+        if (state.nodes.getPtr(id)) |overwritten| overwritten.data.deinit();
+        try state.nodes.put(gpa, id, .{ .parent_and_index = parent_and_index, .data = owned });
+    }
     if (changes) |recorded| try recorded.added_node_ids.put(gpa, id, {});
 }
 

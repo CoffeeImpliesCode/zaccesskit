@@ -1,62 +1,20 @@
-//! The tree state machine one AT-SPI window owns: the materialised tree, the
-//! focus flag, the window boxes, and the events an update produced.
+//! Per-window consumer tree and ordered, owned AT-SPI notifications.
 //!
-//! **Upstream.** `accesskit_atspi_common/src/adapter.rs:352-597` is
-//! `PlatformAdapter` and `:30-278` is the `ChangeHandler` it calls.
-//! `accesskit_unix/src/adapter.rs:80-244` is the `Adapter` that owns one.
-//! `docs/41-atspi-build-map.md` section 2.2 gives this module
-//! `adapter.rs:352-597`, and section 1.7 records the events it raises.
+//! Pinned upstream `adapters/atspi-common/src/adapter.rs:30-365,421-615`
+//! defines the change handler and lifecycle; `node.rs:606-705` defines the
+//! existing state/property/bounds/children/document pipeline.
 //!
-//! **What this module decides.** An update arrives as a whole `TreeUpdate`, the
-//! consumer layer folds it into a tree, and the consumer layer then reports
-//! what changed through four slots. This module turns each of those four
-//! reports into AT-SPI events, and nothing else. It holds no D-Bus connection,
-//! reads no clock and takes no `std.Io`, so a test drives every branch of it
-//! with a fixture tree and no bus.
+//! Text diffs run before node filtering and are deduplicated per text parent.
+//! Focus activation emits window, active state and application descendant
+//! notifications before focused state/selection/caret. On transfer the new
+//! focus is announced before the old focus is cleared. Selection-container
+//! notifications follow the consumer commit.
 //!
-//! **The four reports, and the event each produces.**
-//!
-//! | Consumer report | Event raised |
-//! |---|---|
-//! | node added | `Cache.AddAccessible` on the cache object, naming the node |
-//! | node updated | ordered state, property, bounds, children and document events |
-//! | node removed | `Cache.RemoveAccessible` on the cache object, naming the node |
-//! | focus moved | `Object.Focus` on the new node and on the old one |
-//!
-//! Node updates use `node.notifyChanges`, in the order defined by
-//! `node.rs:606-705`. Focus remains in its own slot, so an update does not
-//! duplicate focus notifications. Text-change diffing is not implemented here.
-//!
-//! **Why the events are collected rather than raised.** Upstream raises each
-//! event the moment it produces it. This module has no connection to raise it
-//! on, so it leaves every event in `raised`. That is the whole of the
-//! difference, and it is what lets a test assert that an update produced
-//! exactly these three events in this order without a bus daemon.
-//! `EventQueue.drainInto` is how a caller takes them.
-//!
-//! **The failure a change slot cannot return.** A `TreeChangeHandler` slot has
-//! the signature `fn (*anyopaque, NodeRef) void`. It may not fail, because the
-//! consumer layer calls it while it holds a half-applied update and has no way
-//! to unwind one event's failure. Appending to the queue can, so the slot
-//! records the first failure in `slot_error` and the caller reads it after the
-//! operation returns. That is why no error is discarded: `apply` and
-//! `updateWindowFocusState` clear the slot before they start and copy it into
-//! `last_event_error` before they return.
-//!
-//! **Every loop in this module is bounded, and by what.**
-//!
-//! | Walk | Bound |
-//! |---|---|
-//! | `announceWholeTree` over the first update's tree | `nodes.count()`, the map's own length |
-//! | the four change slots | the number of nodes one update named |
-//! | the event queue | `raised.items.items.len`, the bound `events.EventQueue` names |
-//!
-//! The four change slots are driven by the consumer layer and cannot be bounded
-//! here, so the bound is the property of the update that reached them: one
-//! update names each node it adds, updates or removes at most once, which is
-//! `docs/33` invariant I1 and the reason the consumer layer accepts the update
-//! at all. The count is `update.nodes.items.len`, read before the update is
-//! transferred.
+//! The queue owns text and full cache snapshots independently of tree updates.
+//! Slots latch the first typed notification error because consumer callbacks
+//! cannot fail. A successful commit exposes that cause through last_event_error.
+//! Walks use the consumer node-count bound; text scans use their byte lengths.
+//! This module owns no transport, clock, runtime or user callbacks.
 
 const std = @import("std");
 
@@ -68,6 +26,12 @@ const events = @import("events.zig");
 const node_notifications = @import("node.zig");
 const object_id = @import("object_id.zig");
 const window_bounds = @import("window_bounds.zig");
+const app_context = @import("app_context.zig");
+const node_interfaces = @import("node_interfaces.zig");
+const node_state = @import("node_state.zig");
+
+const Visit = struct { node: NodeRef, exit: bool = false };
+const WalkMode = enum { initial, add, remove };
 
 const CRect = boundary.CRect;
 const FullNodeId = tree_index.FullNodeId;
@@ -76,11 +40,10 @@ const Tree = consumer.tree.Tree;
 const TreeChangeHandler = consumer.tree.TreeChangeHandler;
 const ObjectId = object_id.ObjectId;
 
-/// The failures a tree operation on this adapter reports.
-///
-/// Consumer update failures and the closed notification failure set.
-/// `last_event_error` preserves the first notification error after tree commit.
-pub const AdapterError = consumer.tree.UpdateError || node_notifications.NotifyError;
+/// Typed notification causes, including query, cache, text and allocation errors.
+pub const NotificationError = node_notifications.NodeError || error{InvalidUtf8};
+/// Consumer rejection errors and post-commit notification causes.
+pub const AdapterError = consumer.tree.UpdateError || NotificationError;
 
 /// One AT-SPI window's tree, its focus flag, its boxes and the events its last
 /// update produced.
@@ -117,13 +80,24 @@ pub const PlatformAdapter = struct {
     applied_updates: u64,
     /// The first failure one of the four change slots hit, or `null`. A caller
     /// reads it after every `apply` and every `updateWindowFocusState`.
-    last_event_error: ?AdapterError,
+    last_event_error: ?NotificationError,
 
     /// The first failure one of the four change slots hit during the operation
     /// now running. It is cleared at the head of every operation and copied
     /// into `last_event_error` at the end of one, because a slot may not
     /// return a failure and the caller reads exactly one field.
-    slot_error: ?AdapterError = null,
+    slot_error: ?NotificationError = null,
+    /// Borrowed, address-stable native query context. Null before attachment.
+    context: ?*app_context.NodeContext = null,
+    /// Borrowed native application context. Null for the transport-free seam.
+    app: ?*app_context.AppContext = null,
+    /// Per-operation deduplication; cleared before each consumer operation.
+    added_nodes: std.AutoHashMapUnmanaged(FullNodeId, void) = .empty,
+    removed_nodes: std.AutoHashMapUnmanaged(FullNodeId, void) = .empty,
+    checked_text: std.AutoHashMapUnmanaged(FullNodeId, void) = .empty,
+    selection_changed: std.AutoHashMapUnmanaged(FullNodeId, void) = .empty,
+    /// Scratch stack; contains no borrowed NodeRef after a walk returns.
+    visits: std.ArrayList(Visit) = .empty,
 
     /// Builds an adapter with no tree, no focus and no boxes. Upstream
     /// `PlatformAdapter::new`.
@@ -164,6 +138,11 @@ pub const PlatformAdapter = struct {
         if (self.tree) |*tree| tree.deinit();
         self.tree = null;
         self.raised.deinit(self.gpa);
+        self.added_nodes.deinit(self.gpa);
+        self.removed_nodes.deinit(self.gpa);
+        self.checked_text.deinit(self.gpa);
+        self.selection_changed.deinit(self.gpa);
+        self.visits.deinit(self.gpa);
         const gpa = self.gpa;
         self.* = init(gpa, 0, false);
     }
@@ -194,22 +173,23 @@ pub const PlatformAdapter = struct {
     /// **Errors.** This function does not fail.
     pub fn setRootWindowBounds(self: *PlatformAdapter, outer: CRect, inner: CRect) void {
         self.bounds.set(outer, inner);
+        if (self.context) |context| context.bounds = self.bounds;
     }
 
-    /// Records whether the window holds focus and lets the consumer tree commit
-    /// the change, which raises `focus_moved` and so a `Focus` event.
-    ///
-    /// An adapter with no tree records the flag and raises nothing: there is no
-    /// focus to move, which is upstream's behaviour too.
-    ///
-    /// **Errors.** `error.OutOfMemory` from the consumer layer's commit.
-    pub fn updateWindowFocusState(self: *PlatformAdapter, is_host_focused: bool) !void {
-        self.is_host_focused = is_host_focused;
+    /// Commits host focus and collects upstream window/state/selection events.
+    /// With no tree only the host flag changes. A notification failure is
+    /// reported through last_event_error after the consumer commit.
+    pub fn updateWindowFocusState(
+        self: *PlatformAdapter,
+        is_host_focused: bool,
+    ) consumer.tree.UpdateError!void {
+        self.beginNotifications();
         if (self.tree) |*tree| {
-            self.slot_error = null;
             try tree.updateHostFocusStateAndProcessChanges(is_host_focused, &self.changeHandler());
-            self.last_event_error = self.slot_error;
         }
+        self.is_host_focused = is_host_focused;
+        self.refreshContext();
+        self.last_event_error = self.slot_error;
     }
 
     /// Folds `update` into the tree and collects the events it produced.
@@ -224,26 +204,50 @@ pub const PlatformAdapter = struct {
     /// **Errors.** `error.OutOfMemory` and the consumer layer's `UpdateError`
     /// set. `last_event_error` carries a failure one of the four change slots
     /// hit, which the caller reads after this returns.
-    pub fn apply(self: *PlatformAdapter, update: schema.TreeUpdate) !void {
-        self.slot_error = null;
-        self.last_event_error = null;
+    pub fn apply(self: *PlatformAdapter, update: schema.TreeUpdate) consumer.tree.UpdateError!void {
+        return self.applyInternal(false, update);
+    }
+
+    /// Applies a callback-duration borrow without freeing or modifying its nodes.
+    /// The consumer copies accepted data into its owned state. Events own their
+    /// cache/text payloads and never retain update memory. Rejections leave the
+    /// input and baseline intact; notification causes follow a successful commit
+    /// through last_event_error exactly as for the transferred apply path.
+    pub fn applyBorrowed(
+        self: *PlatformAdapter,
+        update: *const schema.TreeUpdate,
+    ) AdapterError!void {
+        return self.applyInternal(true, update);
+    }
+
+    fn applyInternal(
+        self: *PlatformAdapter,
+        comptime borrowed: bool,
+        update: if (borrowed) *const schema.TreeUpdate else schema.TreeUpdate,
+    ) consumer.tree.UpdateError!void {
+        self.beginNotifications();
         if (self.tree == null) {
-            var built = try Tree.init(self.gpa, update, self.is_host_focused);
+            var built = if (borrowed)
+                try Tree.initBorrowed(self.gpa, update, self.is_host_focused)
+            else
+                try Tree.init(self.gpa, update, self.is_host_focused);
             errdefer built.deinit();
             self.tree = built;
             self.applied_updates = 1;
-            // The first update builds the whole tree, and the consumer layer
-            // reports that as a commit rather than as node additions, so the
-            // cache entries the tree needs are announced here from the tree
-            // itself. Upstream raises them from `PlatformAdapter::new` for the
-            // same reason.
             self.announceWholeTree();
+            self.refreshContext();
             self.last_event_error = self.slot_error;
             return;
         }
         const tree = &self.tree.?;
-        try tree.updateAndProcessChanges(update, &self.changeHandler());
+        if (borrowed) {
+            try tree.updateBorrowedAndProcessChanges(update, &self.changeHandler());
+        } else {
+            try tree.updateAndProcessChanges(update, &self.changeHandler());
+        }
         self.applied_updates += 1;
+        self.emitSelectionChanged() catch |err| self.noteSlotFailure(err);
+        self.refreshContext();
         self.last_event_error = self.slot_error;
     }
 
@@ -272,37 +276,221 @@ pub const PlatformAdapter = struct {
         };
     }
 
-    /// Announces every node of the tree the first update built, as one cache
-    /// event each, in the order the store holds them.
-    ///
-    /// The bound is `nodes.count()`, which is the map's own length and does not
-    /// change while the walk runs.
-    ///
-    /// **Errors.** This function does not fail. A failure inside the queue is
-    /// recorded in `slot_error` by `record`.
-    fn announceWholeTree(self: *PlatformAdapter) void {
-        const tree = self.tree orelse return;
-        var ids = tree.stateOf().nodes.iterator();
-        while (ids.next()) |entry| {
-            const id = entry.key_ptr.*;
-            self.record(cacheEvent(
-                self.gpa,
-                self.id,
-                id,
-                events.member_add_accessible,
-            ) catch |err| {
-                self.noteSlotFailure(err);
-                continue;
-            });
+    /// Refreshes the borrowed native context only after a successful commit.
+    fn refreshContext(self: *PlatformAdapter) void {
+        if (self.context) |context| {
+            if (self.tree) |*tree| context.state = tree.stateOf();
+            context.bounds = self.bounds;
         }
     }
 
-    /// Appends one event.
-    ///
-    /// **Errors.** This function does not fail. An allocation failure is stored
-    /// in `slot_error` and copied into `last_event_error` by the caller.
-    fn record(self: *PlatformAdapter, event: events.Event) void {
-        self.raised.push(self.gpa, event) catch |err| self.noteSlotFailure(err);
+    /// Builds a live query handle. It borrows context until native close.
+    /// Returns Defunct before context injection or after tree teardown.
+    pub fn platformNode(
+        self: *const PlatformAdapter,
+        id: FullNodeId,
+    ) error{Defunct}!node_notifications.PlatformNode {
+        if (self.tree == null) return error.Defunct;
+        const context = self.context orelse return error.Defunct;
+        return context.platformNode(self.id, id);
+    }
+
+    /// Live context's root; returns Defunct before attachment or after teardown.
+    pub fn rootId(self: *const PlatformAdapter) error{Defunct}!FullNodeId {
+        if (self.tree == null) return error.Defunct;
+        return (self.context orelse return error.Defunct).rootId();
+    }
+
+    /// Application query handle forwarding the borrowed live context.
+    /// Returns Defunct when context or its application registry is absent.
+    pub fn platformRoot(self: *const PlatformAdapter) error{Defunct}!node_notifications.PlatformRoot {
+        if (self.tree == null) return error.Defunct;
+        return (self.context orelse return error.Defunct).platformRoot();
+    }
+
+    /// Queues application ChildrenChanged(remove) before native detachment.
+    /// Notification errors are retained in last_event_error; no tree is removed.
+    pub fn announceRemoval(self: *PlatformAdapter) void {
+        self.beginNotifications();
+        self.last_event_error = null;
+        const tree = if (self.tree) |*tree| tree else return;
+        self.emitWindowChild(tree.stateOf().root().id(), false) catch |err| self.noteSlotFailure(err);
+        self.last_event_error = self.slot_error;
+    }
+
+    fn beginNotifications(self: *PlatformAdapter) void {
+        self.slot_error = null;
+        self.added_nodes.clearRetainingCapacity();
+        self.removed_nodes.clearRetainingCapacity();
+        self.checked_text.clearRetainingCapacity();
+        self.selection_changed.clearRetainingCapacity();
+    }
+
+    /// Initial registration is root-first and projects away excluded descendants.
+    fn announceWholeTree(self: *PlatformAdapter) void {
+        const tree = &self.tree.?;
+        self.walkSubtree(tree.stateOf().root(), .initial) catch |err| self.noteSlotFailure(err);
+        if (self.slot_error == null) {
+            if (tree.stateOf().focus()) |focus| {
+                self.emitState(focus.id(), "focused", true) catch |err| self.noteSlotFailure(err);
+            }
+        }
+    }
+
+    fn emit(self: *PlatformAdapter, event: events.Event) NotificationError!void {
+        var owned = event;
+        errdefer owned.deinit(self.gpa);
+        try self.raised.push(self.gpa, owned);
+    }
+
+    fn emitState(
+        self: *PlatformAdapter,
+        id: FullNodeId,
+        state: []const u8,
+        enabled: bool,
+    ) NotificationError!void {
+        try self.emit(.{
+            .kind = .object,
+            .member = events.member_state_changed,
+            .id = self.objectId(id),
+            .detail1 = state,
+            .detail2 = if (enabled) 1 else 0,
+        });
+    }
+
+    fn emitWindowChild(self: *PlatformAdapter, id: FullNodeId, added: bool) NotificationError!void {
+        const index = if (self.app) |app| app.adapterIndex(self.id) catch 0 else 0;
+        try self.emit(.{
+            .kind = .object,
+            .member = "ChildrenChanged",
+            .id = .root,
+            .detail1 = if (added) "add" else "remove",
+            .detail2 = if (added) std.math.cast(i32, index) orelse return error.IndexOutOfRange else -1,
+            .any_data = .{ .address = self.objectId(id) },
+        });
+    }
+
+    fn emitCacheAdded(self: *PlatformAdapter, node: NodeRef) NotificationError!void {
+        var children = try consumer.node_ref.hierarchy.filteredChildren(node, node_state.node_filter);
+        var child_count: usize = 0;
+        while (try children.next()) |_| child_count += 1;
+        const parent = try consumer.node_ref.hierarchy.filteredParent(node, node_state.node_filter);
+        var index: usize = 0;
+        if (parent != null) {
+            var siblings = try consumer.node_ref.hierarchy.precedingFilteredSiblings(
+                node,
+                node_state.node_filter,
+            );
+            while (try siblings.next()) |_| index += 1;
+        } else if (self.app) |app| {
+            index = app.adapterIndex(self.id) catch 0;
+        }
+        const snapshot = try node_notifications.cacheNodeFor(
+            self.gpa,
+            node,
+            self.id,
+            std.math.cast(i32, index) orelse return error.IndexOutOfRange,
+            std.math.cast(i32, child_count) orelse return error.TooManyChildren,
+            node.tree_state.focusId() != null,
+        );
+        try self.emit(.{
+            .kind = .cache,
+            .member = events.member_add_accessible,
+            .id = .cache,
+            .cache_item = snapshot,
+        });
+    }
+
+    fn addNode(self: *PlatformAdapter, node: NodeRef) NotificationError!void {
+        const entry = try self.added_nodes.getOrPut(self.gpa, node.id());
+        if (entry.found_existing) return;
+        try self.emitCacheAdded(node);
+        if (consumer.node_ref.hierarchy.isRoot(node) and node.data().role == .window) {
+            try self.emitWindowChild(node.id(), true);
+        }
+        const live = try node_interfaces.live(node);
+        if (live != .none) {
+            if (try node_notifications.nodeName(self.gpa, node)) |name_| {
+                var name = name_;
+                defer name.deinit(self.gpa);
+                try self.emit(.{
+                    .kind = .object,
+                    .member = events.member_announcement,
+                    .id = self.objectId(node.id()),
+                    .detail2 = @intFromEnum(live),
+                    .any_data = .{ .text = name.items },
+                });
+            }
+        }
+        if (consumer.node_ref.properties.isSelected(node) == true) try self.enqueueSelection(node);
+    }
+
+    fn removeNode(self: *PlatformAdapter, node: NodeRef) NotificationError!void {
+        const entry = try self.removed_nodes.getOrPut(self.gpa, node.id());
+        if (entry.found_existing) return;
+        if (consumer.node_ref.hierarchy.isRoot(node) and node.data().role == .window) {
+            try self.emitWindowChild(node.id(), false);
+        }
+        try self.emitState(node.id(), "defunct", true);
+        try self.emit(.{
+            .kind = .cache,
+            .member = events.member_remove_accessible,
+            .id = .cache,
+            .any_data = .{ .address = self.objectId(node.id()) },
+        });
+        if (consumer.node_ref.properties.isSelected(node) == true) try self.enqueueSelection(node);
+    }
+
+    /// At most two visits per consumer node. Removes use forward-child postorder.
+    fn walkSubtree(self: *PlatformAdapter, root: NodeRef, mode: WalkMode) NotificationError!void {
+        const bound = std.math.mul(usize, root.tree_state.nodes.count(), 2) catch return error.TreeCycle;
+        self.visits.clearRetainingCapacity();
+        defer self.visits.clearRetainingCapacity();
+        try self.visits.ensureTotalCapacity(self.gpa, bound);
+        self.visits.appendAssumeCapacity(.{ .node = root });
+        var steps: usize = 0;
+        while (self.visits.pop()) |visit| {
+            if (steps >= bound) return error.TreeCycle;
+            steps += 1;
+            if (visit.exit) {
+                try self.removeNode(visit.node);
+                continue;
+            }
+            switch (mode) {
+                .initial => {
+                    try self.emitCacheAdded(visit.node);
+                    if (consumer.node_ref.hierarchy.isRoot(visit.node)) {
+                        try self.emitWindowChild(visit.node.id(), true);
+                    }
+                },
+                .add => try self.addNode(visit.node),
+                .remove => self.visits.appendAssumeCapacity(.{ .node = visit.node, .exit = true }),
+            }
+            var children = try consumer.node_ref.hierarchy.filteredChildren(
+                visit.node,
+                node_state.node_filter,
+            );
+            while (try children.nextBack()) |child| {
+                self.visits.appendAssumeCapacity(.{ .node = child });
+            }
+        }
+    }
+
+    fn enqueueSelection(self: *PlatformAdapter, node: NodeRef) NotificationError!void {
+        if (!consumer.node_ref.containers.isItemLike(node)) return;
+        if (try consumer.node_ref.containers.selectionContainer(node, node_state.node_filter)) |parent| {
+            if (!consumer.node_ref.containers.isContainerWithSelectableChildren(parent)) return;
+            try self.selection_changed.put(self.gpa, parent.id(), {});
+        }
+    }
+
+    fn emitSelectionChanged(self: *PlatformAdapter) NotificationError!void {
+        if (self.slot_error != null) return;
+        var ids = self.selection_changed.keyIterator();
+        while (ids.next()) |id| {
+            if (self.removed_nodes.contains(id.*)) continue;
+            try self.emit(.{ .kind = .object, .member = "SelectionChanged", .id = self.objectId(id.*) });
+        }
     }
 
     /// Stores the first failure and leaves any later one alone.
@@ -312,7 +500,7 @@ pub const PlatformAdapter = struct {
     /// whole of the information.
     ///
     /// **Errors.** This function does not fail.
-    fn noteSlotFailure(self: *PlatformAdapter, failure: AdapterError) void {
+    fn noteSlotFailure(self: *PlatformAdapter, failure: NotificationError) void {
         if (self.slot_error == null) self.slot_error = failure;
     }
 
@@ -325,99 +513,233 @@ pub const PlatformAdapter = struct {
     }
 };
 
-/// The cache event that adds or removes one node.
-///
-/// `gpa` is a parameter and not used, because the event borrows everything it
-/// names and allocates nothing. It is there so a caller reads the same shape
-/// as every other allocating function in this module and is marked by the
-/// compiler rather than by a comment.
-fn cacheEvent(
-    gpa: std.mem.Allocator,
-    adapter: usize,
-    id: anytype,
-    member: [:0]const u8,
-) error{OutOfMemory}!events.Event {
-    _ = gpa;
-    return .{
-        .kind = .cache,
-        .member = member,
-        // The cache signals go out on the cache object, and the node they are
-        // about rides in the variant because `siiva{sv}` has no `(so)` argument.
-        .id = .cache,
-        .any_data = .{ .address = .{ .node = .{ .adapter = adapter, .node = id } } },
+/// Consumer callback failures are retained until the enclosing operation returns.
+fn onNodeAdded(ptr: *anyopaque, node: NodeRef) void {
+    const self = PlatformAdapter.adapterOf(ptr);
+    if (self.slot_error != null) return;
+    onNodeAddedChecked(self, node) catch |err| self.noteSlotFailure(err);
+}
+
+fn onNodeAddedChecked(self: *PlatformAdapter, node: NodeRef) NotificationError!void {
+    if (try node_state.node_filter.call(node) == .include) try self.addNode(node);
+}
+
+fn onNodeRemoved(ptr: *anyopaque, node: NodeRef) void {
+    const self = PlatformAdapter.adapterOf(ptr);
+    if (self.slot_error != null) return;
+    onNodeRemovedChecked(self, node) catch |err| self.noteSlotFailure(err);
+}
+
+fn onNodeRemovedChecked(self: *PlatformAdapter, node: NodeRef) NotificationError!void {
+    if (try node_state.node_filter.call(node) == .include) try self.removeNode(node);
+}
+
+fn onNodeUpdated(ptr: *anyopaque, old: NodeRef, new: NodeRef) void {
+    const self = PlatformAdapter.adapterOf(ptr);
+    if (self.slot_error != null) return;
+    onNodeUpdatedChecked(self, old, new) catch |err| self.noteSlotFailure(err);
+}
+
+fn onNodeUpdatedChecked(self: *PlatformAdapter, old: NodeRef, new: NodeRef) NotificationError!void {
+    try emitTextChanged(self, old, new);
+    const filter_old = try node_state.node_filter.call(old);
+    const filter_new = try node_state.node_filter.call(new);
+    if (filter_old != filter_new) {
+        if (filter_new == .include) {
+            if (filter_old == .exclude_subtree) {
+                try self.walkSubtree(new, .add);
+            } else {
+                try self.addNode(new);
+            }
+        } else if (filter_old == .include) {
+            if (filter_new == .exclude_subtree) {
+                try self.walkSubtree(old, .remove);
+            } else {
+                try self.removeNode(old);
+            }
+        }
+    } else if (filter_new == .include) {
+        try node_notifications.notifyChanges(self.gpa, &self.raised, new, old, self.bounds, self.id);
+        try emitTextSelection(self, old, new);
+        if (consumer.node_ref.properties.isSelected(new) != consumer.node_ref.properties.isSelected(old)) {
+            try self.enqueueSelection(new);
+        }
+    }
+}
+
+fn onFocusMoved(ptr: *anyopaque, old: ?NodeRef, new: ?NodeRef) void {
+    const self = PlatformAdapter.adapterOf(ptr);
+    if (self.slot_error != null) return;
+    onFocusMovedChecked(self, old, new) catch |err| self.noteSlotFailure(err);
+}
+
+fn onFocusMovedChecked(
+    self: *PlatformAdapter,
+    old: ?NodeRef,
+    new: ?NodeRef,
+) NotificationError!void {
+    if (old == null and new != null) {
+        if (rootWindow(new.?.tree_state)) |window| try emitWindowFocus(self, window, true);
+    } else if (old != null and new == null) {
+        if (rootWindow(old.?.tree_state)) |window| try emitWindowFocus(self, window, false);
+    }
+    if (new) |node| {
+        try self.emitState(node.id(), "focused", true);
+        try emitTextSelection(self, null, node);
+    }
+    if (old) |node| try self.emitState(node.id(), "focused", false);
+}
+
+fn rootWindow(state: *const consumer.tree_state.TreeState) ?NodeRef {
+    const root = state.root();
+    return switch (root.data().role) {
+        .window, .dialog, .alert_dialog => root,
+        else => null,
     };
 }
 
-/// One node entered the tree, so the cache gains it.
-fn onNodeAdded(ptr: *anyopaque, node: NodeRef) void {
-    const self = PlatformAdapter.adapterOf(ptr);
-    self.record(cacheEvent(
-        self.gpa,
-        self.id,
-        node.id(),
-        events.member_add_accessible,
-    ) catch |err| {
-        self.noteSlotFailure(err);
-        return;
+fn emitWindowFocus(self: *PlatformAdapter, window: NodeRef, focused: bool) NotificationError!void {
+    var name = (try node_notifications.nodeName(self.gpa, window)) orelse std.ArrayList(u8).empty;
+    defer name.deinit(self.gpa);
+    try self.emit(.{
+        .kind = .window,
+        .member = if (focused) "Activate" else "Deactivate",
+        .id = self.objectId(window.id()),
+        .any_data = .{ .text = name.items },
     });
-}
-
-/// One node left the tree, so the cache loses it.
-fn onNodeRemoved(ptr: *anyopaque, node: NodeRef) void {
-    const self = PlatformAdapter.adapterOf(ptr);
-    self.record(cacheEvent(
-        self.gpa,
-        self.id,
-        node.id(),
-        events.member_remove_accessible,
-    ) catch |err| {
-        self.noteSlotFailure(err);
-        return;
-    });
-}
-
-/// Reports the rewritten node through the upstream ordered notification pipeline.
-fn onNodeUpdated(ptr: *anyopaque, old: NodeRef, new: NodeRef) void {
-    const self = PlatformAdapter.adapterOf(ptr);
-    node_notifications.notifyChanges(
-        self.gpa,
-        &self.raised,
-        new,
-        old,
-        self.bounds,
-        self.id,
-    ) catch |err| self.noteSlotFailure(err);
-}
-
-/// The focus moved, which raises `Focus` on the new node and on the old one.
-///
-/// `Focus` names the node that holds focus now, so both events carry the same
-/// address in their variant. A focus that was lost leaves no new node and
-/// raises nothing, because `siiva{sv}` has no argument that could carry "none"
-/// and a `Focus` with an empty variant says nothing a client can act on.
-///
-/// **Errors.** This function does not fail. A failure inside the queue is
-/// recorded in `slot_error`.
-fn onFocusMoved(ptr: *anyopaque, old: ?NodeRef, new: ?NodeRef) void {
-    const self = PlatformAdapter.adapterOf(ptr);
-    const target = new orelse return;
-    const address: events.AnyData = .{ .address = self.objectId(target.id()) };
-
-    self.record(.{
-        .kind = .object,
-        .member = events.member_focus,
-        .id = self.objectId(target.id()),
-        .any_data = address,
-    });
-    if (old) |previous| {
-        if (std.meta.eql(previous.id(), target.id())) return;
-        self.record(.{
+    try self.emitState(window.id(), "active", focused);
+    if (focused) {
+        try self.emit(.{
             .kind = .object,
-            .member = events.member_focus,
-            .id = self.objectId(previous.id()),
-            .any_data = address,
+            .member = "ActiveDescendantChanged",
+            .id = .root,
+            .any_data = .{ .address = self.objectId(window.id()) },
         });
     }
+}
+
+fn emitTextSelection(
+    self: *PlatformAdapter,
+    old: ?NodeRef,
+    new: NodeRef,
+) NotificationError!void {
+    if (!try consumer.text.query.supportsTextRanges(new)) return;
+    const new_raw = schema.option.textSelection(&new.data().properties);
+    const old_raw = if (old) |node| schema.option.textSelection(&node.data().properties) else null;
+    if (old) |node| {
+        if (!consumer.node_ref.predicates.isFocused(node) or std.meta.eql(old_raw, new_raw)) return;
+    }
+    if (try consumer.text.query.textSelection(self.gpa, new)) |selection| {
+        var changed = !try consumer.text.range.isDegenerate(self.gpa, selection);
+        if (!changed) {
+            if (old) |node| {
+                if (try consumer.text.query.textSelection(self.gpa, node)) |previous| {
+                    changed = !try consumer.text.range.isDegenerate(self.gpa, previous);
+                }
+            }
+        }
+        if (changed) {
+            try self.emit(.{ .kind = .object, .member = "TextSelectionChanged", .id = self.objectId(new.id()) });
+        }
+    }
+    const old_focus: ?schema.TextPosition = if (old_raw) |selection| selection.focus else null;
+    const new_focus: ?schema.TextPosition = if (new_raw) |selection| selection.focus else null;
+    if (old == null or !std.meta.eql(old_focus, new_focus)) {
+        if (consumer.text.query.textSelectionFocus(new)) |focus| {
+            try self.emit(.{
+                .kind = .object,
+                .member = "TextCaretMoved",
+                .id = self.objectId(new.id()),
+                .detail2 = try node_notifications.toOffset(focus),
+            });
+        }
+    }
+}
+
+fn emitTextChanged(self: *PlatformAdapter, old: NodeRef, new: NodeRef) NotificationError!void {
+    if (new.data().role == .text_run or new.data().role == .generic_container) {
+        const old_parent = try consumer.node_ref.hierarchy.filteredParent(old, node_state.node_filter);
+        const new_parent = try consumer.node_ref.hierarchy.filteredParent(new, node_state.node_filter);
+        if (old_parent != null and new_parent != null) {
+            try emitTextDiff(self, old_parent.?, new_parent.?);
+        }
+    } else {
+        try emitTextDiff(self, old, new);
+    }
+}
+
+/// Finds common prefix and suffix in Unicode scalar values, never UTF-8 bytes.
+fn emitTextDiff(self: *PlatformAdapter, old: NodeRef, new: NodeRef) NotificationError!void {
+    if (!try consumer.text.query.supportsTextRanges(old)) return;
+    if (!try consumer.text.query.supportsTextRanges(new)) return;
+    const entry = try self.checked_text.getOrPut(self.gpa, new.id());
+    if (entry.found_existing) return;
+    var old_text = try consumer.text.range.text(
+        self.gpa,
+        try consumer.text.query.documentRange(self.gpa, old),
+    );
+    defer old_text.deinit(self.gpa);
+    var new_text = try consumer.text.range.text(
+        self.gpa,
+        try consumer.text.query.documentRange(self.gpa, new),
+    );
+    defer new_text.deinit(self.gpa);
+    const old_view = try std.unicode.Utf8View.init(old_text.items);
+    const new_view = try std.unicode.Utf8View.init(new_text.items);
+    var old_chars = old_view.iterator();
+    var new_chars = new_view.iterator();
+    var prefix_bytes: usize = 0;
+    var prefix_scalars: usize = 0;
+    while (old_chars.nextCodepointSlice()) |old_scalar| {
+        const new_scalar = new_chars.nextCodepointSlice() orelse break;
+        if (!std.mem.eql(u8, old_scalar, new_scalar)) break;
+        prefix_bytes += old_scalar.len;
+        prefix_scalars += 1;
+    }
+    if (prefix_bytes == old_text.items.len and prefix_bytes == new_text.items.len) return;
+    var old_end = old_text.items.len;
+    var new_end = new_text.items.len;
+    while (old_end > prefix_bytes and new_end > prefix_bytes) {
+        const old_start = previousScalar(old_text.items, old_end);
+        const new_start = previousScalar(new_text.items, new_end);
+        if (!std.mem.eql(u8, old_text.items[old_start..old_end], new_text.items[new_start..new_end])) break;
+        old_end = old_start;
+        new_end = new_start;
+    }
+    const start = std.math.cast(i32, prefix_scalars) orelse return error.TooManyCharacters;
+    try emitTextPart(self, new.id(), "delete", start, old_text.items[prefix_bytes..old_end]);
+    try emitTextPart(self, new.id(), "insert", start, new_text.items[prefix_bytes..new_end]);
+}
+
+/// Input was validated by Utf8View; at most four bytes precede end.
+fn previousScalar(text: []const u8, end: usize) usize {
+    var start = end - 1;
+    while (start > 0 and text[start] & 0xc0 == 0x80) start -= 1;
+    return start;
+}
+
+fn emitTextPart(
+    self: *PlatformAdapter,
+    id: FullNodeId,
+    kind: []const u8,
+    start: i32,
+    text: []const u8,
+) NotificationError!void {
+    if (text.len == 0) return;
+    const view = try std.unicode.Utf8View.init(text);
+    var chars = view.iterator();
+    var count: usize = 0;
+    while (chars.nextCodepointSlice()) |_| count += 1;
+    const length = std.math.cast(i32, count) orelse return error.TooManyCharacters;
+    try self.emit(.{
+        .kind = .object,
+        .member = "TextChanged",
+        .id = self.objectId(id),
+        .detail1 = kind,
+        .detail2 = start,
+        .detail3 = length,
+        .any_data = .{ .text = text },
+    });
 }
 
 const testing = std.testing;
@@ -469,13 +791,15 @@ test "the first update builds the tree and announces every node" {
     try testing.expectEqual(@as(usize, 3), adapter.nodeCount());
     try testing.expectEqual(@as(u64, 1), adapter.applied_updates);
 
-    // One cache event per node, all on the cache object and all naming a node.
-    try testing.expectEqual(@as(usize, 3), adapter.raised.count());
-    for (adapter.raised.items.items) |event| {
+    // Root-first filtered cache snapshots surround the app's root child add.
+    try testing.expectEqual(@as(usize, 4), adapter.raised.count());
+    try testing.expectEqualStrings("ChildrenChanged", adapter.raised.items.items[1].member);
+    for ([_]usize{ 0, 2, 3 }, 1..) |event_index, node_id| {
+        const event = adapter.raised.items.items[event_index];
         try testing.expectEqual(events.Kind.cache, event.kind);
         try testing.expectEqualStrings(events.member_add_accessible, event.member);
-        const cache: ObjectId = .cache;
-        try testing.expect(std.meta.eql(cache, event.id));
+        try testing.expect(std.meta.eql(ObjectId.cache, event.id));
+        try testing.expect(std.meta.eql(FullNodeId.init(.{ .value = node_id }, .init(0)), event.cache_item.?.id));
     }
 }
 
@@ -487,6 +811,7 @@ test "a second update is folded into the tree the first one built" {
     try adapter.apply(try chainUpdate(gpa, 2));
     var taken: std.ArrayList(events.Event) = .empty;
     defer taken.deinit(gpa);
+    defer for (taken.items) |*event| event.deinit(gpa);
     try adapter.raised.drainInto(gpa, &taken);
 
     try adapter.apply(try chainUpdate(gpa, 3));
@@ -524,6 +849,7 @@ test "a node whose box moved raises the upstream BoundsChanged payload" {
     try adapter.apply(update);
     var taken: std.ArrayList(events.Event) = .empty;
     defer taken.deinit(gpa);
+    defer for (taken.items) |*event| event.deinit(gpa);
     try adapter.raised.drainInto(gpa, &taken);
 
     // The same box under a different node is an update that moves nothing, and
@@ -552,24 +878,27 @@ test "a node whose box moved raises the upstream BoundsChanged payload" {
     try testing.expectEqual(@as(i32, 20), extent[2]);
 }
 
-test "the window focus flag raises Focus on the node that holds it" {
+test "the window focus flag raises ordered activation and focus states" {
     const gpa = std.testing.allocator;
     var adapter = PlatformAdapter.init(gpa, 4, false);
     defer adapter.deinit();
-
     try adapter.apply(try chainUpdate(gpa, 2));
-    var taken: std.ArrayList(events.Event) = .empty;
-    defer taken.deinit(gpa);
-    try adapter.raised.drainInto(gpa, &taken);
-
+    clearNotificationEvents(&adapter);
     try adapter.updateWindowFocusState(true);
-
-    // The tree's focus is its root when no node claims it, so the focus lands
-    // on the root and exactly one `Focus` is raised.
-    try testing.expectEqual(@as(usize, 1), adapter.raised.count());
-    const raised = adapter.raised.items.items[0];
-    try testing.expectEqualStrings(events.member_focus, raised.member);
-    try testing.expectEqualStrings("(so)", raised.any_data.signature());
+    const raised = adapter.raised.items.items;
+    try testing.expectEqual(@as(usize, 4), raised.len);
+    try testing.expectEqualStrings("Activate", raised[0].member);
+    try testing.expectEqual(events.Kind.window, raised[0].kind);
+    try testing.expectEqualStrings("", raised[0].any_data.text);
+    try testing.expectEqualStrings("StateChanged", raised[1].member);
+    try testing.expectEqualStrings("active", raised[1].detail1);
+    try testing.expectEqual(@as(i32, 1), raised[1].detail2);
+    try testing.expectEqualStrings("ActiveDescendantChanged", raised[2].member);
+    try testing.expect(std.meta.eql(ObjectId.root, raised[2].id));
+    try testing.expectEqualStrings("StateChanged", raised[3].member);
+    try testing.expectEqualStrings("focused", raised[3].detail1);
+    try testing.expectEqual(@as(i32, 1), raised[3].detail2);
+    try testing.expectEqual(events.AnyData.none, raised[3].any_data);
     try testing.expect(adapter.is_host_focused);
 }
 
@@ -784,7 +1113,7 @@ test "adapter orders state name value children and document notifications" {
     }));
     const raised = adapter.raised.items.items;
     try testing.expect(adapter.last_event_error == null);
-    try testing.expectEqual(@as(usize, 8), raised.len);
+    try testing.expectEqual(@as(usize, 9), raised.len);
     try testing.expectEqualStrings("AddAccessible", raised[0].member);
     try testing.expect(std.meta.eql(ObjectId.cache, raised[0].id));
     try expectNotification(raised[1], .{ .member = "StateChanged", .detail1 = "busy" });
@@ -809,14 +1138,20 @@ test "adapter orders state name value children and document notifications" {
         .detail2 = -1,
     });
     try expectNotification(raised[6], .{ .kind = .document, .member = "LoadComplete" });
-    try testing.expectEqualStrings("RemoveAccessible", raised[7].member);
-    try testing.expect(std.meta.eql(ObjectId.cache, raised[7].id));
+    try expectNotification(raised[7], .{
+        .member = "StateChanged",
+        .detail1 = "defunct",
+        .detail2 = 1,
+        .node = 2,
+    });
+    try testing.expectEqualStrings("RemoveAccessible", raised[8].member);
+    try testing.expect(std.meta.eql(ObjectId.cache, raised[8].id));
     const added = adapter.objectId(FullNodeId.init(.{ .value = 3 }, .init(0)));
     const removed = adapter.objectId(FullNodeId.init(.{ .value = 2 }, .init(0)));
-    try testing.expect(std.meta.eql(added, raised[0].any_data.address));
+    try testing.expect(std.meta.eql(FullNodeId.init(.{ .value = 3 }, .init(0)), raised[0].cache_item.?.id));
     try testing.expect(std.meta.eql(added, raised[4].any_data.address));
     try testing.expect(std.meta.eql(removed, raised[5].any_data.address));
-    try testing.expect(std.meta.eql(removed, raised[7].any_data.address));
+    try testing.expect(std.meta.eql(removed, raised[8].any_data.address));
 }
 
 test "adapter notification fail-N retains owned event prefix after tree commit" {
@@ -873,6 +1208,41 @@ test "adapter notification fail-N retains owned event prefix after tree commit" 
     return error.AllocationAttemptBoundExceeded;
 }
 
+fn expectFocusTransfer(adapter: *const PlatformAdapter) !void {
+    var focused_count: usize = 0;
+    var old_focusable_count: usize = 0;
+    var new_focusable_count: usize = 0;
+    for (adapter.raised.items.items) |event| {
+        try testing.expectEqual(events.Kind.object, event.kind);
+        try testing.expectEqualStrings("StateChanged", event.member);
+        try testing.expectEqual(events.AnyData.none, event.any_data);
+        try testing.expectEqual(@as(i32, 0), event.detail3);
+        try testing.expectEqual(@as(usize, 0), event.properties.count());
+        const old_id = adapter.objectId(FullNodeId.init(.{ .value = 1 }, .init(0)));
+        const new_id = adapter.objectId(FullNodeId.init(.{ .value = 2 }, .init(0)));
+        if (std.mem.eql(u8, event.detail1, "focused")) {
+            try testing.expect(focused_count < 2);
+            try testing.expectEqual(@as(i32, if (focused_count == 0) 1 else 0), event.detail2);
+            try testing.expect(std.meta.eql(if (focused_count == 0) new_id else old_id, event.id));
+            focused_count += 1;
+        } else {
+            // Upstream NodeWrapper::state includes focus membership in Focusable.
+            try testing.expectEqualStrings("focusable", event.detail1);
+            if (std.meta.eql(old_id, event.id)) {
+                try testing.expectEqual(@as(i32, 0), event.detail2);
+                old_focusable_count += 1;
+            } else {
+                try testing.expect(std.meta.eql(new_id, event.id));
+                try testing.expectEqual(@as(i32, 1), event.detail2);
+                new_focusable_count += 1;
+            }
+        }
+    }
+    try testing.expectEqual(@as(usize, 2), focused_count);
+    try testing.expectEqual(@as(usize, 1), old_focusable_count);
+    try testing.expectEqual(@as(usize, 1), new_focusable_count);
+}
+
 test "adapter node updates do not duplicate the focus slot" {
     const gpa = testing.allocator;
     var adapter = PlatformAdapter.init(gpa, 9, true);
@@ -882,22 +1252,601 @@ test "adapter node updates do not duplicate the focus slot" {
     var update: schema.TreeUpdate = .{ .focus = .{ .value = 2 } };
     try update.pushNode(gpa, .{ .value = 2 }, schema.Node.init(gpa, .button));
     try adapter.apply(update);
+    try testing.expect(adapter.last_event_error == null);
+    try expectFocusTransfer(&adapter);
+}
+
+test "native lifecycle regression focus loss emits deactivate and unfocused" {
+    const gpa = testing.allocator;
+    var adapter = PlatformAdapter.init(gpa, 3, true);
+    defer adapter.deinit();
+    try adapter.apply(try chainUpdate(gpa, 2));
+    clearNotificationEvents(&adapter);
+    try adapter.updateWindowFocusState(false);
     const raised = adapter.raised.items.items;
-    const expected_focus_nodes = [_]u64{ 2, 1 };
-    const target = adapter.objectId(FullNodeId.init(.{ .value = 2 }, .init(0)));
-    var focus_index: usize = 0;
+    try testing.expectEqual(@as(usize, 3), raised.len);
+    try testing.expectEqualStrings("Deactivate", raised[0].member);
+    try testing.expectEqual(events.Kind.window, raised[0].kind);
+    try testing.expectEqualStrings("StateChanged", raised[1].member);
+    try testing.expectEqualStrings("active", raised[1].detail1);
+    try testing.expectEqual(@as(i32, 0), raised[1].detail2);
+    try testing.expectEqualStrings("StateChanged", raised[2].member);
+    try testing.expectEqualStrings("focused", raised[2].detail1);
+    try testing.expectEqual(@as(i32, 0), raised[2].detail2);
     for (raised) |event| {
-        if (std.mem.eql(u8, event.member, "StateChanged")) {
-            try testing.expect(!std.mem.eql(u8, event.detail1, "focused"));
-        }
-        if (!std.mem.eql(u8, event.member, "Focus")) continue;
-        try testing.expect(focus_index < expected_focus_nodes.len);
-        try expectNotification(event, .{
-            .member = "Focus",
-            .node = expected_focus_nodes[focus_index],
-        });
-        try testing.expect(std.meta.eql(target, event.any_data.address));
-        focus_index += 1;
+        try testing.expectEqualStrings("siiva{sv}", event.bodySignature());
+        try testing.expectEqual(@as(usize, 0), event.properties.count());
     }
-    try testing.expectEqual(expected_focus_nodes.len, focus_index);
+}
+
+test "native lifecycle regression focus transfer uses ordered state changes" {
+    const gpa = testing.allocator;
+    var adapter = PlatformAdapter.init(gpa, 3, true);
+    defer adapter.deinit();
+    try adapter.apply(try chainUpdate(gpa, 2));
+    clearNotificationEvents(&adapter);
+    try adapter.apply(.{ .focus = .{ .value = 2 } });
+    try testing.expect(adapter.last_event_error == null);
+    try expectFocusTransfer(&adapter);
+}
+
+fn textNotificationUpdate(
+    gpa: std.mem.Allocator,
+    initial: bool,
+    value: []const u8,
+    lengths: []const u8,
+    anchor: usize,
+    focus: usize,
+) !schema.TreeUpdate {
+    var update: schema.TreeUpdate = .{ .focus = .{ .value = 1 } };
+    errdefer update.deinit(gpa);
+    if (initial) update.tree = schema.TreeInfo.init(.{ .value = 1 });
+    {
+        var document = schema.Node.init(gpa, .text_input);
+        errdefer document.deinit();
+        try schema.ids_props.setChildren(&document.properties, &.{.{ .value = 2 }});
+        try schema.option.setTextSelection(&document.properties, .{
+            .anchor = .{ .node_id = .{ .value = 2 }, .character_index = anchor },
+            .focus = .{ .node_id = .{ .value = 2 }, .character_index = focus },
+        });
+        try update.pushNode(gpa, .{ .value = 1 }, document);
+    }
+    {
+        var run = schema.Node.init(gpa, .text_run);
+        errdefer run.deinit();
+        try schema.strings.setValue(&run.properties, value);
+        try schema.vectors.setCharacterLengths(&run.properties, lengths);
+        try update.pushNode(gpa, .{ .value = 2 }, run);
+    }
+    return update;
+}
+
+test "native lifecycle regression Unicode text diff is ordered and owned" {
+    const gpa = testing.allocator;
+    var adapter = PlatformAdapter.init(gpa, 9, true);
+    defer adapter.deinit();
+    try adapter.apply(try textNotificationUpdate(gpa, true, "é猫z", &.{ 2, 3, 1 }, 0, 0));
+    clearNotificationEvents(&adapter);
+    try adapter.apply(try textNotificationUpdate(gpa, false, "é🙂z", &.{ 2, 4, 1 }, 0, 0));
+    const raised = adapter.raised.items.items;
+    try testing.expectEqual(@as(usize, 2), raised.len);
+    for (raised, 0..) |event, index| {
+        try testing.expectEqualStrings("TextChanged", event.member);
+        try testing.expectEqualStrings(if (index == 0) "delete" else "insert", event.detail1);
+        try testing.expectEqual(@as(i32, 1), event.detail2);
+        try testing.expectEqual(@as(i32, 1), event.detail3);
+        try testing.expectEqualStrings(if (index == 0) "猫" else "🙂", event.any_data.text);
+        try testing.expect(event.owned_text != null);
+        try testing.expectEqualStrings("siiva{sv}", event.bodySignature());
+    }
+    try adapter.apply(try textNotificationUpdate(gpa, false, "éQz", &.{ 2, 1, 1 }, 0, 0));
+    try testing.expectEqualStrings("猫", adapter.raised.items.items[0].any_data.text);
+    try testing.expectEqualStrings("🙂", adapter.raised.items.items[1].any_data.text);
+}
+
+test "native lifecycle regression text selection precedes Unicode caret" {
+    const gpa = testing.allocator;
+    var adapter = PlatformAdapter.init(gpa, 9, true);
+    defer adapter.deinit();
+    try adapter.apply(try textNotificationUpdate(gpa, true, "é🙂z", &.{ 2, 4, 1 }, 0, 0));
+    clearNotificationEvents(&adapter);
+    try adapter.apply(try textNotificationUpdate(gpa, false, "é🙂z", &.{ 2, 4, 1 }, 0, 2));
+    try testing.expectEqual(@as(usize, 2), adapter.raised.count());
+    try expectNotification(adapter.raised.items.items[0], .{ .member = "TextSelectionChanged" });
+    try expectNotification(adapter.raised.items.items[1], .{
+        .member = "TextCaretMoved",
+        .detail2 = 2,
+    });
+    clearNotificationEvents(&adapter);
+    try adapter.apply(try textNotificationUpdate(gpa, false, "é🙂z", &.{ 2, 4, 1 }, 2, 2));
+    try testing.expectEqual(@as(usize, 1), adapter.raised.count());
+    try expectNotification(adapter.raised.items.items[0], .{ .member = "TextSelectionChanged" });
+}
+
+test "native lifecycle regression typed notification failure follows commit" {
+    const gpa = testing.allocator;
+    var adapter = PlatformAdapter.init(gpa, 9, true);
+    defer adapter.deinit();
+    try adapter.apply(try chainUpdate(gpa, 1));
+    clearNotificationEvents(&adapter);
+    var update: schema.TreeUpdate = .{ .focus = .{ .value = 1 } };
+    var root = schema.Node.init(gpa, .window);
+    try schema.option.setBounds(&root.properties, schema.rectInit(3e9, 0, 3e9 + 10, 10));
+    try update.pushNode(gpa, .{ .value = 1 }, root);
+    try adapter.apply(update);
+    try testing.expectEqual(@as(u64, 2), adapter.applied_updates);
+    try testing.expectEqual(@as(f64, 3e9), schema.option.bounds(
+        &adapter.tree.?.stateOf().root().data().properties,
+    ).?.x0);
+    try testing.expect(adapter.last_event_error != null);
+    try testing.expectEqual(error.GeometryOutOfRange, adapter.last_event_error.?);
+}
+
+test "native lifecycle regression focus fail-N distinguishes recovery rejection from notification failure" {
+    const gpa = testing.allocator;
+    const allocation_attempt_bound = 256;
+    for ([_]bool{ false, true }) |dirty| {
+        var saw_rejection = false;
+        var saw_notification_failure = false;
+        for (0..allocation_attempt_bound) |fail_index| {
+            var failing = testing.FailingAllocator.init(gpa, .{ .fail_index = fail_index });
+            var adapter = PlatformAdapter.init(gpa, 9, true);
+            defer adapter.deinit();
+            try adapter.apply(try chainUpdate(gpa, 2));
+            clearNotificationEvents(&adapter);
+            // Clean focus changes allocate only notifications. Dirty recovery allocates before commit.
+            adapter.tree.?.working_state_dirty = dirty;
+            adapter.tree.?.gpa = failing.allocator();
+            adapter.gpa = failing.allocator();
+            adapter.updateWindowFocusState(false) catch |failure| {
+                saw_rejection = true;
+                try testing.expectEqual(error.OutOfMemory, failure);
+                try testing.expect(dirty);
+                try testing.expect(adapter.is_host_focused);
+                try testing.expect(adapter.tree.?.stateOf().is_host_focused);
+                try testing.expectEqual(@as(usize, 0), adapter.raised.count());
+                adapter.tree.?.gpa = gpa;
+                adapter.gpa = gpa;
+                try adapter.updateWindowFocusState(false);
+                try testing.expect(!adapter.is_host_focused);
+                try testing.expect(!adapter.tree.?.stateOf().is_host_focused);
+                continue;
+            };
+            try testing.expect(!adapter.is_host_focused);
+            try testing.expect(!adapter.tree.?.stateOf().is_host_focused);
+            try testing.expectEqual(@as(u64, 1), adapter.applied_updates);
+            const raised = adapter.raised.items.items;
+            const expected_members = [_][]const u8{ "Deactivate", "StateChanged", "StateChanged" };
+            try testing.expect(raised.len <= expected_members.len);
+            for (raised, 0..) |event, index| {
+                try testing.expectEqualStrings(expected_members[index], event.member);
+                if (index != 0) {
+                    try testing.expectEqualStrings(if (index == 1) "active" else "focused", event.detail1);
+                    try testing.expectEqual(@as(i32, 0), event.detail2);
+                }
+            }
+            if (adapter.last_event_error) |failure| {
+                saw_notification_failure = true;
+                try testing.expectEqual(error.OutOfMemory, failure);
+                adapter.tree.?.gpa = gpa;
+                adapter.gpa = gpa;
+                clearNotificationEvents(&adapter);
+                try adapter.updateWindowFocusState(false);
+                try testing.expectEqual(@as(usize, 0), adapter.raised.count());
+                continue;
+            }
+            try testing.expectEqual(expected_members.len, raised.len);
+            try testing.expectEqual(dirty, saw_rejection);
+            try testing.expect(saw_notification_failure);
+            break;
+        } else return error.AllocationAttemptBoundExceeded;
+    }
+}
+
+test "native lifecycle regression update fail-N preserves committed diff baseline" {
+    const gpa = testing.allocator;
+    const allocation_attempt_bound = 256;
+    var saw_rejection = false;
+    for (0..allocation_attempt_bound) |fail_index| {
+        var failing = testing.FailingAllocator.init(gpa, .{ .fail_index = fail_index });
+        var adapter = PlatformAdapter.init(gpa, 9, false);
+        defer adapter.deinit();
+        try adapter.apply(try notificationUpdate(gpa, .{
+            .initial = true,
+            .role = .button,
+            .busy = false,
+        }));
+        clearNotificationEvents(&adapter);
+        const update = try notificationUpdate(gpa, .{
+            .initial = false,
+            .role = .button,
+            .busy = true,
+            .changed = true,
+            .child = 2,
+        });
+        adapter.tree.?.gpa = failing.allocator();
+        adapter.apply(update) catch |failure| {
+            saw_rejection = true;
+            try testing.expectEqual(error.OutOfMemory, failure);
+            try testing.expectEqual(@as(u64, 1), adapter.applied_updates);
+            try testing.expectEqual(@as(usize, 1), adapter.nodeCount());
+            try testing.expectEqualStrings("Before", schema.strings.label(
+                &adapter.tree.?.stateOf().root().data().properties,
+            ).?);
+            try testing.expectEqual(@as(usize, 0), adapter.raised.count());
+            adapter.tree.?.gpa = gpa;
+            try adapter.apply(try notificationUpdate(gpa, .{
+                .initial = false,
+                .role = .button,
+                .busy = true,
+                .changed = true,
+                .child = 2,
+            }));
+            try testing.expectEqual(@as(u64, 2), adapter.applied_updates);
+            try testing.expectEqual(@as(usize, 2), adapter.nodeCount());
+            continue;
+        };
+        try testing.expect(saw_rejection);
+        try testing.expectEqual(@as(u64, 2), adapter.applied_updates);
+        try testing.expectEqualStrings("After", schema.strings.label(
+            &adapter.tree.?.stateOf().root().data().properties,
+        ).?);
+        return;
+    }
+    return error.AllocationAttemptBoundExceeded;
+}
+
+test "native lifecycle regression initial window creation precedes focus state" {
+    const gpa = testing.allocator;
+    var adapter = PlatformAdapter.init(gpa, 9, true);
+    defer adapter.deinit();
+    try adapter.apply(try chainUpdate(gpa, 2));
+    const raised = adapter.raised.items.items;
+    try testing.expectEqual(@as(usize, 4), raised.len);
+    try testing.expectEqualStrings("AddAccessible", raised[0].member);
+    try testing.expectEqualStrings("ChildrenChanged", raised[1].member);
+    try testing.expectEqualStrings("add", raised[1].detail1);
+    try testing.expect(std.meta.eql(ObjectId.root, raised[1].id));
+    try testing.expectEqual(@as(i32, 0), raised[1].detail2);
+    try testing.expect(std.meta.eql(adapter.objectId(
+        FullNodeId.init(.{ .value = 1 }, .init(0)),
+    ), raised[1].any_data.address));
+    try testing.expectEqualStrings("AddAccessible", raised[2].member);
+    try expectNotification(raised[3], .{
+        .member = "StateChanged",
+        .detail1 = "focused",
+        .detail2 = 1,
+    });
+}
+
+test "native lifecycle regression cache snapshot survives updates removal and close" {
+    const gpa = testing.allocator;
+    var adapter = PlatformAdapter.init(gpa, 9, true);
+    defer adapter.deinit();
+    try adapter.apply(try notificationUpdate(gpa, .{
+        .initial = true,
+        .role = .window,
+        .busy = true,
+        .child = 2,
+        .live = true,
+    }));
+    var snapshots: std.ArrayList(events.Event) = .empty;
+    defer snapshots.deinit(gpa);
+    defer for (snapshots.items) |*event| event.deinit(gpa);
+    try adapter.raised.drainInto(gpa, &snapshots);
+    const root = snapshots.items[0].cache_item.?;
+    const child = snapshots.items[2].cache_item.?;
+    try testing.expectEqual(@as(usize, 9), root.adapter_id);
+    try testing.expectEqualStrings("Before", root.name);
+    try testing.expectEqualStrings("Old description", root.description);
+    try testing.expect(std.meta.eql(node_notifications.NodeIdOrRoot.root, root.parent));
+    try testing.expectEqual(@as(i32, 0), root.index_in_parent);
+    try testing.expectEqual(@as(i32, 1), root.child_count);
+    try testing.expect(root.interfaces.bits != 0);
+    try testing.expect(root.states.bits != 0);
+    try testing.expect(@intFromEnum(root.role) != 0);
+    try testing.expect(std.meta.eql(root.id, child.parent.node));
+    try adapter.apply(try notificationUpdate(gpa, .{
+        .initial = false,
+        .role = .window,
+        .busy = false,
+        .changed = true,
+        .child = 3,
+        .live = true,
+    }));
+    const removed = adapter.raised.items.items[adapter.raised.count() - 1];
+    try testing.expectEqualStrings("RemoveAccessible", removed.member);
+    try testing.expect(std.meta.eql(adapter.objectId(child.id), removed.any_data.address));
+    try testing.expectEqualStrings("(so)", removed.bodySignature());
+    adapter.deinit();
+    try testing.expectEqualStrings("Before", root.name);
+    try testing.expectEqualStrings("Old description", root.description);
+    try testing.expectEqualStrings("((so)(so)(so)iiassusau)", snapshots.items[0].bodySignature());
+}
+
+test "native lifecycle regression initial registration excludes hidden subtrees" {
+    const gpa = testing.allocator;
+    var adapter = PlatformAdapter.init(gpa, 9, false);
+    defer adapter.deinit();
+    var update = try chainUpdate(gpa, 3);
+    schema.flags.setHidden(&update.nodes.items[1].node.flags, true);
+    try adapter.apply(update);
+    try testing.expectEqual(@as(usize, 3), adapter.nodeCount());
+    try testing.expectEqual(@as(usize, 2), adapter.raised.count());
+    try testing.expectEqualStrings("AddAccessible", adapter.raised.items.items[0].member);
+    try testing.expectEqual(@as(i32, 0), adapter.raised.items.items[0].cache_item.?.child_count);
+    try testing.expectEqualStrings("ChildrenChanged", adapter.raised.items.items[1].member);
+}
+
+test "native lifecycle regression removal queues app child and retains typed error" {
+    const gpa = testing.allocator;
+    var adapter = PlatformAdapter.init(gpa, 9, false);
+    defer adapter.deinit();
+    try adapter.apply(try chainUpdate(gpa, 1));
+    clearNotificationEvents(&adapter);
+    adapter.announceRemoval();
+    const removed = adapter.raised.items.items[0];
+    try testing.expectEqualStrings("ChildrenChanged", removed.member);
+    try testing.expectEqualStrings("remove", removed.detail1);
+    try testing.expectEqual(@as(i32, -1), removed.detail2);
+    try testing.expect(std.meta.eql(ObjectId.root, removed.id));
+    try testing.expect(std.meta.eql(adapter.objectId(adapter.tree.?.stateOf().rootId()), removed.any_data.address));
+    clearNotificationEvents(&adapter);
+    var failing = testing.FailingAllocator.init(gpa, .{ .fail_index = 0 });
+    adapter.gpa = failing.allocator();
+    adapter.announceRemoval();
+    try testing.expectEqual(error.OutOfMemory, adapter.last_event_error.?);
+    try testing.expect(adapter.hasTree());
+    try testing.expectEqual(@as(usize, 0), adapter.raised.count());
+}
+
+test "native lifecycle regression bridges borrow refreshed live contexts" {
+    const gpa = testing.allocator;
+    var adapter = PlatformAdapter.init(gpa, 9, false);
+    defer adapter.deinit();
+    try testing.expectError(error.Defunct, adapter.rootId());
+    try testing.expectError(error.Defunct, adapter.platformRoot());
+    const id = FullNodeId.init(.{ .value = 1 }, .init(0));
+    try testing.expectError(error.Defunct, adapter.platformNode(id));
+    var app = try app_context.AppContext.init(gpa, "Test");
+    defer app.deinit();
+    adapter.app = &app;
+    try adapter.apply(try chainUpdate(gpa, 1));
+    try testing.expectError(error.Defunct, adapter.rootId());
+    try testing.expectError(error.Defunct, adapter.platformRoot());
+    try testing.expectError(error.Defunct, adapter.platformNode(id));
+    var context: app_context.NodeContext = .{
+        .state = adapter.tree.?.stateOf(),
+        .app = &app,
+        .bounds = adapter.bounds,
+        .sink = null,
+        .gpa = gpa,
+    };
+    adapter.context = &context;
+    try app.pushAdapter(adapter.id, &context);
+    try testing.expect(std.meta.eql(id, try adapter.rootId()));
+    const live = try adapter.platformNode(id);
+    try adapter.apply(try notificationUpdate(gpa, .{
+        .initial = false,
+        .role = .window,
+        .busy = false,
+        .changed = true,
+    }));
+    try testing.expect(context.state == adapter.tree.?.stateOf());
+    var name = try live.name(gpa);
+    defer name.deinit(gpa);
+    try testing.expectEqualStrings("After", name.items);
+    _ = try adapter.platformRoot();
+}
+
+test "native lifecycle regression rejected update preserves next diff and typed cause" {
+    const gpa = testing.allocator;
+    var adapter = PlatformAdapter.init(gpa, 9, false);
+    defer adapter.deinit();
+    try adapter.apply(try notificationUpdate(gpa, .{
+        .initial = true,
+        .role = .button,
+        .busy = false,
+    }));
+    clearNotificationEvents(&adapter);
+    adapter.last_event_error = error.GeometryOutOfRange;
+    try testing.expectError(error.RootNotInTree, adapter.apply(.{
+        .tree = schema.TreeInfo.init(.{ .value = 999 }),
+        .focus = .{ .value = 1 },
+    }));
+    try testing.expectEqual(error.GeometryOutOfRange, adapter.last_event_error.?);
+    try testing.expectEqual(@as(u64, 1), adapter.applied_updates);
+    try testing.expectEqual(@as(usize, 0), adapter.raised.count());
+    try adapter.apply(try notificationUpdate(gpa, .{
+        .initial = false,
+        .role = .button,
+        .busy = true,
+        .changed = true,
+    }));
+    try testing.expectEqual(@as(u64, 2), adapter.applied_updates);
+    try testing.expectEqualStrings("After", schema.strings.label(&adapter.tree.?.stateOf().root().data().properties).?);
+}
+
+test "native lifecycle regression cache notification fail-N owns exact committed prefix" {
+    const gpa = testing.allocator;
+    const allocation_attempt_bound = 128;
+    var saw_failure = false;
+    for (0..allocation_attempt_bound) |fail_index| {
+        var failing = testing.FailingAllocator.init(gpa, .{ .fail_index = fail_index });
+        var adapter = PlatformAdapter.init(gpa, 9, false);
+        defer adapter.deinit();
+        try adapter.apply(try notificationUpdate(gpa, .{
+            .initial = true,
+            .role = .window,
+            .busy = false,
+            .child = 2,
+        }));
+        clearNotificationEvents(&adapter);
+        var update = try notificationUpdate(gpa, .{
+            .initial = false,
+            .role = .window,
+            .busy = false,
+            .child = 3,
+        });
+        try schema.strings.setLabel(&update.nodes.items[1].node.properties, "Added");
+        try schema.strings.setDescription(&update.nodes.items[1].node.properties, "Owned description");
+        adapter.gpa = failing.allocator();
+        try adapter.apply(update);
+        try testing.expectEqual(@as(u64, 2), adapter.applied_updates);
+        try testing.expect(adapter.tree.?.stateOf().nodeById(FullNodeId.init(.{ .value = 2 }, .init(0))) == null);
+        const expected = [_][]const u8{
+            "AddAccessible", "ChildrenChanged", "ChildrenChanged", "StateChanged", "RemoveAccessible",
+        };
+        const raised = adapter.raised.items.items;
+        try testing.expect(raised.len <= expected.len);
+        for (raised, 0..) |event, index| try testing.expectEqualStrings(expected[index], event.member);
+        if (raised.len != 0) {
+            try testing.expectEqualStrings("Added", raised[0].cache_item.?.name);
+            try testing.expectEqualStrings("Owned description", raised[0].cache_item.?.description);
+        }
+        if (adapter.last_event_error) |err| {
+            try testing.expectEqual(error.OutOfMemory, err);
+            saw_failure = true;
+            continue;
+        }
+        try testing.expect(saw_failure);
+        try testing.expectEqual(expected.len, raised.len);
+        return;
+    }
+    return error.AllocationAttemptBoundExceeded;
+}
+
+test "native lifecycle regression focus gain orders window selection and Unicode caret" {
+    const gpa = testing.allocator;
+    var adapter = PlatformAdapter.init(gpa, 9, false);
+    defer adapter.deinit();
+    var initial = try textNotificationUpdate(gpa, true, "é猫z", &.{ 2, 3, 1 }, 0, 2);
+    const window = built: {
+        var node = schema.Node.init(gpa, .window);
+        errdefer node.deinit();
+        try schema.ids_props.setChildren(&node.properties, &.{.{ .value = 1 }});
+        try schema.strings.setLabel(&node.properties, "Document");
+        break :built node;
+    };
+    try initial.pushNode(gpa, .{ .value = 3 }, window);
+    initial.tree = schema.TreeInfo.init(.{ .value = 3 });
+    try adapter.apply(initial);
+    clearNotificationEvents(&adapter);
+    try adapter.updateWindowFocusState(true);
+    const raised = adapter.raised.items.items;
+    try testing.expectEqual(@as(usize, 6), raised.len);
+    try expectNotification(raised[0], .{ .kind = .window, .member = "Activate", .node = 3 });
+    try testing.expectEqualStrings("Document", raised[0].any_data.text);
+    try expectNotification(raised[1], .{ .member = "StateChanged", .node = 3, .detail1 = "active", .detail2 = 1 });
+    try testing.expectEqualStrings("ActiveDescendantChanged", raised[2].member);
+    try testing.expect(std.meta.eql(ObjectId.root, raised[2].id));
+    try testing.expect(std.meta.eql(adapter.objectId(FullNodeId.init(.{ .value = 3 }, .init(0))), raised[2].any_data.address));
+    try expectNotification(raised[3], .{ .member = "StateChanged", .detail1 = "focused", .detail2 = 1 });
+    try expectNotification(raised[4], .{ .member = "TextSelectionChanged" });
+    try expectNotification(raised[5], .{ .member = "TextCaretMoved", .detail2 = 2 });
+    for (raised) |event| {
+        try testing.expectEqualStrings("siiva{sv}", event.bodySignature());
+        try testing.expectEqual(@as(usize, 0), event.properties.count());
+    }
+}
+
+test "native lifecycle regression item state changes precede deduplicated container selection" {
+    const gpa = testing.allocator;
+    var adapter = PlatformAdapter.init(gpa, 9, false);
+    defer adapter.deinit();
+    var initial = try notificationUpdate(gpa, .{
+        .initial = true,
+        .role = .list_box,
+        .busy = false,
+        .child = 2,
+    });
+    try schema.ids_props.setChildren(&initial.nodes.items[0].node.properties, &.{
+        .{ .value = 2 }, .{ .value = 3 },
+    });
+    initial.nodes.items[1].node.role = .list_box_option;
+    try schema.enums.setSelected(&initial.nodes.items[1].node.properties, false);
+    const third = built: {
+        var node = schema.Node.init(gpa, .list_box_option);
+        errdefer node.deinit();
+        try schema.enums.setSelected(&node.properties, false);
+        break :built node;
+    };
+    try initial.pushNode(gpa, .{ .value = 3 }, third);
+    try adapter.apply(initial);
+    clearNotificationEvents(&adapter);
+    var delta: schema.TreeUpdate = .{ .focus = .{ .value = 1 } };
+    for ([_]u64{ 2, 3 }) |id| {
+        const selected = built: {
+            var node = schema.Node.init(gpa, .list_box_option);
+            errdefer node.deinit();
+            try schema.enums.setSelected(&node.properties, true);
+            break :built node;
+        };
+        try delta.pushNode(gpa, .{ .value = id }, selected);
+    }
+    try adapter.apply(delta);
+    const raised = adapter.raised.items.items;
+    try testing.expectEqual(@as(usize, 3), raised.len);
+    for (raised[0..2]) |event| {
+        try testing.expectEqualStrings("StateChanged", event.member);
+        try testing.expectEqualStrings("selected", event.detail1);
+        try testing.expectEqual(@as(i32, 1), event.detail2);
+    }
+    try expectNotification(raised[2], .{ .member = "SelectionChanged" });
+}
+
+test "native lifecycle regression borrowed initial rejection preserves input owner" {
+    const gpa = testing.allocator;
+    var initial = try chainUpdate(gpa, 2);
+    defer initial.deinit(gpa);
+    var failing = testing.FailingAllocator.init(gpa, .{ .fail_index = 0 });
+    var adapter = PlatformAdapter.init(failing.allocator(), 9, true);
+    defer adapter.deinit();
+    try testing.expectError(error.OutOfMemory, adapter.applyBorrowed(&initial));
+    try testing.expectEqual(@as(usize, 2), initial.nodes.items.len);
+    try testing.expectEqual(schema.Role.window, initial.nodes.items[0].node.role);
+    try testing.expectEqual(@as(u64, 2), schema.ids_props.children(
+        &initial.nodes.items[0].node.properties,
+    )[0].value);
+    try testing.expect(!adapter.hasTree());
+    try testing.expectEqual(@as(usize, 0), adapter.raised.count());
+    adapter.gpa = gpa;
+    try adapter.applyBorrowed(&initial);
+    try testing.expectEqual(@as(usize, 2), adapter.nodeCount());
+    try testing.expectEqual(@as(usize, 4), adapter.raised.count());
+}
+
+test "native lifecycle regression borrowed updates retain caller ownership after notification error" {
+    const gpa = testing.allocator;
+    var initial = try notificationUpdate(gpa, .{
+        .initial = true,
+        .role = .window,
+        .busy = false,
+    });
+    defer initial.deinit(gpa);
+    var adapter = PlatformAdapter.init(gpa, 9, false);
+    defer adapter.deinit();
+    try adapter.applyBorrowed(&initial);
+    clearNotificationEvents(&adapter);
+    var delta = try notificationUpdate(gpa, .{
+        .initial = false,
+        .role = .window,
+        .busy = true,
+        .changed = true,
+        .child = 2,
+    });
+    defer delta.deinit(gpa);
+    var failing = testing.FailingAllocator.init(gpa, .{ .fail_index = 0 });
+    adapter.gpa = failing.allocator();
+    try adapter.applyBorrowed(&delta);
+    try testing.expectEqual(error.OutOfMemory, adapter.last_event_error.?);
+    try testing.expectEqual(@as(u64, 2), adapter.applied_updates);
+    try testing.expectEqual(@as(usize, 2), adapter.nodeCount());
+    try testing.expectEqualStrings("After", schema.strings.label(
+        &delta.nodes.items[0].node.properties,
+    ).?);
+    try testing.expectEqualStrings("Before", schema.strings.label(
+        &initial.nodes.items[0].node.properties,
+    ).?);
+    try testing.expectEqual(@as(usize, 0), adapter.raised.count());
 }
