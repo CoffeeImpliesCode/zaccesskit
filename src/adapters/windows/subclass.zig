@@ -12,11 +12,10 @@
 //! names every reason. Upstream also refuses a window that another subclassing
 //! adapter already owns at `subclass.rs:96-101`, and that is the same `null`.
 //!
-//! **What is compiled and tested on this host.** The install decision, the
-//! message table that turns a `WM_*` message into a focus state, the property
-//! name the adapter files itself under, and the uninstall path. The six Win32
-//! calls are the seam in `syscalls.WindowApi`, and a test drives them with a
-//! recording seam.
+//! **Test boundaries.** Portable tests drive installation, focus messages,
+//! property naming and uninstall through the injected `WindowApi`. The
+//! Windows-only text test uses an actual hidden SDK window and native readback;
+//! it requires a native Windows runtime.
 //!
 //! **Loop bounds.** No loop outside a test.
 
@@ -29,16 +28,15 @@ const allocation = @import("../../capi/allocation.zig");
 const queued_events = @import("queued_events.zig");
 const syscalls = @import("syscalls.zig");
 const schema = @import("../../schema/root.zig");
+const util = @import("util.zig");
 
-const ActivationHandler = boundary.ActivationHandler;
-const ActionHandler = boundary.ActionHandler;
+const ActivationSource = adapter.ActivationSource;
 const Hwnd = boundary.Hwnd;
 const LResult = syscalls.LResult;
 const WParam = boundary.WParam;
 const LParam = boundary.LParam;
 
 const WindowsAdapter = adapter.WindowsAdapter;
-const Platform = syscalls.Platform;
 const RaiseReport = queued_events.RaiseReport;
 const WindowApi = syscalls.WindowApi;
 const WindowProc = syscalls.WindowProc;
@@ -48,24 +46,18 @@ const WindowProc = syscalls.WindowProc;
 /// The caller owns the adapter and releases it with `free`. It owns one
 /// `WindowsAdapter` and the previous window procedure it replaced, and `free`
 /// releases both.
+/// Install and free on the window's owning thread, serialized with its procedure.
+/// Do not close from a callback or while holding a context lease on this thread.
 pub const WindowsSubclassingAdapter = struct {
     /// The allocator that grew the adapter and this value.
     gpa: std.mem.Allocator,
-    /// The seam every UI Automation call goes through.
-    platform: Platform,
     /// The seam every window call goes through.
     window_api: WindowApi,
     /// The window this adapter took over.
     hwnd: Hwnd,
-    /// The handler a `WM_GETOBJECT` asks for the tree. It stays valid until the
-    /// adapter is released.
-    activation_handler: ActivationHandler,
-    /// The pointer `activation_handler` receives unchanged.
-    activation_handler_userdata: ?*anyopaque,
-    /// The handler a platform action reaches.
-    action_handler: ActionHandler,
-    /// The pointer `action_handler` receives unchanged.
-    action_handler_userdata: ?*anyopaque,
+    /// Activation transfers a C handle or borrows a synchronous native full view.
+    /// Its callback and userdata remain valid until adapter close completes.
+    activation_source: ActivationSource,
     /// The adapter the window procedure drives.
     adapter: *WindowsAdapter,
     /// The procedure this one replaced, which the chain call uses.
@@ -91,49 +83,46 @@ pub const WindowsSubclassingAdapter = struct {
     /// - The target has no Win32 window procedure, so `SetPropW` refused.
     ///   Upstream unwraps at `subclass.rs:109`.
     ///
-    /// **Errors.** `error.OutOfMemory`. On that path nothing is installed and no
-    /// window was touched.
+    /// **Errors.** `context.ProviderError`, including allocation and owner admission.
+    /// Every failure uninstalls any attachment and leaves runtime authority caller-owned.
     ///
     /// The adapter inside is built with `is_window_focused = false`, because
     /// the window has not been shown and so holds no focus. That is upstream's
     /// `Adapter::new(hwnd, false, action_handler)` at `subclass.rs:82`.
+    /// This call transfers `options.runtime_release` only on successful non-null return.
+    /// The runtime hook must not free the provider allocator.
+    /// Installation must run on the owning window thread before the window is shown.
     pub fn create(
         gpa: std.mem.Allocator,
-        platform: Platform,
+        options: WindowsAdapter.Options,
         window_api: WindowApi,
-        hwnd: Hwnd,
-        activation_handler: ActivationHandler,
-        activation_handler_userdata: ?*anyopaque,
-        action_handler: ActionHandler,
-        action_handler_userdata: ?*anyopaque,
-    ) std.mem.Allocator.Error!?*WindowsSubclassingAdapter {
-        if (window_api.is_window_visible(hwnd)) return null;
+        activation_source: ActivationSource,
+    ) @import("context.zig").ProviderError!?*WindowsSubclassingAdapter {
+        const hwnd = options.hwnd;
+        if (window_api.is_window_visible(hwnd)) {
+            return null;
+        }
         if (window_api.get_property(hwnd, syscalls.subclass_property_name.ptr) != null) {
             return null;
         }
 
-        const inner = try WindowsAdapter.create(
-            gpa,
-            platform,
-            hwnd,
-            false,
-            action_handler,
-            action_handler_userdata,
-        );
-        errdefer inner.deinit();
+        var foundation_options = options;
+        foundation_options.is_window_focused = false;
+        foundation_options.runtime_release = null;
+        const inner = try WindowsAdapter.create(gpa, foundation_options);
 
-        const holder = try gpa.create(WindowsSubclassingAdapter);
+        const holder = gpa.create(WindowsSubclassingAdapter) catch |err| {
+            inner.deinit();
+            return err;
+        };
         holder.* = .{
             .gpa = gpa,
-            .platform = platform,
             .window_api = window_api,
             .hwnd = hwnd,
-            .activation_handler = activation_handler,
-            .activation_handler_userdata = activation_handler_userdata,
-            .action_handler = action_handler,
-            .action_handler_userdata = action_handler_userdata,
+            .activation_source = activation_source,
             .adapter = inner,
         };
+        errdefer holder.free();
 
         if (!window_api.set_property(
             hwnd,
@@ -151,6 +140,11 @@ pub const WindowsSubclassingAdapter = struct {
         }
         holder.previous_window_proc = @ptrFromInt(@as(usize, @bitCast(previous)));
         holder.installed = true;
+        // The hook cannot move to the inner owner before outer attachment commits.
+        // Pin admission is the final fallible step; no native call runs under its tree guard.
+        var guard = try inner.context.enter();
+        defer guard.deinit();
+        if (options.runtime_release) |authority| guard.control.setRuntimeRelease(authority);
         return holder;
     }
 
@@ -159,6 +153,7 @@ pub const WindowsSubclassingAdapter = struct {
     /// The uninstall is skipped when the window has been destroyed, because the
     /// property is gone with the window. That is upstream's `uninstall` at
     /// `subclass.rs:126-141`.
+    /// Run on the owning window thread, not inside an activation/action callback or lease.
     pub fn free(self: *WindowsSubclassingAdapter) void {
         const gpa = self.gpa;
         if (self.installed and !self.window_destroyed) {
@@ -214,24 +209,32 @@ pub const WindowsSubclassingAdapter = struct {
     /// through the window property rather than through a closure, because
     /// `SetWindowLongPtrW` takes a bare function pointer and a Zig function
     /// pointer cannot capture.
-    fn windowProc(hwnd: Hwnd, message: u32, wparam: WParam, lparam: LParam) callconv(.c) LResult {
+    fn windowProc(
+        hwnd: Hwnd,
+        message: u32,
+        wparam: WParam,
+        lparam: LParam,
+    ) callconv(syscalls.window_proc_callconv) LResult {
         const window_api = syscalls.windowApiForCurrentTarget();
         const found = window_api.get_property(hwnd, syscalls.subclass_property_name.ptr) orelse
-            return chainOrDefault(hwnd, message, wparam, lparam, window_api, null);
+            return chainOrDefault(
+                hwnd,
+                message,
+                wparam,
+                lparam,
+                window_api,
+                null,
+                syscalls.nativeAutomationApi(),
+            );
         const self: *WindowsSubclassingAdapter = @ptrCast(@alignCast(found));
 
         if (message == syscalls.wm_getobject) {
             const answer = self.adapter.handleWmGetobject(
                 wparam,
                 lparam,
-                self.activation_handler,
-                self.activation_handler_userdata,
-            );
-            if (answer.has_value) return answer.value;
-        }
-        if (message == syscalls.wm_ncdestroy) self.window_destroyed = true;
-        if (focusFor(message)) |focused| {
-            const events = self.adapter.updateWindowFocusState(focused) catch
+                self.activation_source,
+            ) catch |err| {
+                allocation.failWithError(err);
                 return chainOrDefault(
                     hwnd,
                     message,
@@ -239,8 +242,34 @@ pub const WindowsSubclassingAdapter = struct {
                     lparam,
                     window_api,
                     self.previous_window_proc,
+                    self.adapter.context.automation,
                 );
-            if (events) |queued| _ = queued.raise();
+            };
+            if (answer.has_value) return answer.value;
+        }
+        if (message == syscalls.wm_ncdestroy) self.window_destroyed = true;
+        if (focusFor(message)) |focused| {
+            const events = self.adapter.updateWindowFocusState(focused) catch |err| {
+                allocation.failWithError(err);
+                return chainOrDefault(
+                    hwnd,
+                    message,
+                    wparam,
+                    lparam,
+                    window_api,
+                    self.previous_window_proc,
+                    self.adapter.context.automation,
+                );
+            };
+            if (events) |value| {
+                var queued = value;
+                const report = queued.raise();
+                // Native raises must not retain or lock these automatic focus values.
+                // This local queue has no caller that can keep it for a cleanup retry.
+                if (report.cleanup.first_error) |err| {
+                    std.debug.panic("native subclass focus cleanup failed: {s}", .{@errorName(err)});
+                }
+            }
         }
         return chainOrDefault(
             hwnd,
@@ -249,15 +278,14 @@ pub const WindowsSubclassingAdapter = struct {
             lparam,
             window_api,
             self.previous_window_proc,
+            self.adapter.context.automation,
         );
     }
 };
 
-/// Chains `message` to `previous`, or answers zero when there is no previous.
+/// Chains through the previous procedure, or uses the real native default procedure.
 ///
-/// Upstream calls `CallWindowProcW` at `subclass.rs:73`. A zero is the honest
-/// answer when nothing is installed to chain to, and it is what the unavailable
-/// seam returns, so a refusal is visible rather than silent.
+/// Only an unavailable off-Windows authority has no procedure to call.
 fn chainOrDefault(
     hwnd: Hwnd,
     message: u32,
@@ -265,9 +293,13 @@ fn chainOrDefault(
     lparam: LParam,
     window_api: WindowApi,
     previous: ?WindowProc,
+    automation: ?*const util.AutomationApi,
 ) LResult {
-    const proc = previous orelse return 0;
-    return window_api.call_window_proc(proc, hwnd, message, wparam, lparam);
+    if (previous) |proc| {
+        return window_api.call_window_proc(proc, hwnd, message, wparam, lparam);
+    }
+    const api = automation orelse return 0;
+    return api.def_window_proc(api.context, @ptrCast(hwnd.?), message, wparam, lparam);
 }
 
 /// The last raise the adapter reported, for a caller that wants the counts
@@ -295,9 +327,38 @@ fn ignoreActivation(context: ?*anyopaque) callconv(.c) ?*boundary.CTreeUpdate {
 /// a payload attached.
 fn ignoreAction(request: *boundary.CActionRequest, context: ?*anyopaque) callconv(.c) void {
     _ = context;
-    schema.cActionRequestDeinit(allocation.allocator(), request);
-    allocation.release(request);
+    const gpa = allocation.allocator();
+    schema.cActionRequestDeinit(gpa, request);
+    gpa.destroy(request);
 }
+
+const SubclassTestFixture = struct {
+    runtime: std.Io.Threaded,
+    abi: util.AutomationTestAbi,
+    automation: util.AutomationApi,
+
+    fn init(self: *@This(), gpa: std.mem.Allocator) void {
+        self.runtime = std.Io.Threaded.init(gpa, .{});
+        self.abi = util.AutomationTestAbi.init(gpa);
+        self.automation = self.abi.api();
+    }
+
+    fn deinit(self: *@This()) void {
+        self.runtime.deinit();
+    }
+
+    fn foundationOptions(self: *@This(), hwnd: Hwnd) WindowsAdapter.Options {
+        return .{
+            .io = self.runtime.io(),
+            .platform = adapter.testPlatform(),
+            .factory = adapter.testProviderFactory(),
+            .automation = &self.automation,
+            .hwnd = hwnd,
+            .is_window_focused = false,
+            .action_sink = .{ .c = .{ .callback = &ignoreAction, .userdata = null } },
+        };
+    }
+};
 
 test "the six focus messages name their focus state and the rest name none" {
     // `subclass.rs:62-67`. Six messages map and every other message is chained
@@ -316,15 +377,14 @@ test "the six focus messages name their focus state and the rest name none" {
 test "a visible window is refused rather than taken over" {
     // Upstream panics at `subclass.rs:167-171`. The C ABI answers `null`.
     const gpa = testing.allocator;
-    const created = WindowsSubclassingAdapter.create(
+    var foundation: SubclassTestFixture = undefined;
+    foundation.init(gpa);
+    defer foundation.deinit();
+    const created = try WindowsSubclassingAdapter.create(
         gpa,
-        syscalls.unavailablePlatform(),
+        foundation.foundationOptions(@ptrFromInt(0x1000)),
         visibleWindowApi(),
-        @ptrFromInt(0x1000),
-        &ignoreActivation,
-        null,
-        &ignoreAction,
-        null,
+        .{ .c = .{ .callback = &ignoreActivation, .userdata = null } },
     );
     try testing.expectEqual(@as(?*WindowsSubclassingAdapter, null), created);
 }
@@ -333,45 +393,42 @@ test "a window with no Win32 cannot be taken over" {
     // The refusal seam: `SetPropW` answers false, so the adapter is released and
     // the window is left alone.
     const gpa = testing.allocator;
-    const created = WindowsSubclassingAdapter.create(
+    var foundation: SubclassTestFixture = undefined;
+    foundation.init(gpa);
+    defer foundation.deinit();
+    const created = try WindowsSubclassingAdapter.create(
         gpa,
-        syscalls.unavailablePlatform(),
+        foundation.foundationOptions(@ptrFromInt(0x2000)),
         syscalls.unavailableWindowApi(),
-        @ptrFromInt(0x2000),
-        &ignoreActivation,
-        null,
-        &ignoreAction,
-        null,
+        .{ .c = .{ .callback = &ignoreActivation, .userdata = null } },
     );
     try testing.expectEqual(@as(?*WindowsSubclassingAdapter, null), created);
 }
 
 test "a window another adapter already owns is refused" {
     const gpa = testing.allocator;
-    const created = WindowsSubclassingAdapter.create(
+    var foundation: SubclassTestFixture = undefined;
+    foundation.init(gpa);
+    defer foundation.deinit();
+    const created = try WindowsSubclassingAdapter.create(
         gpa,
-        syscalls.unavailablePlatform(),
+        foundation.foundationOptions(@ptrFromInt(0x3000)),
         alreadyOwnedWindowApi(),
-        @ptrFromInt(0x3000),
-        &ignoreActivation,
-        null,
-        &ignoreAction,
-        null,
+        .{ .c = .{ .callback = &ignoreActivation, .userdata = null } },
     );
     try testing.expectEqual(@as(?*WindowsSubclassingAdapter, null), created);
 }
 
 test "the created adapter is not active and reports its window" {
     const gpa = testing.allocator;
+    var foundation: SubclassTestFixture = undefined;
+    foundation.init(gpa);
+    defer foundation.deinit();
     const owner = try WindowsSubclassingAdapter.create(
         gpa,
-        syscalls.unavailablePlatform(),
+        foundation.foundationOptions(@ptrFromInt(0x4000)),
         acceptingWindowApi(),
-        @ptrFromInt(0x4000),
-        &ignoreActivation,
-        null,
-        &ignoreAction,
-        null,
+        .{ .c = .{ .callback = &ignoreActivation, .userdata = null } },
     );
     const holder = owner orelse return error.Refused;
     defer holder.free();
@@ -379,21 +436,22 @@ test "the created adapter is not active and reports its window" {
     try testing.expect(holder.installed);
     try testing.expect(!holder.adapter.isActive());
     try testing.expect(!holder.adapter.isPlaceholder());
+    var guard = try holder.adapter.context.enter();
+    defer guard.deinit();
     try testing.expectEqual(@as(?*consumer.tree.Tree, null), holder.adapter.tree());
     try testing.expectEqual(@as(usize, 0x4000), @intFromPtr(holder.hwnd.?));
 }
 
 test "free restores the procedure and drops the property" {
     const gpa = testing.allocator;
+    var foundation: SubclassTestFixture = undefined;
+    foundation.init(gpa);
+    defer foundation.deinit();
     const owner = try WindowsSubclassingAdapter.create(
         gpa,
-        syscalls.unavailablePlatform(),
+        foundation.foundationOptions(@ptrFromInt(0x5000)),
         acceptingWindowApi(),
-        @ptrFromInt(0x5000),
-        &ignoreActivation,
-        null,
-        &ignoreAction,
-        null,
+        .{ .c = .{ .callback = &ignoreActivation, .userdata = null } },
     );
     const holder = owner orelse return error.Refused;
     try testing.expect(holder.installed);
@@ -406,15 +464,14 @@ test "free restores the procedure and drops the property" {
 
 test "a destroyed window is left alone by free" {
     const gpa = testing.allocator;
+    var foundation: SubclassTestFixture = undefined;
+    foundation.init(gpa);
+    defer foundation.deinit();
     const owner = try WindowsSubclassingAdapter.create(
         gpa,
-        syscalls.unavailablePlatform(),
+        foundation.foundationOptions(@ptrFromInt(0x6000)),
         acceptingWindowApi(),
-        @ptrFromInt(0x6000),
-        &ignoreActivation,
-        null,
-        &ignoreAction,
-        null,
+        .{ .c = .{ .callback = &ignoreActivation, .userdata = null } },
     );
     const holder = owner orelse return error.Refused;
     holder.window_destroyed = true;
@@ -424,13 +481,15 @@ test "a destroyed window is left alone by free" {
     holder.free();
 }
 
-test "the chain helper answers zero when nothing is installed to chain to" {
+test "the unavailable off-Windows chain has no native procedure" {
+    if (comptime @import("builtin").os.tag == .windows) return error.SkipZigTest;
     const answer = chainOrDefault(
         @ptrFromInt(0x7000),
         syscalls.wm_getobject,
         0,
         0,
         syscalls.unavailableWindowApi(),
+        null,
         null,
     );
     try testing.expectEqual(@as(LResult, 0), answer);
@@ -490,4 +549,205 @@ fn acceptingWindowApi() WindowApi {
         }
     }.call;
     return api;
+}
+
+const CallerRuntime = struct {
+    gpa: std.mem.Allocator,
+    runtime: std.Io.Threaded,
+    released: *bool,
+
+    fn create(gpa: std.mem.Allocator, released: *bool) std.mem.Allocator.Error!*@This() {
+        const self = try gpa.create(@This());
+        self.* = .{
+            .gpa = gpa,
+            .runtime = std.Io.Threaded.init(gpa, .{}),
+            .released = released,
+        };
+        return self;
+    }
+
+    fn release(userdata: ?*anyopaque) void {
+        const self: *@This() = @ptrCast(@alignCast(userdata.?));
+        const gpa = self.gpa;
+        self.runtime.deinit();
+        self.released.* = true;
+        gpa.destroy(self);
+    }
+
+    fn options(self: *@This(), automation: *const util.AutomationApi) WindowsAdapter.Options {
+        return .{
+            .io = self.runtime.io(),
+            .platform = adapter.testPlatform(),
+            .factory = adapter.testProviderFactory(),
+            .automation = automation,
+            .hwnd = @ptrFromInt(0x3456),
+            .is_window_focused = false,
+            .action_sink = .{ .c = .{ .callback = &ignoreAction, .userdata = null } },
+            .runtime_release = .{ .userdata = self, .release = release },
+        };
+    }
+
+    fn statCurrentDirectory(io: std.Io) std.Io.Dir.StatFileError!std.Io.File.Kind {
+        return (try std.Io.Dir.cwd().statFile(io, ".", .{})).kind;
+    }
+
+    fn useRuntime(self: *@This()) !void {
+        const io = self.runtime.io();
+        var future = try std.Io.concurrent(io, statCurrentDirectory, .{io});
+        const kind = try future.await(io);
+        try testing.expectEqual(std.Io.File.Kind.directory, kind);
+    }
+};
+
+fn procedureRefusingWindowApi() WindowApi {
+    var api = acceptingWindowApi();
+    api.set_window_proc = struct {
+        fn call(hwnd: Hwnd, index: i32, procedure: WindowProc) LResult {
+            _ = hwnd;
+            _ = index;
+            _ = procedure;
+            return 0;
+        }
+    }.call;
+    return api;
+}
+
+test "subclass refusals leave the caller runtime reusable for a later successful attachment" {
+    // Cover both pre-construction refusals and both fallible attachment steps.
+    inline for (.{
+        visibleWindowApi,
+        alreadyOwnedWindowApi,
+        syscalls.unavailableWindowApi,
+        procedureRefusingWindowApi,
+    }) |make_window_api| {
+        const gpa = testing.allocator;
+        var released = false;
+        const runtime = try CallerRuntime.create(gpa, &released);
+        defer if (!released) CallerRuntime.release(runtime);
+        var abi = util.AutomationTestAbi.init(gpa);
+        const automation = abi.api();
+        const refused = try WindowsSubclassingAdapter.create(
+            gpa,
+            runtime.options(&automation),
+            make_window_api(),
+            .{ .c = .{ .callback = &ignoreActivation, .userdata = null } },
+        );
+        defer if (refused) |owner| owner.free();
+        try testing.expectEqual(@as(?*WindowsSubclassingAdapter, null), refused);
+        try testing.expect(!released);
+        try runtime.useRuntime();
+
+        const accepted = (try WindowsSubclassingAdapter.create(
+            gpa,
+            runtime.options(&automation),
+            acceptingWindowApi(),
+            .{ .c = .{ .callback = &ignoreActivation, .userdata = null } },
+        )) orelse return error.UnexpectedRefusal;
+        accepted.free();
+        try testing.expect(released);
+    }
+}
+
+test "each subclass constructor allocation failure preserves caller runtime ownership" {
+    const allocation_failure_bound = 64;
+    var failures: usize = 0;
+    var completed = false;
+    for (0..allocation_failure_bound) |fail_index| {
+        const gpa = testing.allocator;
+        var released = false;
+        const runtime = try CallerRuntime.create(gpa, &released);
+        defer if (!released) CallerRuntime.release(runtime);
+        var abi = util.AutomationTestAbi.init(gpa);
+        const automation = abi.api();
+        var failing = testing.FailingAllocator.init(gpa, .{ .fail_index = fail_index });
+        const result = WindowsSubclassingAdapter.create(
+            failing.allocator(),
+            runtime.options(&automation),
+            acceptingWindowApi(),
+            .{ .c = .{ .callback = &ignoreActivation, .userdata = null } },
+        ) catch |err| {
+            try testing.expectEqual(error.OutOfMemory, err);
+            try testing.expect(failing.has_induced_failure);
+            failures += 1;
+            try testing.expect(!released);
+            try runtime.useRuntime();
+            continue;
+        };
+        const accepted = result orelse return error.UnexpectedRefusal;
+        var accepted_live = true;
+        defer if (accepted_live) accepted.free();
+        try testing.expect(!failing.has_induced_failure);
+        accepted_live = false;
+        accepted.free();
+        try testing.expect(released);
+        completed = true;
+        break;
+    }
+    try testing.expect(failures != 0);
+    try testing.expect(completed);
+}
+
+test "successful subclass runtime transfer survives close until the final weak handle" {
+    const gpa = testing.allocator;
+    var released = false;
+    const runtime = try CallerRuntime.create(gpa, &released);
+    defer if (!released) CallerRuntime.release(runtime);
+    var abi = util.AutomationTestAbi.init(gpa);
+    const automation = abi.api();
+    const accepted = (try WindowsSubclassingAdapter.create(
+        gpa,
+        runtime.options(&automation),
+        acceptingWindowApi(),
+        .{ .c = .{ .callback = &ignoreActivation, .userdata = null } },
+    )) orelse return error.UnexpectedRefusal;
+    var weak = accepted.adapter.context.weak();
+    var weak_live = true;
+    defer if (weak_live) weak.deinit();
+    accepted.free();
+    try testing.expect(!released);
+    try runtime.useRuntime();
+    weak_live = false;
+    weak.deinit();
+    try testing.expect(released);
+}
+
+test "a missing previous procedure updates actual native window text" {
+    if (comptime @import("builtin").os.tag != .windows) return error.SkipZigTest;
+    const bindings = @import("bindings.zig");
+    const user32 = bindings.win32.user32;
+    const kernel32 = bindings.win32.kernel32;
+    const wm = bindings.wm;
+    const class_name: [:0]const u16 = std.unicode.utf8ToUtf16LeStringLiteral("STATIC");
+    const wanted: [:0]const u16 = std.unicode.utf8ToUtf16LeStringLiteral("AccessKit default procedure");
+    const instance = kernel32.GetModuleHandleW(null) orelse return error.GetModuleHandleFailed;
+    const native_hwnd = user32.CreateWindowExW(
+        .{},
+        class_name.ptr,
+        null,
+        wm.WS_OVERLAPPED,
+        wm.CW_USEDEFAULT,
+        wm.CW_USEDEFAULT,
+        1,
+        1,
+        null,
+        null,
+        instance,
+        null,
+    ) orelse return error.CreateWindowFailed;
+    defer {
+        if (user32.DestroyWindow(native_hwnd) == 0) {
+            @panic("Native window text test could not destroy its window");
+        }
+    }
+    const answer = WindowsSubclassingAdapter.windowProc(
+        @ptrCast(native_hwnd),
+        wm.WM_SETTEXT,
+        0,
+        @bitCast(@intFromPtr(wanted.ptr)),
+    );
+    try testing.expectEqual(@as(LResult, 1), answer);
+    var observed = std.mem.zeroes([64:0]u16);
+    const copied = user32.GetWindowTextW(native_hwnd, &observed, @intCast(observed.len));
+    try testing.expectEqual(@as(i32, @intCast(wanted.len)), copied);
+    try testing.expectEqualSlices(u16, wanted, observed[0..@intCast(copied)]);
 }

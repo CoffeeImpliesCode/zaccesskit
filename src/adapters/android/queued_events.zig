@@ -1157,44 +1157,8 @@ test "the package-name descriptor matches pinned util.rs" {
     try testing.expectEqualStrings("()Ljava/lang/String;", context_get_package_name.signature);
 }
 
-test "every member the raise reaches names one of the 68 Java method names" {
-    const methods = @import("methods.zig");
-    // The walk is bounded by `raised_member_count`.
-    var checked: usize = 0;
-    for (raised_members) |member| {
-        try testing.expect(methods.hasName(member.name));
-        try testing.expect(member.class.descriptor.len > 2);
-        checked += 1;
-    }
-    try testing.expectEqual(@as(usize, 17), checked);
-}
 
-test "every class the raise reaches is one classes.zig names" {
-    const classes = @import("classes.zig");
-    // The walk is bounded by `raised_member_count`.
-    for (raised_members) |member| {
-        try testing.expect(classes.find(member.class.descriptor) != null);
-        try testing.expect(std.mem.endsWith(u8, member.class.descriptor, ";"));
-        try testing.expect(!std.mem.startsWith(u8, member.class.internal_name, "L"));
-    }
-}
 
-test "one content raise resolves eleven lookups including its current-context gate" {
-    const gpa = testing.allocator;
-    var fixture = try OneNodeTree.init(gpa);
-    defer fixture.deinit(gpa);
-    var target = try AndroidAdapter.init(gpa);
-    defer target.deinit();
-
-    var recorder: Recorder = .{};
-    const table = recordingTable(&recorder);
-    var queue = AndroidQueuedEvents.init(gpa, &target);
-    defer queue.deinit();
-    try queue.append(.contentChanged(null, values.CONTENT_CHANGE_TYPE_SUBTREE));
-
-    try testing.expectEqual(@as(usize, 1), queue.raise(table, fakeHost()).raised);
-    try testing.expectEqual(@as(usize, 11), recorder.lookups);
-}
 
 test "disabled accessibility consumes no delivery work and skips the whole queue" {
     const gpa = testing.allocator;

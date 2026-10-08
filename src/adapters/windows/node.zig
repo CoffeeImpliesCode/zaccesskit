@@ -177,11 +177,11 @@ pub const NodeWrapper = struct {
         if (properties.columnIndexText(self.node)) |v|
             try util.AriaProperties.writeProperty(gpa, &result, .{ .name = "colindextext", .value = v });
         if (properties.ariaCurrent(self.node)) |v| {
-            const value: ?[]const u8 = switch (v) {
+            const raw_value: ?[]const u8 = switch (v) {
                 .false_ => null, .true_ => "true", .page => "page", .step => "step",
                 .location => "location", .date => "date", .time => "time",
             };
-            if (value) |text| try util.AriaProperties.writeProperty(gpa, &result, .{ .name = "current", .value = text });
+            if (raw_value) |text| try util.AriaProperties.writeProperty(gpa, &result, .{ .name = "current", .value = text });
         }
         if (properties.hasPopup(self.node)) |v| {
             try util.AriaProperties.writeProperty(gpa, &result, .{ .name = "haspopup", .value = @tagName(v) });
@@ -279,12 +279,12 @@ pub const NodeWrapper = struct {
         };
     }
     pub fn positionInSet(self: NodeWrapper) ?i32 {
-        const value = predicates.positionInSet(self.node) orelse return null;
-        return oneBased(value);
+        const source_value = predicates.positionInSet(self.node) orelse return null;
+        return oneBased(source_value);
     }
     pub fn sizeOfSet(self: NodeWrapper) ProviderError!?i32 {
-        const value = try predicates.sizeOfSetFromContainer(self.node, filters.filter_fn) orelse return null;
-        return std.math.cast(i32, value);
+        const owned_value = try predicates.sizeOfSetFromContainer(self.node, filters.filter_fn) orelse return null;
+        return std.math.cast(i32, owned_value);
     }
     pub fn level(self: NodeWrapper) ?i32 {
         return oneBased(properties.level(self.node) orelse return null);
@@ -335,7 +335,7 @@ const DecodedValue = struct {
     owned: ?std.ArrayList(u8) = null,
 
     fn deinit(self: *DecodedValue, gpa: std.mem.Allocator) void {
-        if (self.owned) |*buffer| buffer.deinit(gpa);
+        if (self.owned) |*buffer_slot| buffer_slot.deinit(gpa);
         self.* = .{ .value = .empty };
     }
     fn borrowed(value: ?[]const u8) DecodedValue {
@@ -714,7 +714,7 @@ const Simple = struct {
         if (hierarchy.isRoot(node)) {
             if (id == .NamePropertyId) {
                 const hwnd = nativeHwnd(&lease) catch |err| return status(err);
-                lease.guard.suspend();
+                lease.guard.releaseTreeGuard();
                 const title = util.windowTitle(gpa, api, hwnd) catch |err| return status(err);
                 if (title) |text| {
                     var value = util.VariantOwner.fromOwnedBstr(api, text);
@@ -770,7 +770,7 @@ const Simple = struct {
         const hwnd = nativeHwnd(&lease) catch |err| return status(err);
         const api = lease.automation();
         // UIA may reenter this provider. Keep the owner pin, but no tree borrow.
-        lease.guard.suspend();
+        lease.guard.releaseTreeGuard();
         return api.host_provider_from_hwnd(api.context, hwnd, result);
     }
 };
@@ -1055,8 +1055,8 @@ const SelectionItem = struct {
         defer lease.deinit();
         const node = object.state.resolve(&lease) catch |err| return status(err);
         const found = containers.selectionContainer(node, filters.filter_fn) catch |err| return status(err);
-        const container = found orelse return errors.fail();
-        result.* = lease.provider(container.id()) catch |err| return status(err);
+        const selection_container = found orelse return errors.fail();
+        result.* = lease.provider(selection_container.id()) catch |err| return status(err);
         return errors.ok();
     }
 };

@@ -241,7 +241,7 @@ pub fn androidQueuedEventsRaise(
 pub fn androidAdapterNew() ?*AndroidAdapter {
     const gpa = allocation.allocator();
     return AndroidAdapter.create(gpa) catch |err| {
-        noteAllocationFailure(err);
+        allocation.failWithError(err);
         return null;
     };
 }
@@ -280,7 +280,7 @@ pub fn androidAdapterUpdateIfActive(
 ) ?*AndroidQueuedEvents {
     const produced = adapter.updateIfActive(update_factory, update_factory_userdata) catch |err| {
         adapter.last_error = err;
-        noteAllocationFailure(err);
+        allocation.failWithError(err);
         return null;
     };
     const events = produced orelse return null;
@@ -315,7 +315,7 @@ pub fn androidAdapterCreateAccessibilityNodeInfo(
         virtual_view_id,
     ) catch |err| {
         adapter.last_error = err;
-        noteAllocationFailure(err);
+        allocation.failWithError(err);
         return null;
     };
     return answer orelse null;
@@ -348,7 +348,7 @@ pub fn androidAdapterFindFocus(
         host,
     ) catch |err| {
         adapter.last_error = err;
-        noteAllocationFailure(err);
+        allocation.failWithError(err);
         return null;
     };
     return answer orelse null;
@@ -381,7 +381,7 @@ pub fn androidAdapterPerformAction(
         action.decoded().*,
     ) catch |err| {
         adapter.last_error = err;
-        noteAllocationFailure(err);
+        allocation.failWithError(err);
         return null;
     };
     const events = produced orelse return null;
@@ -411,7 +411,7 @@ pub fn androidAdapterOnHoverEvent(
         y,
     ) catch |err| {
         adapter.last_error = err;
-        noteAllocationFailure(err);
+        allocation.failWithError(err);
         return null;
     };
     const events = produced orelse return null;
@@ -449,7 +449,7 @@ pub fn androidInjectingAdapterNew(
         action_handler,
         action_handler_userdata,
     ) catch |err| {
-        noteAllocationFailure(err);
+        allocation.failWithError(err);
         return null;
     };
 }
@@ -498,22 +498,11 @@ fn boxEvents(events: AndroidQueuedEvents) ?*AndroidQueuedEvents {
         events.adapter.last_error = err;
         var owned = events;
         owned.deinit();
-        allocation.failWith(.out_of_memory);
+        allocation.failWithError(err);
         return null;
     };
     block.* = events;
     return block;
-}
-
-/// Records `ACCESSKIT_ERROR_OUT_OF_MEMORY` when the failure really was one.
-///
-/// `include/zaccesskit.h:5766-5767` promises `null` only for a failed
-/// allocation, so every other failure leaves the slot clear. A JNI lookup that
-/// fails and a tree the consumer half rejected are both ordinary answers to this
-/// surface, and reporting them as a failed allocation would tell a C consumer to
-/// retry something that cannot succeed.
-fn noteAllocationFailure(err: anyerror) void {
-    if (err == error.OutOfMemory) allocation.failWith(.out_of_memory);
 }
 
 /// How many declarations this file owns, which is the figure
@@ -875,9 +864,10 @@ test "a factory that answers null is a contract violation, not an inactive tree"
     try testing.expectEqual(adapter_module.Error.NullTreeUpdate, active.adapter.last_error.?);
     // The header promises `null` for an inactive adapter, and this is not one.
     try testing.expect(active.adapter.isActive());
-    // A contract violation is not an allocation failure, so the slot stays clear
-    // and a C consumer is not told to retry something that cannot succeed.
-    try testing.expectEqual(allocation.Tag.none, allocation.lastError());
+    // The C category distinguishes rejection from allocation failure, while the
+    // diagnostic name preserves the exact factory contract violation.
+    try testing.expectEqual(allocation.Tag.operation_failed, allocation.lastError());
+    try testing.expectEqualStrings("NullTreeUpdate", std.mem.span(allocation.lastErrorName().?));
 }
 
 test "an update that raises nothing still answers a releasable handle" {
@@ -1151,7 +1141,9 @@ const RaiseConsumerFixture = struct {
     }
 
     fn findClass(env: JniEnv, _: [*c]const u8) callconv(.c) JObject {
-        if (of(env).failure == error.JavaMemberMissing) return null;
+        if (of(env).failure) |cause| {
+            if (cause == error.JavaMemberMissing) return null;
+        }
         return @ptrFromInt(0x7000);
     }
 
@@ -1207,12 +1199,15 @@ const RaiseConsumerFixture = struct {
         _: [*c]const u16,
         _: jni_table_module.JSize,
     ) callconv(.c) JObject {
-        if (of(env).failure == error.OutOfMemory) return null;
+        if (of(env).failure) |cause| {
+            if (cause == error.OutOfMemory) return null;
+        }
         return @ptrFromInt(0x7002);
     }
 
     fn exception(env: JniEnv) callconv(.c) jni_table_module.JBoolean {
-        return @intFromBool(of(env).failure == error.JavaException);
+        if (of(env).failure) |cause| return @intFromBool(cause == error.JavaException);
+        return 0;
     }
 
     fn alloc(size: usize, context: ?*anyopaque) callconv(.c) ?*anyopaque {

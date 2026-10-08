@@ -62,12 +62,10 @@ const node_id_map = @import("node_id_map.zig");
 const platform_action = @import("platform_action.zig");
 const queued_events = @import("queued_events.zig");
 const schema = @import("../../schema/root.zig");
-const update_schema = @import("../../schema/update.zig");
 const values = @import("values.zig");
 
 const ActionHandler = boundary.ActionHandler;
 const ActivationHandler = boundary.ActivationHandler;
-const CActionRequest = boundary.CActionRequest;
 const CTreeUpdate = boundary.CTreeUpdate;
 const TreeUpdateFactory = boundary.TreeUpdateFactory;
 
@@ -101,7 +99,7 @@ const Position = text_position.Position;
 /// `FillError` carries JNI, query, narrowing and id-map failures. `SlotError`
 /// preserves the exact change-slot cause after a consumed update commits.
 pub const Error = consumer.tree.UpdateError || node_mod.FillError || SlotError ||
-    update_schema.ActionDataToCError || error{
+    schema.ActionDataToCError || error{
     /// The tree-update factory answered `null`. Upstream unwraps the same
     /// value at `AK/android/src/adapter.rs:554`, so a `null` here is a
     /// contract violation and **not** "no tree". `ActivationHandler`
@@ -632,28 +630,17 @@ pub const AndroidAdapter = struct {
     /// releases it twice has a double free. Nothing after this call releases the
     /// request.
     ///
-    /// The block comes from `allocation.create` and the payload from
-    /// `schema.actionDataToC`, both through `self.gpa`, which is the C ABI's
-    /// declared allocator — the same one `accesskit_action_request_free` uses.
+    /// The borrowed input remains owned by its caller. The boundary creates an
+    /// independent request and payload through `allocation.allocator()`, matching
+    /// `accesskit_action_request_free`. Failure calls no handler and leaks nothing.
     fn dispatch(
         self: *AndroidAdapter,
         request: schema.ActionRequest,
         action_handler: ActionHandler,
         action_handler_userdata: ?*anyopaque,
     ) Error!void {
-        var payload: ?schema.CActionData = null;
-        if (request.data) |data| payload = try schema.actionDataToC(self.gpa, data);
-
-        const built = try allocation.create(CActionRequest);
-        built.* = .{
-            .action = request.action,
-            .target_tree = request.target_tree,
-            .target_node = request.target_node,
-            .data = .{
-                .has_value = payload != null,
-                .value = payload orelse std.mem.zeroes(schema.CActionData),
-            },
-        };
+        _ = self;
+        const built = try boundary.createActionRequest(allocation.allocator(), request);
         action_request.callActionHandler(action_handler, built, action_handler_userdata);
     }
 };
@@ -883,14 +870,97 @@ comptime {
 }
 // --- Tests --------------------------------------------------------------------
 
+const CallbackRequestFixture = struct {
+    store: [512]u8 align(8) = undefined,
+    used: usize = 0,
+    starts: [4]?*anyopaque = @splat(null),
+    allocs: usize = 0,
+    frees: usize = 0,
+    calls: usize = 0,
+    source: []u8,
+    independent: bool = false,
+
+    fn alloc(size: usize, context: ?*anyopaque) callconv(.c) ?*anyopaque {
+        const self: *CallbackRequestFixture = @ptrCast(@alignCast(context.?));
+        if (self.allocs == self.starts.len) return null;
+        const start = std.mem.alignForward(usize, self.used, 8);
+        if (size > self.store.len -| start) return null;
+        const ptr: *anyopaque = self.store[start..][0..size].ptr;
+        self.used = start + size;
+        self.starts[self.allocs] = ptr;
+        self.allocs += 1;
+        return ptr;
+    }
+
+    fn free(ptr: ?*anyopaque, context: ?*anyopaque) callconv(.c) void {
+        const self: *CallbackRequestFixture = @ptrCast(@alignCast(context.?));
+        for (&self.starts) |*start| {
+            if (start.* == ptr and ptr != null) {
+                start.* = null;
+                self.frees += 1;
+                return;
+            }
+        }
+    }
+
+    fn call(request: *boundary.CActionRequest, context: ?*anyopaque) callconv(.c) void {
+        const self: *CallbackRequestFixture = @ptrCast(@alignCast(context.?));
+        self.calls += 1;
+        const text = request.data.value.payload.value.?;
+        self.source[0] = 'X';
+        self.independent = @intFromPtr(text) != @intFromPtr(self.source.ptr) and
+            std.mem.eql(u8, std.mem.span(text), "value") and
+            request.action == .set_value and request.target_node.value == 73;
+        schema.cActionRequestDeinit(allocation.allocator(), request);
+        allocation.allocator().destroy(request);
+    }
+};
+
+test "Android producer callback owns an independent value in the configured C domain" {
+    // Drive the actual producer; the pair observes raw-pointer teardown without
+    // freeing invalid pointers, so the old header recipe fails an assertion.
+    var adapter = try AndroidAdapter.init(allocation.allocator());
+    defer adapter.deinit();
+    var source: [5]u8 = "value".*;
+    var fixture: CallbackRequestFixture = .{ .source = &source };
+    allocation.installAllocator(CallbackRequestFixture.alloc, CallbackRequestFixture.free, &fixture);
+    defer allocation.installAllocator(null, null, null);
+    try adapter.dispatch(.{
+        .action = .set_value,
+        .target_tree = schema.tree_id_root,
+        .target_node = .{ .value = 73 },
+        .data = .{ .value = &source },
+    }, CallbackRequestFixture.call, &fixture);
+    try testing.expectEqual(@as(usize, 1), fixture.calls);
+    try testing.expect(fixture.independent);
+    try testing.expectEqual(fixture.allocs, fixture.frees);
+    try testing.expectEqualSlices(u8, "Xalue", &source);
+}
+
+test "Android producer InteriorNul preserves borrowed bytes and leaves no live C allocation" {
+    var adapter = try AndroidAdapter.init(allocation.allocator());
+    defer adapter.deinit();
+    var source: [5]u8 = "va\x00ue".*;
+    var fixture: CallbackRequestFixture = .{ .source = &source };
+    allocation.installAllocator(CallbackRequestFixture.alloc, CallbackRequestFixture.free, &fixture);
+    defer allocation.installAllocator(null, null, null);
+    try testing.expectError(error.InteriorNul, adapter.dispatch(.{
+        .action = .set_value,
+        .target_tree = schema.tree_id_root,
+        .target_node = .{ .value = 73 },
+        .data = .{ .value = &source },
+    }, CallbackRequestFixture.call, &fixture));
+    try testing.expectEqual(@as(usize, 0), fixture.calls);
+    try testing.expectEqual(fixture.allocs, fixture.frees);
+    try testing.expectEqualSlices(u8, "va\x00ue", &source);
+}
+
 /// What one dispatched request carried, reached through the handler's userdata.
 ///
 /// `boundary.ActionHandler` takes one `?*anyopaque`, so a recorder travels
 /// through it rather than being captured. The handler releases the request it is
 /// handed, which is the rule the type states and the only release there is.
 const ActionProbe = struct {
-    /// The allocator the request's payload came from.
-    gpa: Allocator,
     /// How many requests arrived.
     calls: usize = 0,
     /// The action of the last request.
@@ -912,10 +982,11 @@ const ActionProbe = struct {
         .focus = .{ .node_id = .{ .value = 0 }, .character_index = 0 },
     },
 
-    /// Reads one request, then releases it the way `boundary.ActionHandler`
-    /// requires: `schema.cActionRequestDeinit` for the payload and
-    /// `allocation.release` for the block `allocation.create` made.
+    /// Reads one request, then releases its payload and raw outer allocation
+    /// through the configured C allocator, including payload-free requests.
     fn take(self: *ActionProbe, request: *boundary.CActionRequest) void {
+        defer allocation.allocator().destroy(request);
+        defer schema.cActionRequestDeinit(allocation.allocator(), request);
         self.calls += 1;
         self.action = request.action;
         self.target = request.target_node;
@@ -935,8 +1006,6 @@ const ActionProbe = struct {
             },
             else => {},
         }
-        var owned = request.*;
-        schema.cActionRequestDeinit(self.gpa, &owned);
     }
 };
 
@@ -1061,7 +1130,7 @@ test "a scroll action carries the page unit the platform means" {
     const gpa = testing.allocator;
     var adapter = try activeAdapter(gpa);
     defer adapter.deinit();
-    var probe: ActionProbe = .{ .gpa = gpa };
+    var probe: ActionProbe = .{};
     const state = try activeState(&adapter);
     const node = state.root();
     _ = try adapter.idMap().getOrCreateJavaId(node);
@@ -1084,7 +1153,7 @@ test "a set-progress action becomes a numeric value on the target node" {
     const gpa = testing.allocator;
     var adapter = try activeAdapter(gpa);
     defer adapter.deinit();
-    var probe: ActionProbe = .{ .gpa = gpa };
+    var probe: ActionProbe = .{};
     const state = try activeState(&adapter);
     const node = state.root();
     _ = try adapter.idMap().getOrCreateJavaId(node);
@@ -1106,7 +1175,7 @@ test "a selection action carries the two endpoints the bundle named" {
     const gpa = testing.allocator;
     var adapter = try activeAdapter(gpa);
     defer adapter.deinit();
-    var probe: ActionProbe = .{ .gpa = gpa };
+    var probe: ActionProbe = .{};
     const state = try activeState(&adapter);
     const node = state.root();
     _ = try adapter.idMap().getOrCreateJavaId(node);
@@ -1128,7 +1197,7 @@ test "a collapse becomes a caret at the start of the document" {
     const gpa = testing.allocator;
     var adapter = try activeAdapter(gpa);
     defer adapter.deinit();
-    var probe: ActionProbe = .{ .gpa = gpa };
+    var probe: ActionProbe = .{};
     const state = try activeState(&adapter);
     const node = state.root();
     _ = try adapter.idMap().getOrCreateJavaId(node);
@@ -1162,7 +1231,7 @@ test "a traversal on a node that states no value raises nothing" {
     const gpa = testing.allocator;
     var adapter = try activeAdapter(gpa);
     defer adapter.deinit();
-    var probe: ActionProbe = .{ .gpa = gpa };
+    var probe: ActionProbe = .{};
     const state = try activeState(&adapter);
     const node = state.root();
     _ = try adapter.idMap().getOrCreateJavaId(node);
@@ -1186,7 +1255,7 @@ test "an action on a node the map never named raises nothing" {
     const gpa = testing.allocator;
     var adapter = try activeAdapter(gpa);
     defer adapter.deinit();
-    var probe: ActionProbe = .{ .gpa = gpa };
+    var probe: ActionProbe = .{};
 
     var events = try queueOrFail(try adapter.performAction(
         recordingActionHandler,
@@ -1518,13 +1587,16 @@ test "queue allocation failure retains OutOfMemory after committed scroll update
     const gpa = failing.allocator();
     var adapter = try scrollingAdapter(testing.allocator, .{ .x = 1 }, false);
     defer adapter.deinit();
-    var factory = try ScrollFactory.init(gpa, .{ .x = 5 }, false);
+    var factory = try ScrollFactory.init(testing.allocator, .{ .x = 5 }, false);
     defer factory.deinit();
     adapter.gpa = gpa;
-    failing.fail_index = failing.alloc_index;
+    // Unknown allocator domains require one node-array migration before the slots.
+    // The tree keeps testing.allocator; fail the next allocation, the root event queue.
+    failing.fail_index = failing.alloc_index + 1;
     try testing.expectError(error.OutOfMemory, adapter.updateIfActive(ScrollFactory.take, &factory));
     try testing.expectEqual(@as(?f64, 5), properties.scrollX((try activeState(&adapter)).root()));
     try testing.expectEqual(@as(usize, 1), factory.calls);
+    try testing.expect(factory.handle == null);
 }
 
 test "the first slot failure stops later queue allocation and keeps its exact tag" {
