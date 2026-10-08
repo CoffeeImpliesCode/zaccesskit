@@ -17,11 +17,9 @@ figure is a size somebody expects. Where a fact comes from a document that
 measured it, the label says so. Where this plan is guessing, the label says that
 too. A reader must not treat an entry gate here as a result.
 
-**What changed under this plan.** The plan was written against an empty tree on
-2026-10-05, and section 1.1 corrects the sentences that describe that tree. The
-milestone tables are not corrected, because a milestone states what a slice must
-produce and what gate it must pass, and a milestone that has been reached is still
-described by its target.
+**What changed under this plan.** The original milestones remain acceptance targets, not completion claims.
+Section 1.1 preserves a historical source census. It is not the current import graph.
+Section 1.3 records steps 1–4 against the reconciled ledger and actual receipts.
 
 ## 1. What this plan is and is not
 
@@ -42,7 +40,7 @@ code, no test, no C header and no adapter. Every line of Zig the port will
 contain does not exist yet." Every one of those sentences is now false, and
 section 1.1 carries the measurement that says so.
 
-### 1.1 The tree as it stands, measured 2026-10-05T20:02+02:00
+### 1.1 Historical tree census, measured 2026-10-05T20:02+02:00
 
 A comment-aware walk of the `@import` graph from `src/root.zig`, skipping `std`,
 `builtin`, `zio` and `build_options`. Line counts come from `wc -l`. The test
@@ -76,8 +74,10 @@ and `src/adapters/windows/root.zig:19-31` records the measurement.
 `:106`, `:115` and `:122`, which is why a green `zig build test` reaches all 24
 schema modules.
 
-This census counts files and declarations. It runs no compiler.
-`docs/50-verification.md` owns the run evidence, and this plan cites none of it.
+This historical census counts files and declarations. It runs no compiler.
+Its five-name root and unreachable Windows files do not describe the current published source.
+`docs/30-port-design.md` sections 1.3 and 12 record the current contracts.
+`docs/50-verification.md` owns the run evidence.
 
 A milestone here is a named set of upstream files translated, with an entry gate
 that can fail. It is not a sprint and it is not a date. The unit is the upstream
@@ -111,7 +111,7 @@ This table does not repeat the house gate command list.
 | `zig build integration` | Run the pure application-model command-to-Tree update tests in Debug and ReleaseSafe |
 | `zig build integration-run -Doptimize=ReleaseSafe` | Run the exact eight-node offline application scenario |
 | `zig build reference` | Load the pinned, hand-recorded JSON fixtures in Debug and ReleaseSafe |
-| `zig build reference-run -Doptimize=ReleaseSafe` | Check fixture length, SHA-256, provenance, and exact output for all twelve cases |
+| `zig build reference-run -Doptimize=ReleaseSafe` | Check fixture length, SHA-256, provenance, and exact output for all fifteen cases |
 | `zig build bench-test` | Run the benchmark harness tests in Debug and ReleaseSafe |
 | `zig build bench-build -Doptimize=ReleaseSafe` | Compile `consumer-bench` without a run. The build reports its cache artifact |
 | `zig build bench -Doptimize=ReleaseSafe -- --workload snapshot --shape balanced --nodes 65536 --work-units 8` | Run the deterministic snapshot workload without internal timing |
@@ -129,16 +129,116 @@ The C artifact explicitly selects LLVM on Zig 0.16.0.
 The native Zig module keeps its existing backend selection.
 This requirement does not lift the accepted PowerPC64 C boundary limit.
 Neither fixture checks nor offline scenarios execute Rust or a native platform accessibility bus.
-Reference checks cover twelve finite, hand-recorded source-derived cases, not an executed Rust oracle or wire-parity proof.
+Reference checks cover fifteen finite, hand-recorded source-derived cases, not an executed Rust oracle or wire-parity proof.
 The separate external-package probe exercised both dependency routes in Debug and ReleaseSafe.
 Static and dynamic linkage each passed nine steps in both modes, for four executed configurations.
 `docs/50-verification.md` section 10.5 records the outputs and no-bus limits.
 Nogui remains source-only and was not executed.
-The corrected-source gate exited 1 with disclosed checker failures and the unsupported PowerPC64 linked-C boundary.
+The earlier corrected-source gate exited 1 with disclosed checker failures and the unsupported PowerPC64 linked-C boundary.
 Section 10.7 records its actual stage results and strict cross summary.
 [Issue #5](https://github.com/CoffeeImpliesCode/zaccesskit/issues/5) is OPEN and tracks the future Zig 0.17 ABI check.
 It does not establish a Zig 0.17 fix.
 
+### 1.3 Steps 1–4: implemented source versus acceptance
+
+This record separates source completion from portable checks and real platform proof.
+`docs/52-translation-ledger.md` owns the measured item counts.
+`docs/30-port-design.md` section 12 owns the public contracts.
+`docs/50-verification.md` section 11 owns actual receipts.
+
+| Step | Implemented source | Acceptance still requires |
+|---|---|---|
+| 1. Public API breadth | Public `adapters` namespace and shared `Runtime` type. Windows node and text providers, Mac selectors and text, twelve AT-SPI interfaces, mobile exact-error paths, and Android scrolled axes | Reconcile each existing upstream row. Preserve exact error and payload semantics. Native SDK execution remains separate |
+| 2. Verification depth | Atomic core rejection, graft, and retry tests. C alignment and callback ownership tests. Fifteen recorded geometry/text cases. Portable native-contract and runtime-authority cases | Parent gate and focused receipts for the integrated source. Actual native-client skips cannot count as PASS |
+| 3. Consumer migration | Public neutral usage contract for explicit capabilities, borrowed current-full publication, outcome handling, and close barriers | Nogui remains source-only. No private source publication or execution result |
+| 4. Attribution | Source-attributed sparse and dense synthetic profiles | No optimization follows from the attribution. No speedup or native accessibility latency claim |
+
+Step 4 has six actual successful canonical CLI captures, not only proposed commands:
+`/tmp/cache/zaccesskit/evidence/sparse-attribution-canonical65536-20261008/execution-receipts.json`.
+`attribution-summary.json` records matching plain/count/LBR digests and zero live allocations for both workloads.
+Sparse update-pipeline attribution is 1.23% of sampled-cycle period, based on only 19 samples.
+The decision is **NO_OPTIMIZATION**; the host glibc 2.40 capture has no coherent historical glibc 2.42 speedup baseline.
+`docs/50-verification.md` section 11.4 records the exact binary hash, counters, stage attribution, and measurement limits.
+
+The GH issue bodies are historical inventories, not current ledger counts.
+The parent read [#1](https://github.com/CoffeeImpliesCode/zaccesskit/issues/1),
+[#2](https://github.com/CoffeeImpliesCode/zaccesskit/issues/2),
+[#3](https://github.com/CoffeeImpliesCode/zaccesskit/issues/3), and
+[#4](https://github.com/CoffeeImpliesCode/zaccesskit/issues/4).
+All four were OPEN in `local://zaccesskit-current-issues-1-4.json`.
+Their bodies quote 17 Windows, 43 AT-SPI common-node, 38 Unix, and two Android open rows.
+Those counts do not describe the reconciled ledger.
+A mapped implementation does not close a GitHub issue or prove native execution.
+
+The measured original ledger inventory is 1,356 rows:
+433 ported, 740 adapted, 183 not applicable, and zero open.
+The 118 supplemental mapping rows do not change that denominator; 31 describe distinct public port additions.
+
+| Issue scope | Measured rows | Ported | Adapted | Not applicable | Open |
+|---|---:|---:|---:|---:|---:|
+| #1 Windows | 77 | 6 | 56 | 15 | 0 |
+| #2 AT-SPI common node | 120 | 20 | 100 | 0 | 0 |
+| #3 Unix | 86 | 0 | 77 | 9 | 0 |
+| #4 named Android items | 2 | 0 | 2 | 0 | 0 |
+
+The final named Android ledger criterion has portable acceptance.
+The receipts are `execute-1-4-green/android-complete-namespace-debug.json` and `execute-1-4-green/android-complete-namespace-releasesafe.json`.
+Each reports 209/209 passing tests.
+These tests cover the portable JNI seam, not Android VM, SDK client, device, or emulator execution.
+A zero-open ledger count records measured source-row dispositions, not every unverified SDK or device behavior.
+These measured scope totals differ from the historical issue-body open counts.
+They do not establish that every operation in an adapted item matches upstream.
+
+After the correction, provider registration was observed. The query receipt records 108 logical read-only rows and 216 independent GDBus/busctl calls, all matched.
+Other receipts cover 54 matched action/error replies and 32 matched full ACTION JSON callback cases. They also cover 101 lifecycle checks, 106 status-epoch checks, and eight positioned FIFO RPCs with observed signals.
+The positioned-boundary receipt matched 114/114 cases and three fresh-provider closes. Main-provider close exited 0 with zero late callbacks and an empty registry.
+Native OOM baseline/retry, geometry-boundary, reorder-repair, callback, event, and close cases were observed. The edit-head OOM path was not exercised through the CLI.
+The pinned source oracle confirms that removal after unregister returns UnknownObject.
+The controlled Linux provider matrix is complete through the CLI. It does not prove GUI or screen-reader behavior, native Windows/macOS SDK execution, or iOS/Android device execution. The Windows and macOS native SDK workflows are configured, but their hosted runs are pending. The workflow has no Android or iOS native-client lane. The d854 root/test receipts are snapshots; Main later reported a PPC64/AArch64 gate attempt failed at `src/adapters/root.zig` when `refAllDecls(windows)` reached unsupported `winapi`, while both foreign Debug C-consumer rows passed. The root `refAllDecls` guards remain required declaration-reachability checks, not behavior proof; they do not analyze the Windows COM graph on foreign targets. Main narrowed COM analysis to `cpu.arch == .x86_64`, but the supported x86_64 analyzer remains required. The latest pre-guard gate failed; exact stage results appear in the proof summary below. No post-fix source pin or gate result is available; the rerun remains pending.
+An earlier Debug run of the canonical 2051-test graph reported 1996 passes, 43 skips, and 12 failures.
+The ReleaseSafe run reported 1994 passes, 43 skips, and 14 failures.
+`execute-1-4-green/canonical-full-graph-failure-inventory.json` lists those 26 failure contexts.
+The source-corrected graph at `3b4e07e5d05a960d57095405c339e7787436014a` exited 0 in both modes. Each receipt reports 2,008 passed, 43 skipped, and 0 failed.
+The receipts are `execute-1-4-green/canonical-graph-source-corrected-debug.json` and `execute-1-4-green/canonical-graph-source-corrected-releasesafe.json`.
+
+At historical source snapshot `9741daec59b72c4c0d25843bb3e5c9af2d3abd4a`, `zig build test --summary all` exited 0 with 31/31 build steps.
+Each Debug and ReleaseSafe root run reported 2,021 passes, 43 skips, and 0 failures out of 2,064 tests. These are historical results, not current-source results.
+
+Historical BG250 readout (`artifact://2827`) for tested source snapshot `320cb011918e099317136c226d43a2abf3d665d0` reported 31/31 build steps.
+Each Debug and ReleaseSafe root run reported 2,028 passes, 43 SDK-skipped, and 0 failures out of 2,071 tests; each found two fuzz tests.
+Dedicated fuzz shards passed 440/440 in both modes and found three fuzz tests.
+Benchmarks passed 9/9 in both modes. Native-contract tests passed 18 and skipped one in each mode.
+Integration passed 918/918 in both modes and found one fuzz test per mode. Reference passed 785/785 in both modes.
+The native Debug C consumer at that snapshot passed 34,594 checks with no failures and reported 2,093 allocations, 2,093 frees, and zero active allocations.
+These historical shards overlap and must not be summed.
+
+Main's completed `zig build test --summary all` result at tested source snapshot `d854c8b0d77385cf8c0c5983832369923fdef2d5` exited 0 with 31/31 steps (`artifact://2946`).
+Each Debug and ReleaseSafe root run had 2,070 tests: 2,027 passed, 43 SDK skips, and 0 failures. Each root run found two fuzz tests.
+Integration passed 918/918 in both modes and found one fuzz test per mode. Reference passed 785/785 in both modes.
+Dedicated fuzz shards passed 440/440 in both modes and found three fuzz tests. Benchmarks passed 9/9 in both modes.
+Native-contract tests passed 18 and skipped one in each mode. These snapshot shards overlap and must not be summed.
+The native Debug C consumer passed 37,240 checks with no failures and 7/7 steps.
+It recorded 2,095 allocations, 2,095 frees, zero active allocations, 1,669 strings, four custom actions, seven action lists, 55 nodes, two tree infos, and three tree updates (`artifact://2946`).
+Main's Debug QEMU `test-c` runs for PPC64 Linux MUSL and AArch64 Linux MUSL each passed 37,240 checks with no failures and 7/7 steps.
+These C-consumer results are Debug-only. No ReleaseSafe C-consumer result is recorded. The d854 test-stage result is not a full project gate.
+
+The approved bounded Linux AT-SPI smoke passed at source `c45632aa2fe6bcdf344ac7745b9a4350080309ee`.
+Its receipt is `execute-1-4-green/approved-bounded-native-bus-smoke.json`.
+It used approved private storage and an explicit approved daemon address.
+It applied 11 edits across 14 commits and sent two click callbacks.
+Both clients saw 14 cache entries before removal and 13 after, returned `UnknownObject` for removal, and observed empty registries after close.
+The smoke matched `AéΩ😀😀`, four 256-byte replacements, a 1,024-byte value, and an empty end cursor.
+Provider tasks joined, five owned processes exited 0 after pidfd termination, no unrelated process was killed, settings were restored, and there were zero late callbacks.
+Its transport binary matches tested source snapshot `320cb011918e099317136c226d43a2abf3d665d0`; no binary identity with the d854 or later guard-patch source is established.
+
+At source `c45632aa2fe6bcdf344ac7745b9a4350080309ee`, the full C consumer failed the `f32` font and color cases, a Boolean case, and twelve real enum controls with two-byte values.
+At tested source snapshot `320cb011918e099317136c226d43a2abf3d665d0`, the private 49-return candidate changes return cases for public canonical types only and leaves the public header and marshalling unchanged.
+BG249 remains red for Color, Decoration, and TreeId setter parameters, plus a Rect segmentation fault, at tested source snapshot `320cb011918e099317136c226d43a2abf3d665d0`.
+No full PPC64 C49 pass is recorded for tested source snapshot `320cb011918e099317136c226d43a2abf3d665d0`.
+The d854 root test result is not a full project-gate result. Main's latest reported pre-guard run passed `fmt`, `build`, `test`, and `ast-check`, then reported 877 `ziglint` findings; `zbc` and `zwanzig` each terminated with exit status 134 (tool failures, not finding counts). Foreign Windows COM cross-compilation failed at `src/adapters/root.zig` (`refAllDecls(windows)` reached `unsupported.winapi`). Both foreign Debug C-consumer rows passed.
+Main narrowed COM analysis to `cpu.arch == .x86_64`, while the root `refAllDecls` guards remain required reachability checks, not behavior proof. The x86_64 analyzer remains required. No post-fix source pin or gate result is available; lint cleanup and a full-gate rerun are pending. The canonical Zig 0.16 compiler-control failure remains unresolved, and Issue #5 remains OPEN.
+The Windows client cross-build exited 0, but no Windows client executed.
+No Mac SDK client receipt exists. Mac state/transport source changes do not prove native Mac execution.
 
 ---
 
@@ -148,6 +248,11 @@ Twelve milestones. Each table gives the upstream lines a milestone translates,
 the Zig modules it creates, what it needs from earlier milestones, an expected
 size, and the entry gate it must pass. Every size is advice. Every command is
 one an agent would run.
+
+The tables retain the original sizes, dependency proposals, and historical host observations.
+They are acceptance requirements, not claims that a command has run or a milestone has passed.
+Earlier five-name root and absent-registry observations are not current source or host facts.
+Section 1.3 and `docs/50-verification.md` section 11 supply the later evidence.
 
 Upstream paths in these tables are relative to the checkout at
 `466e24e252103f4d82bd6fbab98141b551e46e0c`. The module paths follow
@@ -525,10 +630,10 @@ Section 1.2 names current declared routes. `docs/50-verification.md` records run
 | M4 | build, test, cross-test, `binding-check`, C link. The shared library links on Linux. | a Windows or macOS host for the C ABI as a real consumer uses it |
 | M5 | build, test, cross-test, private bus, live a11y bus, fake peer | none |
 | M6 | build, test, cross-test, live bus. Not a real screen reader: `at-spi2-registryd` and `at-spi2d` are not installed, only `at-spi-bus-launcher` (`docs/12-accesskit-adapters.md:1460`) | a desktop session with a screen reader for the end-to-end claim |
-| M7 | cross-compile only | a Windows host, with UI Automation available |
-| M8 | cross-compile only | a macOS host |
-| M9 | cross-compile only | a Mac with the iOS SDK |
-| M10 | cross-compile only | an Android host with the NDK, and a device or emulator for the APK |
+| M7 | cross-compile only | The native SDK workflow is configured on `windows-2022` (`.github/workflows/native-sdk.yml:44-46`); its hosted Windows client run is pending |
+| M8 | cross-compile only | The native SDK workflow is configured on `macos-15` (`.github/workflows/native-sdk.yml:47-49`); its hosted Mac client run is pending |
+| M9 | cross-compile only | No iOS client or workflow lane is configured. M9 also needs a real UIKit node/event implementation and app/test target; `PlatformNode.object` is null and current node/event calls return null or post null nodes (`src/adapters/ios/root.zig:61-81,197-219,460-479,699-745`) |
+| M10 | cross-compile only | No Android client or workflow lane is configured. M10 needs an NDK `.so` path, the missing `dev.accesskit.android.Delegate`, an APK/Activity test target, and an emulator/device (`src/adapters/android/root.zig:61-66`, `src/adapters/android/classes.zig:23-32`; `.github/workflows/native-sdk.yml:33-34`) |
 | M11 | the AT-SPI path only | one host per platform for the other four |
 
 Five milestones, M0 to M5, are fully verifiable here. M6 is verifiable here
@@ -711,8 +816,8 @@ Ten items. Four of them block a milestone. Six bound a claim.
 | 3 | zio does not re-export `fromRuntime` | `zio.zig:101` re-exports only `debug_io`, and adding `src/io.zig` as a second module fails with `error: file exists in modules 'zio_io' and 'zio'`, notes at `lib`-relative `zio.zig:1:1` and `zio.zig:101:30`. The functions exist at `zio/src/io.zig:138` and `:146`. Runtime observation, `docs/26-goose-live-bus-probe.md:616-632` | Three lines in `zio.zig` re-exporting `fromRuntime`, `toRuntime` and `Mode` (`docs/26-goose-live-bus-probe.md:638-641`, `:851-852`). Failing that, a bridge module inside this project that reaches `io.zig` by path | the zio author, or this project at M5 |
 | 4 | `-femit-h` is broken on Zig 0.16.0 | `error: -femit-h is currently broken, see https://github.com/ziglang/zig/issues/9698`, with the call commented out at `lib/std/Build/Step/InstallArtifact.zig:123-124`. Runtime observation, `docs/22-zig-build-surface.md:715`, `:720-727` | Not needed. The header is checked in and installed with `Step.Compile.installHeader`. Recorded so nobody re-derives the workaround | nobody |
 | 5 | The X11 extension headers are absent | `XTest.h`, `Xfixes.h`, `XInput2.h` and `xkbcommon.h` are absent while the runtime libraries are present. `docs/27-x11-headers-resolution.md:144-146` records that the Nix sandbox store on this host supplies all four and no root was needed, so the headers are obtainable | It does not matter to this plan. Upstream ships no X11 adapter to port, so no milestone needs them. This item bounds any future X11 work only | nobody, unless an X11 path is asked for |
-| 6 | No macOS SDK, no iOS SDK, no Android NDK | `zig build-exe -target aarch64-macos -lobjc` fails, `-framework Foundation` fails, `zig build-exe -target aarch64-ios` fails with `unable to find libSystem system library` and a 0-byte output, and `zig build-exe -target aarch64-linux-android -llog -lc` fails. Exercised compilation, `docs/16-native-platform-apis.md:1780-1783` | A macOS host for M8, a Mac with the iOS SDK for M9, an Android host with the NDK for M10. `zig build-obj` works for all three here, so M8, M9 and M10 are not blocked, they are limited | whoever owns the CI or the hardware |
-| 7 | No Windows host and no Wine | `which wine` returns nothing. `docs/16-native-platform-apis.md:1788`. `zig build-exe -target x86_64-windows` does link, with `-luiautomationcore` and with `-luser32` (`docs/16-native-platform-apis.md:1776-1778`, exercised compilation) | A Windows host, or a Windows runner in CI. M7 is not blocked, it is limited to compile-only | whoever owns the CI |
+| 6 | This host lacks the macOS and iOS SDKs and Android NDK; no Android or iOS native-client lane exists | Local SDK link attempts fail (`docs/16-native-platform-apis.md:1780-1783`). At d854, `.github/workflows/native-sdk.yml:33-49` configures only Windows and macOS SDK jobs; those hosted runs are pending. Android has no shipped `dev.accesskit.android.Delegate`, APK, or NDK `.so` build path (`src/adapters/android/root.zig:61-66`, `src/adapters/android/classes.zig:23-32`). iOS has no app/test lane; `PlatformNode.object` is null, accessibility-elements returns empty, hit-test returns null, and event notifications carry a null node (`src/adapters/ios/root.zig:61-81,197-219,460-479,699-745`) | M8 needs its pending hosted Mac SDK run. M9 needs an iOS app/test target and the UIKit node/event work above. M10 needs the Android Delegate, NDK `.so` configuration, APK/Activity test, and SDK/emulator lane. Cross-compilation alone does not satisfy these gates | Windows/macOS workflow owners for pending runs; Android/iOS adapter and client owners for the missing mobile route |
+| 7 | No Windows host on this workstation and no Wine | `which wine` returns nothing. `docs/16-native-platform-apis.md:1788`. `zig build-exe -target x86_64-windows` links with `-luiautomationcore` and `-luser32` (`docs/16-native-platform-apis.md:1776-1778`, exercised compilation). `.github/workflows/native-sdk.yml:44-46` configures `windows-2022`, but its hosted native-client run is pending | M7 still needs its hosted Windows UI Automation run; cross-compilation is not a native client receipt | Windows workflow owner |
 | 8 | No assistive technology on this bus | `at-spi2-registryd` and `at-spi2d` are not installed, and only `at-spi-bus-launcher` is (`docs/12-accesskit-adapters.md:1460`). Six seconds of idle on the live bus gave zero emissions, though both `AddMatch` calls succeeded (`docs/26-goose-live-bus-probe.md:354-359`) | A desktop session with a screen reader. Until then M6 proves the bus, not the reader, and the reader claim stays open in `docs/50-verification.md` | whoever tests on a desktop |
 | 9 | Zig 0.16.0 ships no `std.com` | A listing of `lib/std` has no `com.zig` (`docs/16-native-platform-apis.md:1530-1535`). zigwin32 gives types and extern declarations, not an object factory | Nothing unblocks it. The Windows COM object base, about 120 lines, is port-owned work inside M7 | nobody |
 | 10 | Declaring the `zigwin32` pin turns two `cross-test` rows red | `std.builtin.CallingConvention.winapi` is defined by CPU architecture alone at `lib/std/builtin.zig:132-138`: `x86_64`, `x86`, `aarch64` and `thumb` have values and every other architecture reaches `else => unreachable`. `bindings.zig` carries `callconv(.winapi)` in its vtable fields, so `aarch64-linux` fails with `error: calling convention 'aarch64_aapcs_win' not supported by compiler backend 'stage2_llvm'` and `powerpc64-linux` fails with `error: reached unreachable code`. Both rows are in `cross-test.profile.sh:38-42` and `CROSS_REQUIRE_RUNNERS=1` is set. Exercised compilation against the pinned commit, `docs/42-native-adapter-build-map.md` section 2.1.5 | Adoptable, not adopted, and the blocker is not the absence of the package. Scope the tests that read a `VTable` to an architecture where `.winapi` resolves, fix the three files that do not compile, then take the pin. The `.hash` `build.zig.zon` needs comes from one `zig build` run | this project at M7 |

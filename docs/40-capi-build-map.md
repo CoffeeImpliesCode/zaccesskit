@@ -18,6 +18,10 @@ sources. Where this document contradicts `docs/31`, it says so and gives the
 measurement. Where it *used* to contradict `docs/31`, the contradiction was its
 own classifier's: section 1.2 and section 3.4 record the withdrawal, and
 `docs/31` section 2.5 and section 9.3 carry the matching correction.
+Current Zig counterpart coordinates use formatted source `d854c8b0d77385cf8c0c5983832369923fdef2d5`.
+Historical upstream, toolchain, and probe coordinates retain their original authorities. Formatting adds no execution proof.
+The build-plan and probe narratives below retain historical scope unless they name a current source reading.
+Their old claims about missing adapters or build artifacts are not current implementation status.
 
 **Scratch tree.** The layout probes ran under
 `/tmp/scratch/capi-map/`; the aggregate-passing re-measurement
@@ -28,61 +32,84 @@ modified and no build step was run.
 
 ## 1. The header census, verified
 
-`include/zaccesskit.h` is 6596 lines. The header states its own function count at
-line 1779: *"Functions. 496 of them, plus two this port adds."* The two it adds
-are `accesskit_set_allocator` at line 6487 and `accesskit_last_error` at line
-6499. **496 + 2 = 498, and a lexical scan finds exactly 498 unique function
-declarations with zero duplicates.**
+`include/zaccesskit.h` has 6612 lines at formatted source `d854c8b0d77385cf8c0c5983832369923fdef2d5`.
+The header comment at line 1786 states: *"There are 496 upstream functions and three functions added by this port."*
+The additions are `accesskit_set_allocator` at 6494, `accesskit_last_error` at 6505, and `accesskit_last_error_name` at 6515.
+**496 + 3 = 499 unique function declarations.** The exported data object is separate.
+The parent census records zero duplicate declarations. Historical compilation receipts retain their original scope.
 
 | What | Count | How it was checked |
 |---|---:|---|
-| Function declarations | **498** | Lexical scan, then a C fixture that takes the address of all 446 Linux-visible ones — compiles clean |
+| Function declarations | **499** | Parent canonical header census. Historical address-taking compilation covered 446 Linux-visible functions |
 | Duplicate declarations | **0** | Each name appears exactly once in the scan |
-| Enum declarations | **19** | See the note below |
-| Enum variants | **272** | Counted per body: 262 + 8 + 2 |
+| Enum domains | **19** | See the note below |
+| Enum tags | **273** | Counted per body: 262 + 8 + 3 |
 | Laid-out structs | **40** | `typedef struct NAME { … } NAME;` — 39 portable, 1 Windows-only |
 | Opaque structs | **18** | `typedef struct NAME NAME;` forward declarations |
 | Function-pointer typedefs | **4** | `accesskit_tree_update_factory`, `…_activation_handler_callback`, `…_action_handler_callback`, `…_deactivation_handler_callback` |
 | Exported data object | **1** | `extern const struct accesskit_tree_id ACCESSKIT_TREE_ID_ROOT;` |
 
-**The enum count is 19, and the variant count is 272.** These two come from
-different places and mixing them produces the number 18 enums with 272 variants,
-which is not a census of anything. The 19 break down as:
+At formatted source `d854c8b0d77385cf8c0c5983832369923fdef2d5`, the port header has 19 enum domains and 273 tags. The breakdown is:
 
 - **17** bare-tag enums, each with a `typedef uint8_t` alias under
   `#ifndef __cplusplus`, carrying **262** variants. `accesskit_role` alone
   carries 182.
 - **1** payload-carrying enum, `accesskit_action_data_Tag` at line 1606, with
   **8** variants and no alias.
-- **1** that this port adds: `accesskit_error` at line 1774, with **2**
-  variants (`ACCESSKIT_ERROR_NONE`, `ACCESSKIT_ERROR_OUT_OF_MEMORY`).
+- **1** port-owned error domain, `accesskit_error`, at `include/zaccesskit.h:1780-1784`.
+  It has three tags: `ACCESSKIT_ERROR_NONE = 0`,
+  `ACCESSKIT_ERROR_OUT_OF_MEMORY = 1`, and `ACCESSKIT_ERROR_OPERATION_FAILED = 2`.
+  `ACCESSKIT_ERROR_OPERATION_FAILED` is a port-only extension, not an upstream variant.
+  Its Zig mapping is `src/capi/allocation.zig:69-81`.
 
-`docs/31-c-abi-design.md` section 4.0 counts 18 enums and 270 variants. That is
-correct *for upstream*, which has no `accesskit_error`; the port header is that
-plus the port's own enum. Both numbers describe a real file, so the build map
-uses the port's: **19 declarations, 272 variants**. An implementer generating
-`enum(u8)` mirrors should emit 17; the eighteenth type on the boundary is
-`CActionData`, already written in `src/schema/update.zig:340`.
+`docs/31-c-abi-design.md` section 4.0 records the upstream header count at pin
+`8b6ed37c20ed4c59390e253407983333053662ba`: 18 enums and 270 variants. The
+upstream header has no `accesskit_error`; the current port header has 19 enum
+domains and 273 tags. An implementer generating `enum(u8)` mirrors should emit
+17; `CActionData` is the 18th upstream domain and is already written in
+`src/schema/update.zig:340`.
 
 ### 1.1 Platform gating — what a build actually has to produce
 
-The 498 are not all declared on every target. Fifty-two sit behind a preprocessor
-guard and the export surface differs per platform.
+The 499 functions are not all declared on every target. Each platform exports its guarded functions.
+The 500 exported symbols include the separate portable `ACCESSKIT_TREE_ID_ROOT` data object.
 
-| Guard in the header | Functions | Total on this target (Linux) |
+| Guard in the header | Functions | Linux functions | Linux exported symbols |
+|---|---:|---:|---:|
+| none (portable) | 441 | 441 | 442 |
+| `__linux__` / BSD family | 6 | 6 | 6 |
+| `ACCESSKIT_MACOS` | 16 | 0 | 0 |
+| `__ANDROID__` | 13 | 0 | 0 |
+| `ACCESSKIT_IOS` / `TVOS` / `VISIONOS` / `WATCHOS` | 13 | 0 | 0 |
+| `_WIN32` | 10 | 0 | 0 |
+| **Total** | **499** | **447** | **448** |
+
+The parent declared/exported symbol sets match on all five targets:
+| Target | Functions | Exported symbols, including data |
 |---|---:|---:|
-| none (portable) | 440 | 440 |
-| `__linux__` / BSD family | 6 | 6 |
-| `ACCESSKIT_MACOS` | 16 | 0 |
-| `__ANDROID__` | 13 | 0 |
-| `ACCESSKIT_IOS` / `TVOS` / `VISIONOS` / `WATCHOS` | 13 | 0 |
-| `_WIN32` | 10 | 0 |
-| **Total** | **498** | **446** |
+| Linux | 447 | 448 |
+| macOS | 457 | 458 |
+| iOS | 454 | 455 |
+| Android | 454 | 455 |
+| Windows | 451 | 452 |
+The source scanner records 442 direct export sites and 58 guarded `@export` sites, for 500 total sites.
+The scanner's `export_fn` category includes the data export, not only functions. All 58 guarded sites match their export records.
+The earlier parity receipt exited 1 with thirteen stale count disagreements.
+It found no declared/exported symbol-set difference, unreadable site, unmatched export record, or guard disagreement.
+After the parent corrected count metadata, Main observed `capi-parity` exit 0 in BG239: **7/7 build steps succeeded**.
+The actual result has no mismatch or unreadable site and zero count or guard disagreements.
+Authority: Main's actual BG239 tool message, not an invented JSON receipt. The project gate remains pending.
 
-This is the number the build has to agree with: **`zig build` for
-`x86_64-linux` must produce a shared library exporting 446 `accesskit_*`
-symbols.** A sweep that compares the library's symbol table against the header
-must gate the expectation the same way, or it will report 52 false misses.
+At current source `d854c8b0d77385cf8c0c5983832369923fdef2d5`, private PowerPC64 Linux musl lowering is shared through the fifteenth C-implementation module, `src/capi/powerpc64_abi.zig:1-31`. It is not a public Root export or an additional C API.
+`src/capi/node_properties.zig` retains the 49 optional getter carriers: 27 DenseReturn16, eight u64, fourteen u16. Eight aggregate-input export sites use private lowering; the bare TreeId getter also uses the private TreeId value carrier. The header census of 103 aggregate-return declarations is not a count of privately lowered getters.
+The canonical optional record sizes remain sixteen, eight, five, six, and two bytes. Public C names, header record types, and canonical marshal layouts do not change. The private target gate excludes GNU ELFv1 and all unverified targets.
+Main observed Debug linked C-consumer success at current source on native, QEMU powerpc64-linux-musl, and QEMU aarch64-linux-musl: each passed 37240 checks with zero failures, 2095 allocations, 2095 frees, and zero active allocations; 7/7 build steps succeeded. Authority: the parent's actual tool observations, not fabricated receipt files. No ReleaseSafe C-consumer run is inferred.
+These successful library boundaries do not fix Zig 0.16.0's independent canonical controls. Issue #5 remains open; removal of the private lowering requires passing the original canonical cases in both modes, with direct and function-pointer calls and unchanged inputs, on the future toolchain. The full project gate remains pending.
+
+Native SDK scope: the public repository workflow `.github/workflows/native-sdk.yml:33-34,40-49,249-265` at immutable source `d854c8b0d77385cf8c0c5983832369923fdef2d5` arranges Windows (`windows-2022`) and macOS (`macos-15`) clients only. The parent observed SHA-256 `10861b0dca99ae6642680df53afae68b15d0043ce4e747713edab927d340a54e` for that exact immutable workflow file; this is provenance, not a hosted SDK run. Their hosted runs are pending; neither has an observed SDK runtime result. It does not arrange Android or iOS acceptance lanes.
+Android is blocked by missing source and build inputs, not only the absence of a local VM. `src/adapters/android/root.zig:61-66` requires the unshipped Delegate Java/Dex input; `src/adapters/android/classes.zig:23-32` names `dev.accesskit.android.Delegate`. No checked-in Activity/APK, manifest/Gradle app, NDK shared-library route, or emulator-accessibility client is available in the inspected scope. Portable JNI-contract tests do not close the packaged-build, JVM, or device requirements.
+iOS has three current native-object gaps (`src/adapters/ios/root.zig:197-219`): accessibility elements returns an empty array, hit testing returns no UIKit node object, and queued node notifications carry a null node (`:460-479,699-745`). The node's Objective-C object stays null because instance initialization is missing (`:61-81,920-970`). There is also no checked-in UIKit application, Xcode/XCTest target, or simulator lane. A runner alone cannot satisfy real native-tree acceptance before these source and build prerequisites exist.
+These are explicit missing prerequisites for the required platform steps, not substitutes or completed acceptance. No Windows/Mac SDK, Android VM/device, iOS UIKit/device, GUI, or private nogui result is inferred. The feasibility investigation ran no app, SDK job, emulator, or simulator.
 
 ### 1.2 Aggregate passing — the census the classifier cares about
 
@@ -119,22 +146,22 @@ quietly restated.
 comments and string literals in `include/zaccesskit.h` (665 `/*` openers, all
 masked), recover each declaration by walking back from its name to the previous
 `;`, `{` or `}` and forward through its balanced parentheses, and split the
-parameter list on top-level commas. That yields **498 unique declarations, zero
+parameter list on top-level commas. That yields **499 unique declarations, zero
 duplicates**. Classify a parameter as a struct *by value* when its type names
 one of the 58 struct typedefs in the header and the declarator carries no `*`;
 as a struct *by pointer* when it names one and carries a `*`. A struct typedef
 is either `typedef struct NAME { … } NAME;` — 40 of them — or
 `typedef struct NAME NAME;` — 18. Cross-checked against the preprocessor:
-`cc -E -P include/zaccesskit.h` yields exactly the **446** declarations section
-1.1 says a Linux target has, and re-running the classifier over the
-preprocessed text returns the same **42 / 58 / 9** for by-value parameters and
+The earlier `cc -E -P include/zaccesskit.h` receipt yielded **446** declarations.
+That historical preprocessor run does not establish the current 447 Linux function declarations.
+The historical classifier returned the same **42 / 58 / 9** for by-value parameters and
 **405 / 409 / 9** for by-pointer ones. Scratch tree:
 `/tmp/scratch/by-value/`.
 
 Three facts the table depends on, each measured:
 
 - **No by-value parameter sits behind a guard.** The 42 / 58 / 9 is identical on
-  the full 498 and on the 446 a Linux build sees. Excluding every
+  the full 499 and on the 447 a Linux build sees. Excluding every
   `accesskit_opt_*` from the parameter set changes nothing, because no optional
   is ever passed by value in this header.
 - **One by-value return sits behind a guard.**
@@ -142,7 +169,8 @@ Three facts the table depends on, each measured:
   `accesskit_opt_lresult` and is the only `_WIN32` by-value return, so the 103
   are 102 on Linux and 103 on Windows.
 - **`accesskit_last_error` is not one of the 103.** It returns
-  `accesskit_error`, a bare-tag C enum of two variants, not a struct. Any count
+  `accesskit_error`, a bare-tag C enum with three tags, not a struct. Its tags
+  are `NONE = 0`, `OUT_OF_MEMORY = 1`, and `OPERATION_FAILED = 2`. Any count
   that folds it into a struct figure is counting something else.
 
 Nine of the 103 return `accesskit_affine` by value. The tenth appearance of the
@@ -163,8 +191,8 @@ than restated.
 
 ## 2. The export census
 
-Every one of the 498 declarations, grouped by family. This is the table an
-implementer works from: a row missing here is a function nobody writes.
+The current header has 499 function declarations. The original detailed table contains 498 rows.
+The added diagnostic getter appears in the existing runtime-channel section below.
 
 **How a row becomes Zig code.** Two mechanisms exist and both were compiled and
 linked to confirm the emitted symbol name:
@@ -217,604 +245,605 @@ value is an `extern struct` on both sides and no conversion happens at all.
 | `accesskit_unix_*` | 6 |
 | `accesskit_point_*` | 4 |
 | `accesskit_size_*` | 4 |
-| runtime channel (`string_free`, `set_allocator`, `last_error`) | 3 |
+| runtime channel (`string_free`, `set_allocator`, `last_error`, `last_error_name`) | 4 |
 | `accesskit_action_request*` | 1 |
-| **Total** | **498** |
+| **Total** | **499** |
 
 
 
-#### Runtime channel: the string release and the two port-added functions — 3 exports
+#### Runtime channel: the string release and three port-added functions — 4 exports
 
 | # | hdr | C symbol = Zig `export fn` name | Zig implementation | `marshal.zig` conversion | Zig target |
 |---:|---:|---|---|---|---|
-| 1 | 2837 | `accesskit_string_free` | `stringFree` | — (none: scalar/void/pointer only) | `src/capi/root.zig` |
-| 2 | 6487 | `accesskit_set_allocator` | `setAllocator` | scalar tag pass | none (owns the channel) |
-| 3 | 6499 | `accesskit_last_error` | `lastError` | scalar tag pass | none (owns the channel) |
+| 1 | 2844 | `accesskit_string_free` | `stringFree` | — (none: scalar/void/pointer only) | `src/capi/root.zig` |
+| 2 | 6494 | `accesskit_set_allocator` | `setAllocator` | scalar tag pass | none (owns the channel) |
+| 3 | 6505 | `accesskit_last_error` | `lastError` | scalar tag pass | none (owns the channel) |
+| 499 | 6515 | `accesskit_last_error_name` | `accesskit_last_error_name` | static nullable error name | `src/capi/root.zig` |
 
 
 #### `accesskit_node_*` — the builder half (`src/schema/node.zig`) and the getter half (`src/consumer/node_ref/`) — 358 exports
 
 | # | hdr | C symbol = Zig `export fn` name | Zig implementation | `marshal.zig` conversion | Zig target |
 |---:|---:|---|---|---|---|
-| 4 | 1799 | `accesskit_node_role` | `nodeRole` | scalar tag pass | src/consumer/node_ref/ + src/schema/node.zig |
-| 5 | 1806 | `accesskit_node_set_role` | `nodeSetRole` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 6 | 1815 | `accesskit_node_supports_action` | `nodeSupportsAction` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 7 | 1824 | `accesskit_node_add_action` | `nodeAddAction` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 8 | 1833 | `accesskit_node_remove_action` | `nodeRemoveAction` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 9 | 1841 | `accesskit_node_clear_actions` | `nodeClearActions` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 10 | 1849 | `accesskit_node_child_supports_action` | `nodeChildSupportsAction` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 11 | 1859 | `accesskit_node_add_child_action` | `nodeAddChildAction` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 12 | 1869 | `accesskit_node_remove_child_action` | `nodeRemoveChildAction` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 13 | 1878 | `accesskit_node_clear_child_actions` | `nodeClearChildActions` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 14 | 1886 | `accesskit_node_is_hidden` | `nodeIsHidden` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 15 | 1894 | `accesskit_node_set_hidden` | `nodeSetHidden` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 16 | 1901 | `accesskit_node_clear_hidden` | `nodeClearHidden` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 17 | 1909 | `accesskit_node_is_multiselectable` | `nodeIsMultiselectable` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 18 | 1917 | `accesskit_node_set_multiselectable` | `nodeSetMultiselectable` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 19 | 1925 | `accesskit_node_clear_multiselectable` | `nodeClearMultiselectable` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 20 | 1933 | `accesskit_node_is_required` | `nodeIsRequired` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 21 | 1941 | `accesskit_node_set_required` | `nodeSetRequired` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 22 | 1949 | `accesskit_node_clear_required` | `nodeClearRequired` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 23 | 1957 | `accesskit_node_is_visited` | `nodeIsVisited` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 24 | 1965 | `accesskit_node_set_visited` | `nodeSetVisited` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 25 | 1972 | `accesskit_node_clear_visited` | `nodeClearVisited` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 26 | 1980 | `accesskit_node_is_busy` | `nodeIsBusy` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 27 | 1988 | `accesskit_node_set_busy` | `nodeSetBusy` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 28 | 1995 | `accesskit_node_clear_busy` | `nodeClearBusy` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 29 | 2003 | `accesskit_node_is_live_atomic` | `nodeIsLiveAtomic` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 30 | 2011 | `accesskit_node_set_live_atomic` | `nodeSetLiveAtomic` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 31 | 2019 | `accesskit_node_clear_live_atomic` | `nodeClearLiveAtomic` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 32 | 2027 | `accesskit_node_is_modal` | `nodeIsModal` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 33 | 2035 | `accesskit_node_set_modal` | `nodeSetModal` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 34 | 2042 | `accesskit_node_clear_modal` | `nodeClearModal` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 35 | 2050 | `accesskit_node_is_touch_transparent` | `nodeIsTouchTransparent` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 36 | 2058 | `accesskit_node_set_touch_transparent` | `nodeSetTouchTransparent` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 37 | 2066 | `accesskit_node_clear_touch_transparent` | `nodeClearTouchTransparent` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 38 | 2074 | `accesskit_node_is_read_only` | `nodeIsReadOnly` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 39 | 2082 | `accesskit_node_set_read_only` | `nodeSetReadOnly` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 40 | 2090 | `accesskit_node_clear_read_only` | `nodeClearReadOnly` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 41 | 2098 | `accesskit_node_is_disabled` | `nodeIsDisabled` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 42 | 2106 | `accesskit_node_set_disabled` | `nodeSetDisabled` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 43 | 2114 | `accesskit_node_clear_disabled` | `nodeClearDisabled` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 44 | 2122 | `accesskit_node_is_italic` | `nodeIsItalic` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 45 | 2130 | `accesskit_node_set_italic` | `nodeSetItalic` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 46 | 2137 | `accesskit_node_clear_italic` | `nodeClearItalic` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 47 | 2145 | `accesskit_node_clips_children` | `nodeClipsChildren` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 48 | 2153 | `accesskit_node_set_clips_children` | `nodeSetClipsChildren` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 49 | 2161 | `accesskit_node_clear_clips_children` | `nodeClearClipsChildren` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 50 | 2170 | `accesskit_node_is_line_breaking_object` | `nodeIsLineBreakingObject` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 51 | 2178 | `accesskit_node_set_is_line_breaking_object` | `nodeSetIsLineBreakingObject` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 52 | 2187 | `accesskit_node_clear_is_line_breaking_object` | `nodeClearIsLineBreakingObject` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 53 | 2196 | `accesskit_node_is_page_breaking_object` | `nodeIsPageBreakingObject` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 54 | 2204 | `accesskit_node_set_is_page_breaking_object` | `nodeSetIsPageBreakingObject` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 55 | 2213 | `accesskit_node_clear_is_page_breaking_object` | `nodeClearIsPageBreakingObject` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 56 | 2221 | `accesskit_node_is_spelling_error` | `nodeIsSpellingError` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 57 | 2229 | `accesskit_node_set_is_spelling_error` | `nodeSetIsSpellingError` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 58 | 2237 | `accesskit_node_clear_is_spelling_error` | `nodeClearIsSpellingError` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 59 | 2245 | `accesskit_node_is_grammar_error` | `nodeIsGrammarError` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 60 | 2253 | `accesskit_node_set_is_grammar_error` | `nodeSetIsGrammarError` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 61 | 2261 | `accesskit_node_clear_is_grammar_error` | `nodeClearIsGrammarError` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 62 | 2269 | `accesskit_node_is_search_match` | `nodeIsSearchMatch` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 63 | 2277 | `accesskit_node_set_is_search_match` | `nodeSetIsSearchMatch` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 64 | 2285 | `accesskit_node_clear_is_search_match` | `nodeClearIsSearchMatch` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 65 | 2293 | `accesskit_node_is_suggestion` | `nodeIsSuggestion` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 66 | 2301 | `accesskit_node_set_is_suggestion` | `nodeSetIsSuggestion` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 67 | 2309 | `accesskit_node_clear_is_suggestion` | `nodeClearIsSuggestion` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 68 | 2320 | `accesskit_node_children` | `nodeChildren` | nodeIdsToC | src/consumer/node_ref/ + src/schema/node.zig |
-| 69 | 2331 | `accesskit_node_set_children` | `nodeSetChildren` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 70 | 2339 | `accesskit_node_push_child` | `nodePushChild` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 71 | 2348 | `accesskit_node_clear_children` | `nodeClearChildren` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 72 | 2359 | `accesskit_node_controls` | `nodeControls` | nodeIdsToC | src/consumer/node_ref/ + src/schema/node.zig |
-| 73 | 2370 | `accesskit_node_set_controls` | `nodeSetControls` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 74 | 2378 | `accesskit_node_push_controlled` | `nodePushControlled` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 75 | 2387 | `accesskit_node_clear_controls` | `nodeClearControls` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 76 | 2398 | `accesskit_node_details` | `nodeDetails` | nodeIdsToC | src/consumer/node_ref/ + src/schema/node.zig |
-| 77 | 2409 | `accesskit_node_set_details` | `nodeSetDetails` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 78 | 2417 | `accesskit_node_push_detail` | `nodePushDetail` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 79 | 2425 | `accesskit_node_clear_details` | `nodeClearDetails` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 80 | 2436 | `accesskit_node_described_by` | `nodeDescribedBy` | nodeIdsToC | src/consumer/node_ref/ + src/schema/node.zig |
-| 81 | 2447 | `accesskit_node_set_described_by` | `nodeSetDescribedBy` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 82 | 2456 | `accesskit_node_push_described_by` | `nodePushDescribedBy` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 83 | 2465 | `accesskit_node_clear_described_by` | `nodeClearDescribedBy` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 84 | 2476 | `accesskit_node_flow_to` | `nodeFlowTo` | nodeIdsToC | src/consumer/node_ref/ + src/schema/node.zig |
-| 85 | 2487 | `accesskit_node_set_flow_to` | `nodeSetFlowTo` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 86 | 2495 | `accesskit_node_push_flow_to` | `nodePushFlowTo` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 87 | 2503 | `accesskit_node_clear_flow_to` | `nodeClearFlowTo` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 88 | 2514 | `accesskit_node_labelled_by` | `nodeLabelledBy` | nodeIdsToC | src/consumer/node_ref/ + src/schema/node.zig |
-| 89 | 2525 | `accesskit_node_set_labelled_by` | `nodeSetLabelledBy` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 90 | 2534 | `accesskit_node_push_labelled_by` | `nodePushLabelledBy` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 91 | 2543 | `accesskit_node_clear_labelled_by` | `nodeClearLabelledBy` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 92 | 2554 | `accesskit_node_owns` | `nodeOwns` | nodeIdsToC | src/consumer/node_ref/ + src/schema/node.zig |
-| 93 | 2564 | `accesskit_node_set_owns` | `nodeSetOwns` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 94 | 2572 | `accesskit_node_push_owned` | `nodePushOwned` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 95 | 2580 | `accesskit_node_clear_owns` | `nodeClearOwns` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 96 | 2591 | `accesskit_node_radio_group` | `nodeRadioGroup` | nodeIdsToC | src/consumer/node_ref/ + src/schema/node.zig |
-| 97 | 2602 | `accesskit_node_set_radio_group` | `nodeSetRadioGroup` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 98 | 2611 | `accesskit_node_push_to_radio_group` | `nodePushToRadioGroup` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 99 | 2620 | `accesskit_node_clear_radio_group` | `nodeClearRadioGroup` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 100 | 2629 | `accesskit_node_active_descendant` | `nodeActiveDescendant` | opt_node_id_toC | src/consumer/node_ref/ + src/schema/node.zig |
-| 101 | 2637 | `accesskit_node_set_active_descendant` | `nodeSetActiveDescendant` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 102 | 2646 | `accesskit_node_clear_active_descendant` | `nodeClearActiveDescendant` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 103 | 2655 | `accesskit_node_error_message` | `nodeErrorMessage` | opt_node_id_toC | src/consumer/node_ref/ + src/schema/node.zig |
-| 104 | 2663 | `accesskit_node_set_error_message` | `nodeSetErrorMessage` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 105 | 2672 | `accesskit_node_clear_error_message` | `nodeClearErrorMessage` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 106 | 2681 | `accesskit_node_in_page_link_target` | `nodeInPageLinkTarget` | opt_node_id_toC | src/consumer/node_ref/ + src/schema/node.zig |
-| 107 | 2689 | `accesskit_node_set_in_page_link_target` | `nodeSetInPageLinkTarget` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 108 | 2698 | `accesskit_node_clear_in_page_link_target` | `nodeClearInPageLinkTarget` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 109 | 2707 | `accesskit_node_member_of` | `nodeMemberOf` | opt_node_id_toC | src/consumer/node_ref/ + src/schema/node.zig |
-| 110 | 2715 | `accesskit_node_set_member_of` | `nodeSetMemberOf` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 111 | 2724 | `accesskit_node_clear_member_of` | `nodeClearMemberOf` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 112 | 2733 | `accesskit_node_next_on_line` | `nodeNextOnLine` | opt_node_id_toC | src/consumer/node_ref/ + src/schema/node.zig |
-| 113 | 2741 | `accesskit_node_set_next_on_line` | `nodeSetNextOnLine` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 114 | 2750 | `accesskit_node_clear_next_on_line` | `nodeClearNextOnLine` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 115 | 2759 | `accesskit_node_previous_on_line` | `nodePreviousOnLine` | opt_node_id_toC | src/consumer/node_ref/ + src/schema/node.zig |
-| 116 | 2767 | `accesskit_node_set_previous_on_line` | `nodeSetPreviousOnLine` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 117 | 2776 | `accesskit_node_clear_previous_on_line` | `nodeClearPreviousOnLine` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 118 | 2785 | `accesskit_node_popup_for` | `nodePopupFor` | opt_node_id_toC | src/consumer/node_ref/ + src/schema/node.zig |
-| 119 | 2793 | `accesskit_node_set_popup_for` | `nodeSetPopupFor` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 120 | 2802 | `accesskit_node_clear_popup_for` | `nodeClearPopupFor` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 121 | 2811 | `accesskit_node_tree_id` | `nodeTreeId` | opt_tree_id_toC | src/consumer/node_ref/ + src/schema/node.zig |
-| 122 | 2819 | `accesskit_node_set_tree_id` | `nodeSetTreeId` | identity | src/consumer/node_ref/ + src/schema/node.zig |
-| 123 | 2827 | `accesskit_node_clear_tree_id` | `nodeClearTreeId` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 124 | 2849 | `accesskit_node_label` | `nodeLabel` | dupCString | src/consumer/node_ref/ + src/schema/node.zig |
-| 125 | 2857 | `accesskit_node_set_label` | `nodeSetLabel` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 126 | 2868 | `accesskit_node_set_label_with_length` | `nodeSetLabelWithLength` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 127 | 2876 | `accesskit_node_clear_label` | `nodeClearLabel` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 128 | 2888 | `accesskit_node_description` | `nodeDescription` | dupCString | src/consumer/node_ref/ + src/schema/node.zig |
-| 129 | 2896 | `accesskit_node_set_description` | `nodeSetDescription` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 130 | 2908 | `accesskit_node_set_description_with_length` | `nodeSetDescriptionWithLength` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 131 | 2918 | `accesskit_node_clear_description` | `nodeClearDescription` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 132 | 2930 | `accesskit_node_value` | `nodeValue` | dupCString | src/consumer/node_ref/ + src/schema/node.zig |
-| 133 | 2938 | `accesskit_node_set_value` | `nodeSetValue` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 134 | 2949 | `accesskit_node_set_value_with_length` | `nodeSetValueWithLength` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 135 | 2957 | `accesskit_node_clear_value` | `nodeClearValue` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 136 | 2969 | `accesskit_node_access_key` | `nodeAccessKey` | dupCString | src/consumer/node_ref/ + src/schema/node.zig |
-| 137 | 2977 | `accesskit_node_set_access_key` | `nodeSetAccessKey` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 138 | 2989 | `accesskit_node_set_access_key_with_length` | `nodeSetAccessKeyWithLength` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 139 | 2999 | `accesskit_node_clear_access_key` | `nodeClearAccessKey` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 140 | 3011 | `accesskit_node_author_id` | `nodeAuthorId` | dupCString | src/consumer/node_ref/ + src/schema/node.zig |
-| 141 | 3019 | `accesskit_node_set_author_id` | `nodeSetAuthorId` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 142 | 3031 | `accesskit_node_set_author_id_with_length` | `nodeSetAuthorIdWithLength` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 143 | 3041 | `accesskit_node_clear_author_id` | `nodeClearAuthorId` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 144 | 3053 | `accesskit_node_class_name` | `nodeClassName` | dupCString | src/consumer/node_ref/ + src/schema/node.zig |
-| 145 | 3061 | `accesskit_node_set_class_name` | `nodeSetClassName` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 146 | 3073 | `accesskit_node_set_class_name_with_length` | `nodeSetClassNameWithLength` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 147 | 3083 | `accesskit_node_clear_class_name` | `nodeClearClassName` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 148 | 3095 | `accesskit_node_font_family` | `nodeFontFamily` | dupCString | src/consumer/node_ref/ + src/schema/node.zig |
-| 149 | 3103 | `accesskit_node_set_font_family` | `nodeSetFontFamily` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 150 | 3115 | `accesskit_node_set_font_family_with_length` | `nodeSetFontFamilyWithLength` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 151 | 3125 | `accesskit_node_clear_font_family` | `nodeClearFontFamily` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 152 | 3137 | `accesskit_node_html_id` | `nodeHtmlId` | dupCString | src/consumer/node_ref/ + src/schema/node.zig |
-| 153 | 3145 | `accesskit_node_set_html_id` | `nodeSetHtmlId` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 154 | 3157 | `accesskit_node_set_html_id_with_length` | `nodeSetHtmlIdWithLength` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 155 | 3165 | `accesskit_node_clear_html_id` | `nodeClearHtmlId` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 156 | 3177 | `accesskit_node_html_tag` | `nodeHtmlTag` | dupCString | src/consumer/node_ref/ + src/schema/node.zig |
-| 157 | 3185 | `accesskit_node_set_html_tag` | `nodeSetHtmlTag` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 158 | 3197 | `accesskit_node_set_html_tag_with_length` | `nodeSetHtmlTagWithLength` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 159 | 3207 | `accesskit_node_clear_html_tag` | `nodeClearHtmlTag` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 160 | 3219 | `accesskit_node_inner_html` | `nodeInnerHtml` | dupCString | src/consumer/node_ref/ + src/schema/node.zig |
-| 161 | 3227 | `accesskit_node_set_inner_html` | `nodeSetInnerHtml` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 162 | 3239 | `accesskit_node_set_inner_html_with_length` | `nodeSetInnerHtmlWithLength` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 163 | 3249 | `accesskit_node_clear_inner_html` | `nodeClearInnerHtml` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 164 | 3261 | `accesskit_node_keyboard_shortcut` | `nodeKeyboardShortcut` | dupCString | src/consumer/node_ref/ + src/schema/node.zig |
-| 165 | 3270 | `accesskit_node_set_keyboard_shortcut` | `nodeSetKeyboardShortcut` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 166 | 3283 | `accesskit_node_set_keyboard_shortcut_with_length` | `nodeSetKeyboardShortcutWithLength` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 167 | 3292 | `accesskit_node_clear_keyboard_shortcut` | `nodeClearKeyboardShortcut` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 168 | 3304 | `accesskit_node_language` | `nodeLanguage` | dupCString | src/consumer/node_ref/ + src/schema/node.zig |
-| 169 | 3312 | `accesskit_node_set_language` | `nodeSetLanguage` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 170 | 3324 | `accesskit_node_set_language_with_length` | `nodeSetLanguageWithLength` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 171 | 3334 | `accesskit_node_clear_language` | `nodeClearLanguage` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 172 | 3346 | `accesskit_node_placeholder` | `nodePlaceholder` | dupCString | src/consumer/node_ref/ + src/schema/node.zig |
-| 173 | 3354 | `accesskit_node_set_placeholder` | `nodeSetPlaceholder` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 174 | 3366 | `accesskit_node_set_placeholder_with_length` | `nodeSetPlaceholderWithLength` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 175 | 3376 | `accesskit_node_clear_placeholder` | `nodeClearPlaceholder` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 176 | 3388 | `accesskit_node_role_description` | `nodeRoleDescription` | dupCString | src/consumer/node_ref/ + src/schema/node.zig |
-| 177 | 3397 | `accesskit_node_set_role_description` | `nodeSetRoleDescription` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 178 | 3410 | `accesskit_node_set_role_description_with_length` | `nodeSetRoleDescriptionWithLength` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 179 | 3419 | `accesskit_node_clear_role_description` | `nodeClearRoleDescription` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 180 | 3431 | `accesskit_node_state_description` | `nodeStateDescription` | dupCString | src/consumer/node_ref/ + src/schema/node.zig |
-| 181 | 3440 | `accesskit_node_set_state_description` | `nodeSetStateDescription` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 182 | 3453 | `accesskit_node_set_state_description_with_length` | `nodeSetStateDescriptionWithLength` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 183 | 3462 | `accesskit_node_clear_state_description` | `nodeClearStateDescription` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 184 | 3474 | `accesskit_node_tooltip` | `nodeTooltip` | dupCString | src/consumer/node_ref/ + src/schema/node.zig |
-| 185 | 3482 | `accesskit_node_set_tooltip` | `nodeSetTooltip` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 186 | 3494 | `accesskit_node_set_tooltip_with_length` | `nodeSetTooltipWithLength` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 187 | 3502 | `accesskit_node_clear_tooltip` | `nodeClearTooltip` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 188 | 3513 | `accesskit_node_url` | `nodeUrl` | dupCString | src/consumer/node_ref/ + src/schema/node.zig |
-| 189 | 3521 | `accesskit_node_set_url` | `nodeSetUrl` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 190 | 3532 | `accesskit_node_set_url_with_length` | `nodeSetUrlWithLength` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 191 | 3540 | `accesskit_node_clear_url` | `nodeClearUrl` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 192 | 3552 | `accesskit_node_row_index_text` | `nodeRowIndexText` | dupCString | src/consumer/node_ref/ + src/schema/node.zig |
-| 193 | 3560 | `accesskit_node_set_row_index_text` | `nodeSetRowIndexText` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 194 | 3573 | `accesskit_node_set_row_index_text_with_length` | `nodeSetRowIndexTextWithLength` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 195 | 3582 | `accesskit_node_clear_row_index_text` | `nodeClearRowIndexText` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 196 | 3594 | `accesskit_node_column_index_text` | `nodeColumnIndexText` | dupCString | src/consumer/node_ref/ + src/schema/node.zig |
-| 197 | 3603 | `accesskit_node_set_column_index_text` | `nodeSetColumnIndexText` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 198 | 3616 | `accesskit_node_set_column_index_text_with_length` | `nodeSetColumnIndexTextWithLength` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 199 | 3625 | `accesskit_node_clear_column_index_text` | `nodeClearColumnIndexText` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 200 | 3637 | `accesskit_node_braille_label` | `nodeBrailleLabel` | dupCString | src/consumer/node_ref/ + src/schema/node.zig |
-| 201 | 3645 | `accesskit_node_set_braille_label` | `nodeSetBrailleLabel` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 202 | 3657 | `accesskit_node_set_braille_label_with_length` | `nodeSetBrailleLabelWithLength` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 203 | 3667 | `accesskit_node_clear_braille_label` | `nodeClearBrailleLabel` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 204 | 3680 | `accesskit_node_braille_role_description` | `nodeBrailleRoleDescription` | dupCString | src/consumer/node_ref/ + src/schema/node.zig |
-| 205 | 3689 | `accesskit_node_set_braille_role_description` | `nodeSetBrailleRoleDescription` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 206 | 3702 | `accesskit_node_set_braille_role_description_with_length` | `nodeSetBrailleRoleDescriptionWithLength` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 207 | 3714 | `accesskit_node_clear_braille_role_description` | `nodeClearBrailleRoleDescription` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 208 | 3723 | `accesskit_node_scroll_x` | `nodeScrollX` | opt_double_toC | src/consumer/node_ref/ + src/schema/node.zig |
-| 209 | 3731 | `accesskit_node_set_scroll_x` | `nodeSetScrollX` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 210 | 3739 | `accesskit_node_clear_scroll_x` | `nodeClearScrollX` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 211 | 3748 | `accesskit_node_scroll_x_min` | `nodeScrollXMin` | opt_double_toC | src/consumer/node_ref/ + src/schema/node.zig |
-| 212 | 3756 | `accesskit_node_set_scroll_x_min` | `nodeSetScrollXMin` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 213 | 3765 | `accesskit_node_clear_scroll_x_min` | `nodeClearScrollXMin` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 214 | 3774 | `accesskit_node_scroll_x_max` | `nodeScrollXMax` | opt_double_toC | src/consumer/node_ref/ + src/schema/node.zig |
-| 215 | 3782 | `accesskit_node_set_scroll_x_max` | `nodeSetScrollXMax` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 216 | 3791 | `accesskit_node_clear_scroll_x_max` | `nodeClearScrollXMax` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 217 | 3800 | `accesskit_node_scroll_y` | `nodeScrollY` | opt_double_toC | src/consumer/node_ref/ + src/schema/node.zig |
-| 218 | 3808 | `accesskit_node_set_scroll_y` | `nodeSetScrollY` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 219 | 3816 | `accesskit_node_clear_scroll_y` | `nodeClearScrollY` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 220 | 3825 | `accesskit_node_scroll_y_min` | `nodeScrollYMin` | opt_double_toC | src/consumer/node_ref/ + src/schema/node.zig |
-| 221 | 3833 | `accesskit_node_set_scroll_y_min` | `nodeSetScrollYMin` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 222 | 3842 | `accesskit_node_clear_scroll_y_min` | `nodeClearScrollYMin` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 223 | 3851 | `accesskit_node_scroll_y_max` | `nodeScrollYMax` | opt_double_toC | src/consumer/node_ref/ + src/schema/node.zig |
-| 224 | 3859 | `accesskit_node_set_scroll_y_max` | `nodeSetScrollYMax` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 225 | 3868 | `accesskit_node_clear_scroll_y_max` | `nodeClearScrollYMax` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 226 | 3877 | `accesskit_node_numeric_value` | `nodeNumericValue` | opt_double_toC | src/consumer/node_ref/ + src/schema/node.zig |
-| 227 | 3885 | `accesskit_node_set_numeric_value` | `nodeSetNumericValue` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 228 | 3894 | `accesskit_node_clear_numeric_value` | `nodeClearNumericValue` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 229 | 3903 | `accesskit_node_min_numeric_value` | `nodeMinNumericValue` | opt_double_toC | src/consumer/node_ref/ + src/schema/node.zig |
-| 230 | 3911 | `accesskit_node_set_min_numeric_value` | `nodeSetMinNumericValue` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 231 | 3920 | `accesskit_node_clear_min_numeric_value` | `nodeClearMinNumericValue` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 232 | 3929 | `accesskit_node_max_numeric_value` | `nodeMaxNumericValue` | opt_double_toC | src/consumer/node_ref/ + src/schema/node.zig |
-| 233 | 3937 | `accesskit_node_set_max_numeric_value` | `nodeSetMaxNumericValue` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 234 | 3946 | `accesskit_node_clear_max_numeric_value` | `nodeClearMaxNumericValue` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 235 | 3955 | `accesskit_node_numeric_value_step` | `nodeNumericValueStep` | opt_double_toC | src/consumer/node_ref/ + src/schema/node.zig |
-| 236 | 3963 | `accesskit_node_set_numeric_value_step` | `nodeSetNumericValueStep` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 237 | 3972 | `accesskit_node_clear_numeric_value_step` | `nodeClearNumericValueStep` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 238 | 3981 | `accesskit_node_numeric_value_jump` | `nodeNumericValueJump` | opt_double_toC | src/consumer/node_ref/ + src/schema/node.zig |
-| 239 | 3989 | `accesskit_node_set_numeric_value_jump` | `nodeSetNumericValueJump` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 240 | 3998 | `accesskit_node_clear_numeric_value_jump` | `nodeClearNumericValueJump` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 241 | 4007 | `accesskit_node_font_size` | `nodeFontSize` | opt_float_toC | src/consumer/node_ref/ + src/schema/node.zig |
-| 242 | 4015 | `accesskit_node_set_font_size` | `nodeSetFontSize` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 243 | 4023 | `accesskit_node_clear_font_size` | `nodeClearFontSize` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 244 | 4032 | `accesskit_node_font_weight` | `nodeFontWeight` | opt_float_toC | src/consumer/node_ref/ + src/schema/node.zig |
-| 245 | 4040 | `accesskit_node_set_font_weight` | `nodeSetFontWeight` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 246 | 4048 | `accesskit_node_clear_font_weight` | `nodeClearFontWeight` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 247 | 4057 | `accesskit_node_row_count` | `nodeRowCount` | opt_index_toC | src/consumer/node_ref/ + src/schema/node.zig |
-| 248 | 4065 | `accesskit_node_set_row_count` | `nodeSetRowCount` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 249 | 4073 | `accesskit_node_clear_row_count` | `nodeClearRowCount` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 250 | 4082 | `accesskit_node_column_count` | `nodeColumnCount` | opt_index_toC | src/consumer/node_ref/ + src/schema/node.zig |
-| 251 | 4090 | `accesskit_node_set_column_count` | `nodeSetColumnCount` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 252 | 4099 | `accesskit_node_clear_column_count` | `nodeClearColumnCount` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 253 | 4108 | `accesskit_node_row_index` | `nodeRowIndex` | opt_index_toC | src/consumer/node_ref/ + src/schema/node.zig |
-| 254 | 4116 | `accesskit_node_set_row_index` | `nodeSetRowIndex` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 255 | 4124 | `accesskit_node_clear_row_index` | `nodeClearRowIndex` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 256 | 4133 | `accesskit_node_column_index` | `nodeColumnIndex` | opt_index_toC | src/consumer/node_ref/ + src/schema/node.zig |
-| 257 | 4141 | `accesskit_node_set_column_index` | `nodeSetColumnIndex` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 258 | 4150 | `accesskit_node_clear_column_index` | `nodeClearColumnIndex` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 259 | 4159 | `accesskit_node_row_span` | `nodeRowSpan` | opt_index_toC | src/consumer/node_ref/ + src/schema/node.zig |
-| 260 | 4167 | `accesskit_node_set_row_span` | `nodeSetRowSpan` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 261 | 4175 | `accesskit_node_clear_row_span` | `nodeClearRowSpan` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 262 | 4184 | `accesskit_node_column_span` | `nodeColumnSpan` | opt_index_toC | src/consumer/node_ref/ + src/schema/node.zig |
-| 263 | 4192 | `accesskit_node_set_column_span` | `nodeSetColumnSpan` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 264 | 4201 | `accesskit_node_clear_column_span` | `nodeClearColumnSpan` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 265 | 4210 | `accesskit_node_level` | `nodeLevel` | opt_index_toC | src/consumer/node_ref/ + src/schema/node.zig |
-| 266 | 4218 | `accesskit_node_set_level` | `nodeSetLevel` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 267 | 4225 | `accesskit_node_clear_level` | `nodeClearLevel` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 268 | 4234 | `accesskit_node_size_of_set` | `nodeSizeOfSet` | opt_index_toC | src/consumer/node_ref/ + src/schema/node.zig |
-| 269 | 4242 | `accesskit_node_set_size_of_set` | `nodeSetSizeOfSet` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 270 | 4251 | `accesskit_node_clear_size_of_set` | `nodeClearSizeOfSet` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 271 | 4260 | `accesskit_node_position_in_set` | `nodePositionInSet` | opt_index_toC | src/consumer/node_ref/ + src/schema/node.zig |
-| 272 | 4268 | `accesskit_node_set_position_in_set` | `nodeSetPositionInSet` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 273 | 4277 | `accesskit_node_clear_position_in_set` | `nodeClearPositionInSet` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 274 | 4286 | `accesskit_node_color_value` | `nodeColorValue` | opt_color_toC | src/consumer/node_ref/ + src/schema/node.zig |
-| 275 | 4294 | `accesskit_node_set_color_value` | `nodeSetColorValue` | identity | src/consumer/node_ref/ + src/schema/node.zig |
-| 276 | 4303 | `accesskit_node_clear_color_value` | `nodeClearColorValue` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 277 | 4312 | `accesskit_node_background_color` | `nodeBackgroundColor` | opt_color_toC | src/consumer/node_ref/ + src/schema/node.zig |
-| 278 | 4320 | `accesskit_node_set_background_color` | `nodeSetBackgroundColor` | identity | src/consumer/node_ref/ + src/schema/node.zig |
-| 279 | 4329 | `accesskit_node_clear_background_color` | `nodeClearBackgroundColor` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 280 | 4338 | `accesskit_node_foreground_color` | `nodeForegroundColor` | opt_color_toC | src/consumer/node_ref/ + src/schema/node.zig |
-| 281 | 4346 | `accesskit_node_set_foreground_color` | `nodeSetForegroundColor` | identity | src/consumer/node_ref/ + src/schema/node.zig |
-| 282 | 4355 | `accesskit_node_clear_foreground_color` | `nodeClearForegroundColor` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 283 | 4364 | `accesskit_node_overline` | `nodeOverline` | opt_text_decoration_toC | src/consumer/node_ref/ + src/schema/node.zig |
-| 284 | 4372 | `accesskit_node_set_overline` | `nodeSetOverline` | identity | src/consumer/node_ref/ + src/schema/node.zig |
-| 285 | 4381 | `accesskit_node_clear_overline` | `nodeClearOverline` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 286 | 4390 | `accesskit_node_strikethrough` | `nodeStrikethrough` | opt_text_decoration_toC | src/consumer/node_ref/ + src/schema/node.zig |
-| 287 | 4398 | `accesskit_node_set_strikethrough` | `nodeSetStrikethrough` | identity | src/consumer/node_ref/ + src/schema/node.zig |
-| 288 | 4407 | `accesskit_node_clear_strikethrough` | `nodeClearStrikethrough` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 289 | 4416 | `accesskit_node_underline` | `nodeUnderline` | opt_text_decoration_toC | src/consumer/node_ref/ + src/schema/node.zig |
-| 290 | 4424 | `accesskit_node_set_underline` | `nodeSetUnderline` | identity | src/consumer/node_ref/ + src/schema/node.zig |
-| 291 | 4433 | `accesskit_node_clear_underline` | `nodeClearUnderline` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 292 | 4445 | `accesskit_node_character_lengths` | `nodeCharacterLengths` | lengthsToC | src/consumer/node_ref/ + src/schema/node.zig |
-| 293 | 4456 | `accesskit_node_set_character_lengths` | `nodeSetCharacterLengths` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 294 | 4466 | `accesskit_node_clear_character_lengths` | `nodeClearCharacterLengths` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 295 | 4477 | `accesskit_node_word_starts` | `nodeWordStarts` | lengthsToC | src/consumer/node_ref/ + src/schema/node.zig |
-| 296 | 4488 | `accesskit_node_set_word_starts` | `nodeSetWordStarts` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 297 | 4497 | `accesskit_node_clear_word_starts` | `nodeClearWordStarts` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 298 | 4510 | `accesskit_node_character_positions` | `nodeCharacterPositions` | optCoordsToC | src/consumer/node_ref/ + src/schema/node.zig |
-| 299 | 4521 | `accesskit_node_set_character_positions` | `nodeSetCharacterPositions` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 300 | 4531 | `accesskit_node_clear_character_positions` | `nodeClearCharacterPositions` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 301 | 4543 | `accesskit_node_character_widths` | `nodeCharacterWidths` | optCoordsToC | src/consumer/node_ref/ + src/schema/node.zig |
-| 302 | 4554 | `accesskit_node_set_character_widths` | `nodeSetCharacterWidths` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 303 | 4563 | `accesskit_node_clear_character_widths` | `nodeClearCharacterWidths` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 304 | 4572 | `accesskit_node_is_expanded` | `nodeIsExpanded` | opt_bool_toC | src/consumer/node_ref/ + src/schema/node.zig |
-| 305 | 4580 | `accesskit_node_set_expanded` | `nodeSetExpanded` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 306 | 4588 | `accesskit_node_clear_expanded` | `nodeClearExpanded` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 307 | 4597 | `accesskit_node_is_selected` | `nodeIsSelected` | opt_bool_toC | src/consumer/node_ref/ + src/schema/node.zig |
-| 308 | 4605 | `accesskit_node_set_selected` | `nodeSetSelected` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 309 | 4613 | `accesskit_node_clear_selected` | `nodeClearSelected` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 310 | 4622 | `accesskit_node_invalid` | `nodeInvalid` | opt_invalid_toC | src/consumer/node_ref/ + src/schema/node.zig |
-| 311 | 4630 | `accesskit_node_set_invalid` | `nodeSetInvalid` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 312 | 4638 | `accesskit_node_clear_invalid` | `nodeClearInvalid` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 313 | 4647 | `accesskit_node_toggled` | `nodeToggled` | opt_toggled_toC | src/consumer/node_ref/ + src/schema/node.zig |
-| 314 | 4655 | `accesskit_node_set_toggled` | `nodeSetToggled` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 315 | 4663 | `accesskit_node_clear_toggled` | `nodeClearToggled` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 316 | 4672 | `accesskit_node_live` | `nodeLive` | opt_live_toC | src/consumer/node_ref/ + src/schema/node.zig |
-| 317 | 4680 | `accesskit_node_set_live` | `nodeSetLive` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 318 | 4688 | `accesskit_node_clear_live` | `nodeClearLive` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 319 | 4697 | `accesskit_node_text_direction` | `nodeTextDirection` | opt_text_direction_toC | src/consumer/node_ref/ + src/schema/node.zig |
-| 320 | 4705 | `accesskit_node_set_text_direction` | `nodeSetTextDirection` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 321 | 4714 | `accesskit_node_clear_text_direction` | `nodeClearTextDirection` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 322 | 4723 | `accesskit_node_orientation` | `nodeOrientation` | opt_orientation_toC | src/consumer/node_ref/ + src/schema/node.zig |
-| 323 | 4731 | `accesskit_node_set_orientation` | `nodeSetOrientation` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 324 | 4740 | `accesskit_node_clear_orientation` | `nodeClearOrientation` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 325 | 4749 | `accesskit_node_sort_direction` | `nodeSortDirection` | opt_sort_direction_toC | src/consumer/node_ref/ + src/schema/node.zig |
-| 326 | 4757 | `accesskit_node_set_sort_direction` | `nodeSetSortDirection` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 327 | 4766 | `accesskit_node_clear_sort_direction` | `nodeClearSortDirection` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 328 | 4775 | `accesskit_node_aria_current` | `nodeAriaCurrent` | opt_aria_current_toC | src/consumer/node_ref/ + src/schema/node.zig |
-| 329 | 4783 | `accesskit_node_set_aria_current` | `nodeSetAriaCurrent` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 330 | 4792 | `accesskit_node_clear_aria_current` | `nodeClearAriaCurrent` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 331 | 4801 | `accesskit_node_auto_complete` | `nodeAutoComplete` | opt_auto_complete_toC | src/consumer/node_ref/ + src/schema/node.zig |
-| 332 | 4809 | `accesskit_node_set_auto_complete` | `nodeSetAutoComplete` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 333 | 4818 | `accesskit_node_clear_auto_complete` | `nodeClearAutoComplete` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 334 | 4827 | `accesskit_node_has_popup` | `nodeHasPopup` | opt_has_popup_toC | src/consumer/node_ref/ + src/schema/node.zig |
-| 335 | 4835 | `accesskit_node_set_has_popup` | `nodeSetHasPopup` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 336 | 4844 | `accesskit_node_clear_has_popup` | `nodeClearHasPopup` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 337 | 4853 | `accesskit_node_list_style` | `nodeListStyle` | opt_list_style_toC | src/consumer/node_ref/ + src/schema/node.zig |
-| 338 | 4861 | `accesskit_node_set_list_style` | `nodeSetListStyle` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 339 | 4870 | `accesskit_node_clear_list_style` | `nodeClearListStyle` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 340 | 4879 | `accesskit_node_text_align` | `nodeTextAlign` | opt_text_align_toC | src/consumer/node_ref/ + src/schema/node.zig |
-| 341 | 4887 | `accesskit_node_set_text_align` | `nodeSetTextAlign` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 342 | 4896 | `accesskit_node_clear_text_align` | `nodeClearTextAlign` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 343 | 4905 | `accesskit_node_vertical_offset` | `nodeVerticalOffset` | opt_vertical_offset_toC | src/consumer/node_ref/ + src/schema/node.zig |
-| 344 | 4913 | `accesskit_node_set_vertical_offset` | `nodeSetVerticalOffset` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 345 | 4922 | `accesskit_node_clear_vertical_offset` | `nodeClearVerticalOffset` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 346 | 4933 | `accesskit_node_transform` | `nodeTransform` | identity (both sides extern) | src/consumer/node_ref/ + src/schema/node.zig |
-| 347 | 4941 | `accesskit_node_set_transform` | `nodeSetTransform` | identity | src/consumer/node_ref/ + src/schema/node.zig |
-| 348 | 4950 | `accesskit_node_clear_transform` | `nodeClearTransform` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 349 | 4959 | `accesskit_node_bounds` | `nodeBounds` | opt_rect_toC | src/consumer/node_ref/ + src/schema/node.zig |
-| 350 | 4967 | `accesskit_node_set_bounds` | `nodeSetBounds` | identity | src/consumer/node_ref/ + src/schema/node.zig |
-| 351 | 4975 | `accesskit_node_clear_bounds` | `nodeClearBounds` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 352 | 4984 | `accesskit_node_text_selection` | `nodeTextSelection` | opt_text_selection_toC | src/consumer/node_ref/ + src/schema/node.zig |
-| 353 | 4992 | `accesskit_node_set_text_selection` | `nodeSetTextSelection` | identity | src/consumer/node_ref/ + src/schema/node.zig |
-| 354 | 5001 | `accesskit_node_clear_text_selection` | `nodeClearTextSelection` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 355 | 5094 | `accesskit_node_custom_actions` | `nodeCustomActions` | scalar tag pass | src/consumer/node_ref/ + src/schema/node.zig |
-| 356 | 5104 | `accesskit_node_set_custom_actions` | `nodeSetCustomActions` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 357 | 5115 | `accesskit_node_push_custom_action` | `nodePushCustomAction` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 358 | 5124 | `accesskit_node_clear_custom_actions` | `nodeClearCustomActions` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 359 | 5134 | `accesskit_node_new` | `nodeNew` | scalar tag pass | src/consumer/node_ref/ + src/schema/node.zig |
-| 360 | 5143 | `accesskit_node_free` | `nodeFree` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
-| 361 | 5153 | `accesskit_node_debug` | `nodeDebug` | dupCString | src/consumer/node_ref/ + src/schema/node.zig |
+| 4 | 1806 | `accesskit_node_role` | `nodeRole` | scalar tag pass | src/consumer/node_ref/ + src/schema/node.zig |
+| 5 | 1813 | `accesskit_node_set_role` | `nodeSetRole` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 6 | 1822 | `accesskit_node_supports_action` | `nodeSupportsAction` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 7 | 1831 | `accesskit_node_add_action` | `nodeAddAction` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 8 | 1840 | `accesskit_node_remove_action` | `nodeRemoveAction` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 9 | 1848 | `accesskit_node_clear_actions` | `nodeClearActions` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 10 | 1856 | `accesskit_node_child_supports_action` | `nodeChildSupportsAction` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 11 | 1866 | `accesskit_node_add_child_action` | `nodeAddChildAction` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 12 | 1876 | `accesskit_node_remove_child_action` | `nodeRemoveChildAction` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 13 | 1885 | `accesskit_node_clear_child_actions` | `nodeClearChildActions` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 14 | 1893 | `accesskit_node_is_hidden` | `nodeIsHidden` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 15 | 1901 | `accesskit_node_set_hidden` | `nodeSetHidden` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 16 | 1908 | `accesskit_node_clear_hidden` | `nodeClearHidden` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 17 | 1916 | `accesskit_node_is_multiselectable` | `nodeIsMultiselectable` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 18 | 1924 | `accesskit_node_set_multiselectable` | `nodeSetMultiselectable` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 19 | 1932 | `accesskit_node_clear_multiselectable` | `nodeClearMultiselectable` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 20 | 1940 | `accesskit_node_is_required` | `nodeIsRequired` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 21 | 1948 | `accesskit_node_set_required` | `nodeSetRequired` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 22 | 1956 | `accesskit_node_clear_required` | `nodeClearRequired` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 23 | 1964 | `accesskit_node_is_visited` | `nodeIsVisited` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 24 | 1972 | `accesskit_node_set_visited` | `nodeSetVisited` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 25 | 1979 | `accesskit_node_clear_visited` | `nodeClearVisited` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 26 | 1987 | `accesskit_node_is_busy` | `nodeIsBusy` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 27 | 1995 | `accesskit_node_set_busy` | `nodeSetBusy` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 28 | 2002 | `accesskit_node_clear_busy` | `nodeClearBusy` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 29 | 2010 | `accesskit_node_is_live_atomic` | `nodeIsLiveAtomic` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 30 | 2018 | `accesskit_node_set_live_atomic` | `nodeSetLiveAtomic` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 31 | 2026 | `accesskit_node_clear_live_atomic` | `nodeClearLiveAtomic` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 32 | 2034 | `accesskit_node_is_modal` | `nodeIsModal` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 33 | 2042 | `accesskit_node_set_modal` | `nodeSetModal` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 34 | 2049 | `accesskit_node_clear_modal` | `nodeClearModal` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 35 | 2057 | `accesskit_node_is_touch_transparent` | `nodeIsTouchTransparent` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 36 | 2065 | `accesskit_node_set_touch_transparent` | `nodeSetTouchTransparent` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 37 | 2073 | `accesskit_node_clear_touch_transparent` | `nodeClearTouchTransparent` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 38 | 2081 | `accesskit_node_is_read_only` | `nodeIsReadOnly` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 39 | 2089 | `accesskit_node_set_read_only` | `nodeSetReadOnly` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 40 | 2097 | `accesskit_node_clear_read_only` | `nodeClearReadOnly` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 41 | 2105 | `accesskit_node_is_disabled` | `nodeIsDisabled` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 42 | 2113 | `accesskit_node_set_disabled` | `nodeSetDisabled` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 43 | 2121 | `accesskit_node_clear_disabled` | `nodeClearDisabled` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 44 | 2129 | `accesskit_node_is_italic` | `nodeIsItalic` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 45 | 2137 | `accesskit_node_set_italic` | `nodeSetItalic` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 46 | 2144 | `accesskit_node_clear_italic` | `nodeClearItalic` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 47 | 2152 | `accesskit_node_clips_children` | `nodeClipsChildren` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 48 | 2160 | `accesskit_node_set_clips_children` | `nodeSetClipsChildren` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 49 | 2168 | `accesskit_node_clear_clips_children` | `nodeClearClipsChildren` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 50 | 2177 | `accesskit_node_is_line_breaking_object` | `nodeIsLineBreakingObject` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 51 | 2185 | `accesskit_node_set_is_line_breaking_object` | `nodeSetIsLineBreakingObject` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 52 | 2194 | `accesskit_node_clear_is_line_breaking_object` | `nodeClearIsLineBreakingObject` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 53 | 2203 | `accesskit_node_is_page_breaking_object` | `nodeIsPageBreakingObject` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 54 | 2211 | `accesskit_node_set_is_page_breaking_object` | `nodeSetIsPageBreakingObject` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 55 | 2220 | `accesskit_node_clear_is_page_breaking_object` | `nodeClearIsPageBreakingObject` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 56 | 2228 | `accesskit_node_is_spelling_error` | `nodeIsSpellingError` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 57 | 2236 | `accesskit_node_set_is_spelling_error` | `nodeSetIsSpellingError` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 58 | 2244 | `accesskit_node_clear_is_spelling_error` | `nodeClearIsSpellingError` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 59 | 2252 | `accesskit_node_is_grammar_error` | `nodeIsGrammarError` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 60 | 2260 | `accesskit_node_set_is_grammar_error` | `nodeSetIsGrammarError` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 61 | 2268 | `accesskit_node_clear_is_grammar_error` | `nodeClearIsGrammarError` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 62 | 2276 | `accesskit_node_is_search_match` | `nodeIsSearchMatch` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 63 | 2284 | `accesskit_node_set_is_search_match` | `nodeSetIsSearchMatch` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 64 | 2292 | `accesskit_node_clear_is_search_match` | `nodeClearIsSearchMatch` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 65 | 2300 | `accesskit_node_is_suggestion` | `nodeIsSuggestion` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 66 | 2308 | `accesskit_node_set_is_suggestion` | `nodeSetIsSuggestion` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 67 | 2316 | `accesskit_node_clear_is_suggestion` | `nodeClearIsSuggestion` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 68 | 2327 | `accesskit_node_children` | `nodeChildren` | nodeIdsToC | src/consumer/node_ref/ + src/schema/node.zig |
+| 69 | 2338 | `accesskit_node_set_children` | `nodeSetChildren` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 70 | 2346 | `accesskit_node_push_child` | `nodePushChild` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 71 | 2355 | `accesskit_node_clear_children` | `nodeClearChildren` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 72 | 2366 | `accesskit_node_controls` | `nodeControls` | nodeIdsToC | src/consumer/node_ref/ + src/schema/node.zig |
+| 73 | 2377 | `accesskit_node_set_controls` | `nodeSetControls` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 74 | 2385 | `accesskit_node_push_controlled` | `nodePushControlled` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 75 | 2394 | `accesskit_node_clear_controls` | `nodeClearControls` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 76 | 2405 | `accesskit_node_details` | `nodeDetails` | nodeIdsToC | src/consumer/node_ref/ + src/schema/node.zig |
+| 77 | 2416 | `accesskit_node_set_details` | `nodeSetDetails` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 78 | 2424 | `accesskit_node_push_detail` | `nodePushDetail` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 79 | 2432 | `accesskit_node_clear_details` | `nodeClearDetails` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 80 | 2443 | `accesskit_node_described_by` | `nodeDescribedBy` | nodeIdsToC | src/consumer/node_ref/ + src/schema/node.zig |
+| 81 | 2454 | `accesskit_node_set_described_by` | `nodeSetDescribedBy` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 82 | 2463 | `accesskit_node_push_described_by` | `nodePushDescribedBy` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 83 | 2472 | `accesskit_node_clear_described_by` | `nodeClearDescribedBy` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 84 | 2483 | `accesskit_node_flow_to` | `nodeFlowTo` | nodeIdsToC | src/consumer/node_ref/ + src/schema/node.zig |
+| 85 | 2494 | `accesskit_node_set_flow_to` | `nodeSetFlowTo` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 86 | 2502 | `accesskit_node_push_flow_to` | `nodePushFlowTo` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 87 | 2510 | `accesskit_node_clear_flow_to` | `nodeClearFlowTo` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 88 | 2521 | `accesskit_node_labelled_by` | `nodeLabelledBy` | nodeIdsToC | src/consumer/node_ref/ + src/schema/node.zig |
+| 89 | 2532 | `accesskit_node_set_labelled_by` | `nodeSetLabelledBy` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 90 | 2541 | `accesskit_node_push_labelled_by` | `nodePushLabelledBy` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 91 | 2550 | `accesskit_node_clear_labelled_by` | `nodeClearLabelledBy` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 92 | 2561 | `accesskit_node_owns` | `nodeOwns` | nodeIdsToC | src/consumer/node_ref/ + src/schema/node.zig |
+| 93 | 2571 | `accesskit_node_set_owns` | `nodeSetOwns` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 94 | 2579 | `accesskit_node_push_owned` | `nodePushOwned` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 95 | 2587 | `accesskit_node_clear_owns` | `nodeClearOwns` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 96 | 2598 | `accesskit_node_radio_group` | `nodeRadioGroup` | nodeIdsToC | src/consumer/node_ref/ + src/schema/node.zig |
+| 97 | 2609 | `accesskit_node_set_radio_group` | `nodeSetRadioGroup` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 98 | 2618 | `accesskit_node_push_to_radio_group` | `nodePushToRadioGroup` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 99 | 2627 | `accesskit_node_clear_radio_group` | `nodeClearRadioGroup` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 100 | 2636 | `accesskit_node_active_descendant` | `nodeActiveDescendant` | opt_node_id_toC | src/consumer/node_ref/ + src/schema/node.zig |
+| 101 | 2644 | `accesskit_node_set_active_descendant` | `nodeSetActiveDescendant` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 102 | 2653 | `accesskit_node_clear_active_descendant` | `nodeClearActiveDescendant` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 103 | 2662 | `accesskit_node_error_message` | `nodeErrorMessage` | opt_node_id_toC | src/consumer/node_ref/ + src/schema/node.zig |
+| 104 | 2670 | `accesskit_node_set_error_message` | `nodeSetErrorMessage` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 105 | 2679 | `accesskit_node_clear_error_message` | `nodeClearErrorMessage` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 106 | 2688 | `accesskit_node_in_page_link_target` | `nodeInPageLinkTarget` | opt_node_id_toC | src/consumer/node_ref/ + src/schema/node.zig |
+| 107 | 2696 | `accesskit_node_set_in_page_link_target` | `nodeSetInPageLinkTarget` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 108 | 2705 | `accesskit_node_clear_in_page_link_target` | `nodeClearInPageLinkTarget` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 109 | 2714 | `accesskit_node_member_of` | `nodeMemberOf` | opt_node_id_toC | src/consumer/node_ref/ + src/schema/node.zig |
+| 110 | 2722 | `accesskit_node_set_member_of` | `nodeSetMemberOf` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 111 | 2731 | `accesskit_node_clear_member_of` | `nodeClearMemberOf` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 112 | 2740 | `accesskit_node_next_on_line` | `nodeNextOnLine` | opt_node_id_toC | src/consumer/node_ref/ + src/schema/node.zig |
+| 113 | 2748 | `accesskit_node_set_next_on_line` | `nodeSetNextOnLine` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 114 | 2757 | `accesskit_node_clear_next_on_line` | `nodeClearNextOnLine` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 115 | 2766 | `accesskit_node_previous_on_line` | `nodePreviousOnLine` | opt_node_id_toC | src/consumer/node_ref/ + src/schema/node.zig |
+| 116 | 2774 | `accesskit_node_set_previous_on_line` | `nodeSetPreviousOnLine` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 117 | 2783 | `accesskit_node_clear_previous_on_line` | `nodeClearPreviousOnLine` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 118 | 2792 | `accesskit_node_popup_for` | `nodePopupFor` | opt_node_id_toC | src/consumer/node_ref/ + src/schema/node.zig |
+| 119 | 2800 | `accesskit_node_set_popup_for` | `nodeSetPopupFor` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 120 | 2809 | `accesskit_node_clear_popup_for` | `nodeClearPopupFor` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 121 | 2818 | `accesskit_node_tree_id` | `nodeTreeId` | opt_tree_id_toC | src/consumer/node_ref/ + src/schema/node.zig |
+| 122 | 2826 | `accesskit_node_set_tree_id` | `nodeSetTreeId` | identity | src/consumer/node_ref/ + src/schema/node.zig |
+| 123 | 2834 | `accesskit_node_clear_tree_id` | `nodeClearTreeId` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 124 | 2856 | `accesskit_node_label` | `nodeLabel` | dupCString | src/consumer/node_ref/ + src/schema/node.zig |
+| 125 | 2864 | `accesskit_node_set_label` | `nodeSetLabel` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 126 | 2875 | `accesskit_node_set_label_with_length` | `nodeSetLabelWithLength` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 127 | 2883 | `accesskit_node_clear_label` | `nodeClearLabel` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 128 | 2895 | `accesskit_node_description` | `nodeDescription` | dupCString | src/consumer/node_ref/ + src/schema/node.zig |
+| 129 | 2903 | `accesskit_node_set_description` | `nodeSetDescription` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 130 | 2915 | `accesskit_node_set_description_with_length` | `nodeSetDescriptionWithLength` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 131 | 2925 | `accesskit_node_clear_description` | `nodeClearDescription` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 132 | 2937 | `accesskit_node_value` | `nodeValue` | dupCString | src/consumer/node_ref/ + src/schema/node.zig |
+| 133 | 2945 | `accesskit_node_set_value` | `nodeSetValue` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 134 | 2956 | `accesskit_node_set_value_with_length` | `nodeSetValueWithLength` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 135 | 2964 | `accesskit_node_clear_value` | `nodeClearValue` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 136 | 2976 | `accesskit_node_access_key` | `nodeAccessKey` | dupCString | src/consumer/node_ref/ + src/schema/node.zig |
+| 137 | 2984 | `accesskit_node_set_access_key` | `nodeSetAccessKey` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 138 | 2996 | `accesskit_node_set_access_key_with_length` | `nodeSetAccessKeyWithLength` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 139 | 3006 | `accesskit_node_clear_access_key` | `nodeClearAccessKey` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 140 | 3018 | `accesskit_node_author_id` | `nodeAuthorId` | dupCString | src/consumer/node_ref/ + src/schema/node.zig |
+| 141 | 3026 | `accesskit_node_set_author_id` | `nodeSetAuthorId` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 142 | 3038 | `accesskit_node_set_author_id_with_length` | `nodeSetAuthorIdWithLength` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 143 | 3048 | `accesskit_node_clear_author_id` | `nodeClearAuthorId` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 144 | 3060 | `accesskit_node_class_name` | `nodeClassName` | dupCString | src/consumer/node_ref/ + src/schema/node.zig |
+| 145 | 3068 | `accesskit_node_set_class_name` | `nodeSetClassName` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 146 | 3080 | `accesskit_node_set_class_name_with_length` | `nodeSetClassNameWithLength` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 147 | 3090 | `accesskit_node_clear_class_name` | `nodeClearClassName` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 148 | 3102 | `accesskit_node_font_family` | `nodeFontFamily` | dupCString | src/consumer/node_ref/ + src/schema/node.zig |
+| 149 | 3110 | `accesskit_node_set_font_family` | `nodeSetFontFamily` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 150 | 3122 | `accesskit_node_set_font_family_with_length` | `nodeSetFontFamilyWithLength` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 151 | 3132 | `accesskit_node_clear_font_family` | `nodeClearFontFamily` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 152 | 3144 | `accesskit_node_html_id` | `nodeHtmlId` | dupCString | src/consumer/node_ref/ + src/schema/node.zig |
+| 153 | 3152 | `accesskit_node_set_html_id` | `nodeSetHtmlId` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 154 | 3164 | `accesskit_node_set_html_id_with_length` | `nodeSetHtmlIdWithLength` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 155 | 3172 | `accesskit_node_clear_html_id` | `nodeClearHtmlId` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 156 | 3184 | `accesskit_node_html_tag` | `nodeHtmlTag` | dupCString | src/consumer/node_ref/ + src/schema/node.zig |
+| 157 | 3192 | `accesskit_node_set_html_tag` | `nodeSetHtmlTag` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 158 | 3204 | `accesskit_node_set_html_tag_with_length` | `nodeSetHtmlTagWithLength` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 159 | 3214 | `accesskit_node_clear_html_tag` | `nodeClearHtmlTag` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 160 | 3226 | `accesskit_node_inner_html` | `nodeInnerHtml` | dupCString | src/consumer/node_ref/ + src/schema/node.zig |
+| 161 | 3234 | `accesskit_node_set_inner_html` | `nodeSetInnerHtml` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 162 | 3246 | `accesskit_node_set_inner_html_with_length` | `nodeSetInnerHtmlWithLength` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 163 | 3256 | `accesskit_node_clear_inner_html` | `nodeClearInnerHtml` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 164 | 3268 | `accesskit_node_keyboard_shortcut` | `nodeKeyboardShortcut` | dupCString | src/consumer/node_ref/ + src/schema/node.zig |
+| 165 | 3277 | `accesskit_node_set_keyboard_shortcut` | `nodeSetKeyboardShortcut` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 166 | 3290 | `accesskit_node_set_keyboard_shortcut_with_length` | `nodeSetKeyboardShortcutWithLength` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 167 | 3299 | `accesskit_node_clear_keyboard_shortcut` | `nodeClearKeyboardShortcut` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 168 | 3311 | `accesskit_node_language` | `nodeLanguage` | dupCString | src/consumer/node_ref/ + src/schema/node.zig |
+| 169 | 3319 | `accesskit_node_set_language` | `nodeSetLanguage` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 170 | 3331 | `accesskit_node_set_language_with_length` | `nodeSetLanguageWithLength` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 171 | 3341 | `accesskit_node_clear_language` | `nodeClearLanguage` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 172 | 3353 | `accesskit_node_placeholder` | `nodePlaceholder` | dupCString | src/consumer/node_ref/ + src/schema/node.zig |
+| 173 | 3361 | `accesskit_node_set_placeholder` | `nodeSetPlaceholder` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 174 | 3373 | `accesskit_node_set_placeholder_with_length` | `nodeSetPlaceholderWithLength` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 175 | 3383 | `accesskit_node_clear_placeholder` | `nodeClearPlaceholder` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 176 | 3395 | `accesskit_node_role_description` | `nodeRoleDescription` | dupCString | src/consumer/node_ref/ + src/schema/node.zig |
+| 177 | 3404 | `accesskit_node_set_role_description` | `nodeSetRoleDescription` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 178 | 3417 | `accesskit_node_set_role_description_with_length` | `nodeSetRoleDescriptionWithLength` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 179 | 3426 | `accesskit_node_clear_role_description` | `nodeClearRoleDescription` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 180 | 3438 | `accesskit_node_state_description` | `nodeStateDescription` | dupCString | src/consumer/node_ref/ + src/schema/node.zig |
+| 181 | 3447 | `accesskit_node_set_state_description` | `nodeSetStateDescription` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 182 | 3460 | `accesskit_node_set_state_description_with_length` | `nodeSetStateDescriptionWithLength` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 183 | 3469 | `accesskit_node_clear_state_description` | `nodeClearStateDescription` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 184 | 3481 | `accesskit_node_tooltip` | `nodeTooltip` | dupCString | src/consumer/node_ref/ + src/schema/node.zig |
+| 185 | 3489 | `accesskit_node_set_tooltip` | `nodeSetTooltip` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 186 | 3501 | `accesskit_node_set_tooltip_with_length` | `nodeSetTooltipWithLength` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 187 | 3509 | `accesskit_node_clear_tooltip` | `nodeClearTooltip` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 188 | 3520 | `accesskit_node_url` | `nodeUrl` | dupCString | src/consumer/node_ref/ + src/schema/node.zig |
+| 189 | 3528 | `accesskit_node_set_url` | `nodeSetUrl` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 190 | 3539 | `accesskit_node_set_url_with_length` | `nodeSetUrlWithLength` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 191 | 3547 | `accesskit_node_clear_url` | `nodeClearUrl` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 192 | 3559 | `accesskit_node_row_index_text` | `nodeRowIndexText` | dupCString | src/consumer/node_ref/ + src/schema/node.zig |
+| 193 | 3567 | `accesskit_node_set_row_index_text` | `nodeSetRowIndexText` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 194 | 3580 | `accesskit_node_set_row_index_text_with_length` | `nodeSetRowIndexTextWithLength` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 195 | 3589 | `accesskit_node_clear_row_index_text` | `nodeClearRowIndexText` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 196 | 3601 | `accesskit_node_column_index_text` | `nodeColumnIndexText` | dupCString | src/consumer/node_ref/ + src/schema/node.zig |
+| 197 | 3610 | `accesskit_node_set_column_index_text` | `nodeSetColumnIndexText` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 198 | 3623 | `accesskit_node_set_column_index_text_with_length` | `nodeSetColumnIndexTextWithLength` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 199 | 3632 | `accesskit_node_clear_column_index_text` | `nodeClearColumnIndexText` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 200 | 3644 | `accesskit_node_braille_label` | `nodeBrailleLabel` | dupCString | src/consumer/node_ref/ + src/schema/node.zig |
+| 201 | 3652 | `accesskit_node_set_braille_label` | `nodeSetBrailleLabel` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 202 | 3664 | `accesskit_node_set_braille_label_with_length` | `nodeSetBrailleLabelWithLength` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 203 | 3674 | `accesskit_node_clear_braille_label` | `nodeClearBrailleLabel` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 204 | 3687 | `accesskit_node_braille_role_description` | `nodeBrailleRoleDescription` | dupCString | src/consumer/node_ref/ + src/schema/node.zig |
+| 205 | 3696 | `accesskit_node_set_braille_role_description` | `nodeSetBrailleRoleDescription` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 206 | 3709 | `accesskit_node_set_braille_role_description_with_length` | `nodeSetBrailleRoleDescriptionWithLength` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 207 | 3721 | `accesskit_node_clear_braille_role_description` | `nodeClearBrailleRoleDescription` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 208 | 3730 | `accesskit_node_scroll_x` | `nodeScrollX` | opt_double_toC | src/consumer/node_ref/ + src/schema/node.zig |
+| 209 | 3738 | `accesskit_node_set_scroll_x` | `nodeSetScrollX` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 210 | 3746 | `accesskit_node_clear_scroll_x` | `nodeClearScrollX` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 211 | 3755 | `accesskit_node_scroll_x_min` | `nodeScrollXMin` | opt_double_toC | src/consumer/node_ref/ + src/schema/node.zig |
+| 212 | 3763 | `accesskit_node_set_scroll_x_min` | `nodeSetScrollXMin` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 213 | 3772 | `accesskit_node_clear_scroll_x_min` | `nodeClearScrollXMin` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 214 | 3781 | `accesskit_node_scroll_x_max` | `nodeScrollXMax` | opt_double_toC | src/consumer/node_ref/ + src/schema/node.zig |
+| 215 | 3789 | `accesskit_node_set_scroll_x_max` | `nodeSetScrollXMax` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 216 | 3798 | `accesskit_node_clear_scroll_x_max` | `nodeClearScrollXMax` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 217 | 3807 | `accesskit_node_scroll_y` | `nodeScrollY` | opt_double_toC | src/consumer/node_ref/ + src/schema/node.zig |
+| 218 | 3815 | `accesskit_node_set_scroll_y` | `nodeSetScrollY` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 219 | 3823 | `accesskit_node_clear_scroll_y` | `nodeClearScrollY` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 220 | 3832 | `accesskit_node_scroll_y_min` | `nodeScrollYMin` | opt_double_toC | src/consumer/node_ref/ + src/schema/node.zig |
+| 221 | 3840 | `accesskit_node_set_scroll_y_min` | `nodeSetScrollYMin` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 222 | 3849 | `accesskit_node_clear_scroll_y_min` | `nodeClearScrollYMin` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 223 | 3858 | `accesskit_node_scroll_y_max` | `nodeScrollYMax` | opt_double_toC | src/consumer/node_ref/ + src/schema/node.zig |
+| 224 | 3866 | `accesskit_node_set_scroll_y_max` | `nodeSetScrollYMax` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 225 | 3875 | `accesskit_node_clear_scroll_y_max` | `nodeClearScrollYMax` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 226 | 3884 | `accesskit_node_numeric_value` | `nodeNumericValue` | opt_double_toC | src/consumer/node_ref/ + src/schema/node.zig |
+| 227 | 3892 | `accesskit_node_set_numeric_value` | `nodeSetNumericValue` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 228 | 3901 | `accesskit_node_clear_numeric_value` | `nodeClearNumericValue` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 229 | 3910 | `accesskit_node_min_numeric_value` | `nodeMinNumericValue` | opt_double_toC | src/consumer/node_ref/ + src/schema/node.zig |
+| 230 | 3918 | `accesskit_node_set_min_numeric_value` | `nodeSetMinNumericValue` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 231 | 3927 | `accesskit_node_clear_min_numeric_value` | `nodeClearMinNumericValue` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 232 | 3936 | `accesskit_node_max_numeric_value` | `nodeMaxNumericValue` | opt_double_toC | src/consumer/node_ref/ + src/schema/node.zig |
+| 233 | 3944 | `accesskit_node_set_max_numeric_value` | `nodeSetMaxNumericValue` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 234 | 3953 | `accesskit_node_clear_max_numeric_value` | `nodeClearMaxNumericValue` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 235 | 3962 | `accesskit_node_numeric_value_step` | `nodeNumericValueStep` | opt_double_toC | src/consumer/node_ref/ + src/schema/node.zig |
+| 236 | 3970 | `accesskit_node_set_numeric_value_step` | `nodeSetNumericValueStep` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 237 | 3979 | `accesskit_node_clear_numeric_value_step` | `nodeClearNumericValueStep` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 238 | 3988 | `accesskit_node_numeric_value_jump` | `nodeNumericValueJump` | opt_double_toC | src/consumer/node_ref/ + src/schema/node.zig |
+| 239 | 3996 | `accesskit_node_set_numeric_value_jump` | `nodeSetNumericValueJump` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 240 | 4005 | `accesskit_node_clear_numeric_value_jump` | `nodeClearNumericValueJump` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 241 | 4014 | `accesskit_node_font_size` | `nodeFontSize` | opt_float_toC | src/consumer/node_ref/ + src/schema/node.zig |
+| 242 | 4022 | `accesskit_node_set_font_size` | `nodeSetFontSize` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 243 | 4030 | `accesskit_node_clear_font_size` | `nodeClearFontSize` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 244 | 4039 | `accesskit_node_font_weight` | `nodeFontWeight` | opt_float_toC | src/consumer/node_ref/ + src/schema/node.zig |
+| 245 | 4047 | `accesskit_node_set_font_weight` | `nodeSetFontWeight` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 246 | 4055 | `accesskit_node_clear_font_weight` | `nodeClearFontWeight` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 247 | 4064 | `accesskit_node_row_count` | `nodeRowCount` | opt_index_toC | src/consumer/node_ref/ + src/schema/node.zig |
+| 248 | 4072 | `accesskit_node_set_row_count` | `nodeSetRowCount` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 249 | 4080 | `accesskit_node_clear_row_count` | `nodeClearRowCount` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 250 | 4089 | `accesskit_node_column_count` | `nodeColumnCount` | opt_index_toC | src/consumer/node_ref/ + src/schema/node.zig |
+| 251 | 4097 | `accesskit_node_set_column_count` | `nodeSetColumnCount` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 252 | 4106 | `accesskit_node_clear_column_count` | `nodeClearColumnCount` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 253 | 4115 | `accesskit_node_row_index` | `nodeRowIndex` | opt_index_toC | src/consumer/node_ref/ + src/schema/node.zig |
+| 254 | 4123 | `accesskit_node_set_row_index` | `nodeSetRowIndex` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 255 | 4131 | `accesskit_node_clear_row_index` | `nodeClearRowIndex` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 256 | 4140 | `accesskit_node_column_index` | `nodeColumnIndex` | opt_index_toC | src/consumer/node_ref/ + src/schema/node.zig |
+| 257 | 4148 | `accesskit_node_set_column_index` | `nodeSetColumnIndex` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 258 | 4157 | `accesskit_node_clear_column_index` | `nodeClearColumnIndex` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 259 | 4166 | `accesskit_node_row_span` | `nodeRowSpan` | opt_index_toC | src/consumer/node_ref/ + src/schema/node.zig |
+| 260 | 4174 | `accesskit_node_set_row_span` | `nodeSetRowSpan` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 261 | 4182 | `accesskit_node_clear_row_span` | `nodeClearRowSpan` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 262 | 4191 | `accesskit_node_column_span` | `nodeColumnSpan` | opt_index_toC | src/consumer/node_ref/ + src/schema/node.zig |
+| 263 | 4199 | `accesskit_node_set_column_span` | `nodeSetColumnSpan` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 264 | 4208 | `accesskit_node_clear_column_span` | `nodeClearColumnSpan` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 265 | 4217 | `accesskit_node_level` | `nodeLevel` | opt_index_toC | src/consumer/node_ref/ + src/schema/node.zig |
+| 266 | 4225 | `accesskit_node_set_level` | `nodeSetLevel` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 267 | 4232 | `accesskit_node_clear_level` | `nodeClearLevel` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 268 | 4241 | `accesskit_node_size_of_set` | `nodeSizeOfSet` | opt_index_toC | src/consumer/node_ref/ + src/schema/node.zig |
+| 269 | 4249 | `accesskit_node_set_size_of_set` | `nodeSetSizeOfSet` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 270 | 4258 | `accesskit_node_clear_size_of_set` | `nodeClearSizeOfSet` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 271 | 4267 | `accesskit_node_position_in_set` | `nodePositionInSet` | opt_index_toC | src/consumer/node_ref/ + src/schema/node.zig |
+| 272 | 4275 | `accesskit_node_set_position_in_set` | `nodeSetPositionInSet` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 273 | 4284 | `accesskit_node_clear_position_in_set` | `nodeClearPositionInSet` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 274 | 4293 | `accesskit_node_color_value` | `nodeColorValue` | opt_color_toC | src/consumer/node_ref/ + src/schema/node.zig |
+| 275 | 4301 | `accesskit_node_set_color_value` | `nodeSetColorValue` | identity | src/consumer/node_ref/ + src/schema/node.zig |
+| 276 | 4310 | `accesskit_node_clear_color_value` | `nodeClearColorValue` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 277 | 4319 | `accesskit_node_background_color` | `nodeBackgroundColor` | opt_color_toC | src/consumer/node_ref/ + src/schema/node.zig |
+| 278 | 4327 | `accesskit_node_set_background_color` | `nodeSetBackgroundColor` | identity | src/consumer/node_ref/ + src/schema/node.zig |
+| 279 | 4336 | `accesskit_node_clear_background_color` | `nodeClearBackgroundColor` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 280 | 4345 | `accesskit_node_foreground_color` | `nodeForegroundColor` | opt_color_toC | src/consumer/node_ref/ + src/schema/node.zig |
+| 281 | 4353 | `accesskit_node_set_foreground_color` | `nodeSetForegroundColor` | identity | src/consumer/node_ref/ + src/schema/node.zig |
+| 282 | 4362 | `accesskit_node_clear_foreground_color` | `nodeClearForegroundColor` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 283 | 4371 | `accesskit_node_overline` | `nodeOverline` | opt_text_decoration_toC | src/consumer/node_ref/ + src/schema/node.zig |
+| 284 | 4379 | `accesskit_node_set_overline` | `nodeSetOverline` | identity | src/consumer/node_ref/ + src/schema/node.zig |
+| 285 | 4388 | `accesskit_node_clear_overline` | `nodeClearOverline` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 286 | 4397 | `accesskit_node_strikethrough` | `nodeStrikethrough` | opt_text_decoration_toC | src/consumer/node_ref/ + src/schema/node.zig |
+| 287 | 4405 | `accesskit_node_set_strikethrough` | `nodeSetStrikethrough` | identity | src/consumer/node_ref/ + src/schema/node.zig |
+| 288 | 4414 | `accesskit_node_clear_strikethrough` | `nodeClearStrikethrough` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 289 | 4423 | `accesskit_node_underline` | `nodeUnderline` | opt_text_decoration_toC | src/consumer/node_ref/ + src/schema/node.zig |
+| 290 | 4431 | `accesskit_node_set_underline` | `nodeSetUnderline` | identity | src/consumer/node_ref/ + src/schema/node.zig |
+| 291 | 4440 | `accesskit_node_clear_underline` | `nodeClearUnderline` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 292 | 4452 | `accesskit_node_character_lengths` | `nodeCharacterLengths` | lengthsToC | src/consumer/node_ref/ + src/schema/node.zig |
+| 293 | 4463 | `accesskit_node_set_character_lengths` | `nodeSetCharacterLengths` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 294 | 4473 | `accesskit_node_clear_character_lengths` | `nodeClearCharacterLengths` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 295 | 4484 | `accesskit_node_word_starts` | `nodeWordStarts` | lengthsToC | src/consumer/node_ref/ + src/schema/node.zig |
+| 296 | 4495 | `accesskit_node_set_word_starts` | `nodeSetWordStarts` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 297 | 4504 | `accesskit_node_clear_word_starts` | `nodeClearWordStarts` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 298 | 4517 | `accesskit_node_character_positions` | `nodeCharacterPositions` | optCoordsToC | src/consumer/node_ref/ + src/schema/node.zig |
+| 299 | 4528 | `accesskit_node_set_character_positions` | `nodeSetCharacterPositions` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 300 | 4538 | `accesskit_node_clear_character_positions` | `nodeClearCharacterPositions` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 301 | 4550 | `accesskit_node_character_widths` | `nodeCharacterWidths` | optCoordsToC | src/consumer/node_ref/ + src/schema/node.zig |
+| 302 | 4561 | `accesskit_node_set_character_widths` | `nodeSetCharacterWidths` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 303 | 4570 | `accesskit_node_clear_character_widths` | `nodeClearCharacterWidths` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 304 | 4579 | `accesskit_node_is_expanded` | `nodeIsExpanded` | opt_bool_toC | src/consumer/node_ref/ + src/schema/node.zig |
+| 305 | 4587 | `accesskit_node_set_expanded` | `nodeSetExpanded` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 306 | 4595 | `accesskit_node_clear_expanded` | `nodeClearExpanded` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 307 | 4604 | `accesskit_node_is_selected` | `nodeIsSelected` | opt_bool_toC | src/consumer/node_ref/ + src/schema/node.zig |
+| 308 | 4612 | `accesskit_node_set_selected` | `nodeSetSelected` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 309 | 4620 | `accesskit_node_clear_selected` | `nodeClearSelected` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 310 | 4629 | `accesskit_node_invalid` | `nodeInvalid` | opt_invalid_toC | src/consumer/node_ref/ + src/schema/node.zig |
+| 311 | 4637 | `accesskit_node_set_invalid` | `nodeSetInvalid` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 312 | 4645 | `accesskit_node_clear_invalid` | `nodeClearInvalid` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 313 | 4654 | `accesskit_node_toggled` | `nodeToggled` | opt_toggled_toC | src/consumer/node_ref/ + src/schema/node.zig |
+| 314 | 4662 | `accesskit_node_set_toggled` | `nodeSetToggled` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 315 | 4670 | `accesskit_node_clear_toggled` | `nodeClearToggled` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 316 | 4679 | `accesskit_node_live` | `nodeLive` | opt_live_toC | src/consumer/node_ref/ + src/schema/node.zig |
+| 317 | 4687 | `accesskit_node_set_live` | `nodeSetLive` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 318 | 4695 | `accesskit_node_clear_live` | `nodeClearLive` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 319 | 4704 | `accesskit_node_text_direction` | `nodeTextDirection` | opt_text_direction_toC | src/consumer/node_ref/ + src/schema/node.zig |
+| 320 | 4712 | `accesskit_node_set_text_direction` | `nodeSetTextDirection` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 321 | 4721 | `accesskit_node_clear_text_direction` | `nodeClearTextDirection` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 322 | 4730 | `accesskit_node_orientation` | `nodeOrientation` | opt_orientation_toC | src/consumer/node_ref/ + src/schema/node.zig |
+| 323 | 4738 | `accesskit_node_set_orientation` | `nodeSetOrientation` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 324 | 4747 | `accesskit_node_clear_orientation` | `nodeClearOrientation` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 325 | 4756 | `accesskit_node_sort_direction` | `nodeSortDirection` | opt_sort_direction_toC | src/consumer/node_ref/ + src/schema/node.zig |
+| 326 | 4764 | `accesskit_node_set_sort_direction` | `nodeSetSortDirection` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 327 | 4773 | `accesskit_node_clear_sort_direction` | `nodeClearSortDirection` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 328 | 4782 | `accesskit_node_aria_current` | `nodeAriaCurrent` | opt_aria_current_toC | src/consumer/node_ref/ + src/schema/node.zig |
+| 329 | 4790 | `accesskit_node_set_aria_current` | `nodeSetAriaCurrent` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 330 | 4799 | `accesskit_node_clear_aria_current` | `nodeClearAriaCurrent` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 331 | 4808 | `accesskit_node_auto_complete` | `nodeAutoComplete` | opt_auto_complete_toC | src/consumer/node_ref/ + src/schema/node.zig |
+| 332 | 4816 | `accesskit_node_set_auto_complete` | `nodeSetAutoComplete` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 333 | 4825 | `accesskit_node_clear_auto_complete` | `nodeClearAutoComplete` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 334 | 4834 | `accesskit_node_has_popup` | `nodeHasPopup` | opt_has_popup_toC | src/consumer/node_ref/ + src/schema/node.zig |
+| 335 | 4842 | `accesskit_node_set_has_popup` | `nodeSetHasPopup` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 336 | 4851 | `accesskit_node_clear_has_popup` | `nodeClearHasPopup` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 337 | 4860 | `accesskit_node_list_style` | `nodeListStyle` | opt_list_style_toC | src/consumer/node_ref/ + src/schema/node.zig |
+| 338 | 4868 | `accesskit_node_set_list_style` | `nodeSetListStyle` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 339 | 4877 | `accesskit_node_clear_list_style` | `nodeClearListStyle` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 340 | 4886 | `accesskit_node_text_align` | `nodeTextAlign` | opt_text_align_toC | src/consumer/node_ref/ + src/schema/node.zig |
+| 341 | 4894 | `accesskit_node_set_text_align` | `nodeSetTextAlign` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 342 | 4903 | `accesskit_node_clear_text_align` | `nodeClearTextAlign` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 343 | 4912 | `accesskit_node_vertical_offset` | `nodeVerticalOffset` | opt_vertical_offset_toC | src/consumer/node_ref/ + src/schema/node.zig |
+| 344 | 4920 | `accesskit_node_set_vertical_offset` | `nodeSetVerticalOffset` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 345 | 4929 | `accesskit_node_clear_vertical_offset` | `nodeClearVerticalOffset` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 346 | 4940 | `accesskit_node_transform` | `nodeTransform` | identity (both sides extern) | src/consumer/node_ref/ + src/schema/node.zig |
+| 347 | 4948 | `accesskit_node_set_transform` | `nodeSetTransform` | identity | src/consumer/node_ref/ + src/schema/node.zig |
+| 348 | 4957 | `accesskit_node_clear_transform` | `nodeClearTransform` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 349 | 4966 | `accesskit_node_bounds` | `nodeBounds` | opt_rect_toC | src/consumer/node_ref/ + src/schema/node.zig |
+| 350 | 4974 | `accesskit_node_set_bounds` | `nodeSetBounds` | identity | src/consumer/node_ref/ + src/schema/node.zig |
+| 351 | 4982 | `accesskit_node_clear_bounds` | `nodeClearBounds` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 352 | 4991 | `accesskit_node_text_selection` | `nodeTextSelection` | opt_text_selection_toC | src/consumer/node_ref/ + src/schema/node.zig |
+| 353 | 4999 | `accesskit_node_set_text_selection` | `nodeSetTextSelection` | identity | src/consumer/node_ref/ + src/schema/node.zig |
+| 354 | 5008 | `accesskit_node_clear_text_selection` | `nodeClearTextSelection` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 355 | 5101 | `accesskit_node_custom_actions` | `nodeCustomActions` | scalar tag pass | src/consumer/node_ref/ + src/schema/node.zig |
+| 356 | 5111 | `accesskit_node_set_custom_actions` | `nodeSetCustomActions` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 357 | 5122 | `accesskit_node_push_custom_action` | `nodePushCustomAction` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 358 | 5131 | `accesskit_node_clear_custom_actions` | `nodeClearCustomActions` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 359 | 5141 | `accesskit_node_new` | `nodeNew` | scalar tag pass | src/consumer/node_ref/ + src/schema/node.zig |
+| 360 | 5150 | `accesskit_node_free` | `nodeFree` | — (none: scalar/void/pointer only) | src/consumer/node_ref/ + src/schema/node.zig |
+| 361 | 5160 | `accesskit_node_debug` | `nodeDebug` | dupCString | src/consumer/node_ref/ + src/schema/node.zig |
 
 
 #### `accesskit_tree_info_*` — 11 exports
 
 | # | hdr | C symbol = Zig `export fn` name | Zig implementation | `marshal.zig` conversion | Zig target |
 |---:|---:|---|---|---|---|
-| 362 | 5164 | `accesskit_tree_info_new` | `treeInfoNew` | scalar tag pass | src/schema/update.zig |
-| 363 | 5172 | `accesskit_tree_info_free` | `treeInfoFree` | — (none: scalar/void/pointer only) | src/schema/update.zig |
-| 364 | 5185 | `accesskit_tree_info_get_toolkit_name` | `treeInfoGetToolkitName` | dupCString | src/schema/update.zig |
-| 365 | 5193 | `accesskit_tree_info_set_toolkit_name` | `treeInfoSetToolkitName` | — (none: scalar/void/pointer only) | src/schema/update.zig |
-| 366 | 5206 | `accesskit_tree_info_set_toolkit_name_with_length` | `treeInfoSetToolkitNameWithLength` | — (none: scalar/void/pointer only) | src/schema/update.zig |
-| 367 | 5217 | `accesskit_tree_info_clear_toolkit_name` | `treeInfoClearToolkitName` | — (none: scalar/void/pointer only) | src/schema/update.zig |
-| 368 | 5230 | `accesskit_tree_info_get_toolkit_version` | `treeInfoGetToolkitVersion` | dupCString | src/schema/update.zig |
-| 369 | 5239 | `accesskit_tree_info_set_toolkit_version` | `treeInfoSetToolkitVersion` | — (none: scalar/void/pointer only) | src/schema/update.zig |
-| 370 | 5252 | `accesskit_tree_info_set_toolkit_version_with_length` | `treeInfoSetToolkitVersionWithLength` | — (none: scalar/void/pointer only) | src/schema/update.zig |
-| 371 | 5264 | `accesskit_tree_info_clear_toolkit_version` | `treeInfoClearToolkitVersion` | — (none: scalar/void/pointer only) | src/schema/update.zig |
-| 372 | 5274 | `accesskit_tree_info_debug` | `treeInfoDebug` | dupCString | src/schema/update.zig |
+| 362 | 5171 | `accesskit_tree_info_new` | `treeInfoNew` | scalar tag pass | src/schema/update.zig |
+| 363 | 5179 | `accesskit_tree_info_free` | `treeInfoFree` | — (none: scalar/void/pointer only) | src/schema/update.zig |
+| 364 | 5192 | `accesskit_tree_info_get_toolkit_name` | `treeInfoGetToolkitName` | dupCString | src/schema/update.zig |
+| 365 | 5200 | `accesskit_tree_info_set_toolkit_name` | `treeInfoSetToolkitName` | — (none: scalar/void/pointer only) | src/schema/update.zig |
+| 366 | 5213 | `accesskit_tree_info_set_toolkit_name_with_length` | `treeInfoSetToolkitNameWithLength` | — (none: scalar/void/pointer only) | src/schema/update.zig |
+| 367 | 5224 | `accesskit_tree_info_clear_toolkit_name` | `treeInfoClearToolkitName` | — (none: scalar/void/pointer only) | src/schema/update.zig |
+| 368 | 5237 | `accesskit_tree_info_get_toolkit_version` | `treeInfoGetToolkitVersion` | dupCString | src/schema/update.zig |
+| 369 | 5246 | `accesskit_tree_info_set_toolkit_version` | `treeInfoSetToolkitVersion` | — (none: scalar/void/pointer only) | src/schema/update.zig |
+| 370 | 5259 | `accesskit_tree_info_set_toolkit_version_with_length` | `treeInfoSetToolkitVersionWithLength` | — (none: scalar/void/pointer only) | src/schema/update.zig |
+| 371 | 5271 | `accesskit_tree_info_clear_toolkit_version` | `treeInfoClearToolkitVersion` | — (none: scalar/void/pointer only) | src/schema/update.zig |
+| 372 | 5281 | `accesskit_tree_info_debug` | `treeInfoDebug` | dupCString | src/schema/update.zig |
 
 
 #### `accesskit_tree_update_*` — 10 exports
 
 | # | hdr | C symbol = Zig `export fn` name | Zig implementation | `marshal.zig` conversion | Zig target |
 |---:|---:|---|---|---|---|
-| 373 | 5286 | `accesskit_tree_update_with_focus` | `treeUpdateWithFocus` | scalar tag pass | src/schema/update.zig |
-| 374 | 5298 | `accesskit_tree_update_with_capacity_and_focus` | `treeUpdateWithCapacityAndFocus` | scalar tag pass | src/schema/update.zig |
-| 375 | 5309 | `accesskit_tree_update_free` | `treeUpdateFree` | — (none: scalar/void/pointer only) | src/schema/update.zig |
-| 376 | 5318 | `accesskit_tree_update_push_node` | `treeUpdatePushNode` | — (none: scalar/void/pointer only) | src/schema/update.zig |
-| 377 | 5331 | `accesskit_tree_update_set_tree_info` | `treeUpdateSetTreeInfo` | — (none: scalar/void/pointer only) | src/schema/update.zig |
-| 378 | 5341 | `accesskit_tree_update_clear_tree_info` | `treeUpdateClearTreeInfo` | — (none: scalar/void/pointer only) | src/schema/update.zig |
-| 379 | 5348 | `accesskit_tree_update_set_focus` | `treeUpdateSetFocus` | — (none: scalar/void/pointer only) | src/schema/update.zig |
-| 380 | 5357 | `accesskit_tree_update_get_tree_id` | `treeUpdateGetTreeId` | identity (both sides extern) | src/schema/update.zig |
-| 381 | 5364 | `accesskit_tree_update_set_tree_id` | `treeUpdateSetTreeId` | identity | src/schema/update.zig |
-| 382 | 5376 | `accesskit_tree_update_debug` | `treeUpdateDebug` | dupCString | src/schema/update.zig |
+| 373 | 5293 | `accesskit_tree_update_with_focus` | `treeUpdateWithFocus` | scalar tag pass | src/schema/update.zig |
+| 374 | 5305 | `accesskit_tree_update_with_capacity_and_focus` | `treeUpdateWithCapacityAndFocus` | scalar tag pass | src/schema/update.zig |
+| 375 | 5316 | `accesskit_tree_update_free` | `treeUpdateFree` | — (none: scalar/void/pointer only) | src/schema/update.zig |
+| 376 | 5325 | `accesskit_tree_update_push_node` | `treeUpdatePushNode` | — (none: scalar/void/pointer only) | src/schema/update.zig |
+| 377 | 5338 | `accesskit_tree_update_set_tree_info` | `treeUpdateSetTreeInfo` | — (none: scalar/void/pointer only) | src/schema/update.zig |
+| 378 | 5348 | `accesskit_tree_update_clear_tree_info` | `treeUpdateClearTreeInfo` | — (none: scalar/void/pointer only) | src/schema/update.zig |
+| 379 | 5355 | `accesskit_tree_update_set_focus` | `treeUpdateSetFocus` | — (none: scalar/void/pointer only) | src/schema/update.zig |
+| 380 | 5364 | `accesskit_tree_update_get_tree_id` | `treeUpdateGetTreeId` | identity (both sides extern) | src/schema/update.zig |
+| 381 | 5371 | `accesskit_tree_update_set_tree_id` | `treeUpdateSetTreeId` | identity | src/schema/update.zig |
+| 382 | 5383 | `accesskit_tree_update_debug` | `treeUpdateDebug` | dupCString | src/schema/update.zig |
 
 
 #### `accesskit_custom_action*` — 8 exports
 
 | # | hdr | C symbol = Zig `export fn` name | Zig implementation | `marshal.zig` conversion | Zig target |
 |---:|---:|---|---|---|---|
-| 383 | 5012 | `accesskit_custom_action_new` | `customActionNew` | scalar tag pass | src/schema/values.zig |
-| 384 | 5021 | `accesskit_custom_action_free` | `customActionFree` | — (none: scalar/void/pointer only) | src/schema/values.zig |
-| 385 | 5027 | `accesskit_custom_action_id` | `customActionId` | — (none: scalar/void/pointer only) | src/schema/values.zig |
-| 386 | 5034 | `accesskit_custom_action_set_id` | `customActionSetId` | — (none: scalar/void/pointer only) | src/schema/values.zig |
-| 387 | 5048 | `accesskit_custom_action_description` | `customActionDescription` | dupCString | src/schema/values.zig |
-| 388 | 5058 | `accesskit_custom_action_set_description` | `customActionSetDescription` | — (none: scalar/void/pointer only) | src/schema/values.zig |
-| 389 | 5072 | `accesskit_custom_action_set_description_with_length` | `customActionSetDescriptionWithLength` | — (none: scalar/void/pointer only) | src/schema/values.zig |
-| 390 | 5083 | `accesskit_custom_actions_free` | `customActionsFree` | — (none: scalar/void/pointer only) | src/schema/values.zig |
+| 383 | 5019 | `accesskit_custom_action_new` | `customActionNew` | scalar tag pass | src/schema/values.zig |
+| 384 | 5028 | `accesskit_custom_action_free` | `customActionFree` | — (none: scalar/void/pointer only) | src/schema/values.zig |
+| 385 | 5034 | `accesskit_custom_action_id` | `customActionId` | — (none: scalar/void/pointer only) | src/schema/values.zig |
+| 386 | 5041 | `accesskit_custom_action_set_id` | `customActionSetId` | — (none: scalar/void/pointer only) | src/schema/values.zig |
+| 387 | 5055 | `accesskit_custom_action_description` | `customActionDescription` | dupCString | src/schema/values.zig |
+| 388 | 5065 | `accesskit_custom_action_set_description` | `customActionSetDescription` | — (none: scalar/void/pointer only) | src/schema/values.zig |
+| 389 | 5079 | `accesskit_custom_action_set_description_with_length` | `customActionSetDescriptionWithLength` | — (none: scalar/void/pointer only) | src/schema/values.zig |
+| 390 | 5090 | `accesskit_custom_actions_free` | `customActionsFree` | — (none: scalar/void/pointer only) | src/schema/values.zig |
 
 
 #### `accesskit_action_request*` — 1 export
 
 | # | hdr | C symbol = Zig `export fn` name | Zig implementation | `marshal.zig` conversion | Zig target |
 |---:|---:|---|---|---|---|
-| 391 | 5387 | `accesskit_action_request_free` | `actionRequestFree` | actionRequestFromC | src/schema/update.zig |
+| 391 | 5395 | `accesskit_action_request_free` | `actionRequestFree` | actionRequestFromC | src/schema/update.zig |
 
 
 #### `accesskit_affine_*` — 14 exports
 
 | # | hdr | C symbol = Zig `export fn` name | Zig implementation | `marshal.zig` conversion | Zig target |
 |---:|---:|---|---|---|---|
-| 392 | 5392 | `accesskit_affine_identity` | `affineIdentity` | identity (both sides extern) | src/schema/geometry/affine.zig |
-| 393 | 5397 | `accesskit_affine_flip_y` | `affineFlipY` | identity (both sides extern) | src/schema/geometry/affine.zig |
-| 394 | 5402 | `accesskit_affine_flip_x` | `affineFlipX` | identity (both sides extern) | src/schema/geometry/affine.zig |
-| 395 | 5407 | `accesskit_affine_scale` | `affineScale` | identity (both sides extern) | src/schema/geometry/affine.zig |
-| 396 | 5413 | `accesskit_affine_scale_non_uniform` | `affineScaleNonUniform` | identity (both sides extern) | src/schema/geometry/affine.zig |
-| 397 | 5419 | `accesskit_affine_translate` | `affineTranslate` | identity (both sides extern) + identity | src/schema/geometry/affine.zig |
-| 398 | 5425 | `accesskit_affine_map_unit_square` | `affineMapUnitSquare` | identity (both sides extern) + identity | src/schema/geometry/affine.zig |
-| 399 | 5430 | `accesskit_affine_determinant` | `affineDeterminant` | identity | src/schema/geometry/affine.zig |
-| 400 | 5439 | `accesskit_affine_inverse` | `affineInverse` | identity (both sides extern) + identity | src/schema/geometry/affine.zig |
-| 401 | 5446 | `accesskit_affine_transform_rect_bbox` | `affineTransformRectBbox` | identity (both sides extern) + identity | src/schema/geometry/affine.zig |
-| 402 | 5454 | `accesskit_affine_is_finite` | `affineIsFinite` | identity | src/schema/geometry/affine.zig |
-| 403 | 5461 | `accesskit_affine_is_nan` | `affineIsNan` | identity | src/schema/geometry/affine.zig |
-| 404 | 5470 | `accesskit_affine_mul` | `affineMul` | identity (both sides extern) + identity | src/schema/geometry/affine.zig |
-| 405 | 5477 | `accesskit_affine_transform_point` | `affineTransformPoint` | identity (both sides extern) + identity | src/schema/geometry/affine.zig |
+| 392 | 5400 | `accesskit_affine_identity` | `affineIdentity` | identity (both sides extern) | src/schema/geometry/affine.zig |
+| 393 | 5405 | `accesskit_affine_flip_y` | `affineFlipY` | identity (both sides extern) | src/schema/geometry/affine.zig |
+| 394 | 5410 | `accesskit_affine_flip_x` | `affineFlipX` | identity (both sides extern) | src/schema/geometry/affine.zig |
+| 395 | 5415 | `accesskit_affine_scale` | `affineScale` | identity (both sides extern) | src/schema/geometry/affine.zig |
+| 396 | 5421 | `accesskit_affine_scale_non_uniform` | `affineScaleNonUniform` | identity (both sides extern) | src/schema/geometry/affine.zig |
+| 397 | 5427 | `accesskit_affine_translate` | `affineTranslate` | identity (both sides extern) + identity | src/schema/geometry/affine.zig |
+| 398 | 5433 | `accesskit_affine_map_unit_square` | `affineMapUnitSquare` | identity (both sides extern) + identity | src/schema/geometry/affine.zig |
+| 399 | 5438 | `accesskit_affine_determinant` | `affineDeterminant` | identity | src/schema/geometry/affine.zig |
+| 400 | 5447 | `accesskit_affine_inverse` | `affineInverse` | identity (both sides extern) + identity | src/schema/geometry/affine.zig |
+| 401 | 5454 | `accesskit_affine_transform_rect_bbox` | `affineTransformRectBbox` | identity (both sides extern) + identity | src/schema/geometry/affine.zig |
+| 402 | 5462 | `accesskit_affine_is_finite` | `affineIsFinite` | identity | src/schema/geometry/affine.zig |
+| 403 | 5469 | `accesskit_affine_is_nan` | `affineIsNan` | identity | src/schema/geometry/affine.zig |
+| 404 | 5478 | `accesskit_affine_mul` | `affineMul` | identity (both sides extern) + identity | src/schema/geometry/affine.zig |
+| 405 | 5485 | `accesskit_affine_transform_point` | `affineTransformPoint` | identity (both sides extern) + identity | src/schema/geometry/affine.zig |
 
 
 #### `accesskit_rect_*` — 21 exports
 
 | # | hdr | C symbol = Zig `export fn` name | Zig implementation | `marshal.zig` conversion | Zig target |
 |---:|---:|---|---|---|---|
-| 406 | 5506 | `accesskit_rect_new` | `rectNew` | identity (both sides extern) | src/schema/geometry/rect.zig |
-| 407 | 5512 | `accesskit_rect_from_points` | `rectFromPoints` | identity (both sides extern) + identity | src/schema/geometry/rect.zig |
-| 408 | 5520 | `accesskit_rect_from_origin_size` | `rectFromOriginSize` | identity (both sides extern) + identity | src/schema/geometry/rect.zig |
-| 409 | 5528 | `accesskit_rect_with_origin` | `rectWithOrigin` | identity (both sides extern) + identity | src/schema/geometry/rect.zig |
-| 410 | 5534 | `accesskit_rect_with_size` | `rectWithSize` | identity (both sides extern) + identity | src/schema/geometry/rect.zig |
-| 411 | 5542 | `accesskit_rect_width` | `rectWidth` | identity | src/schema/geometry/rect.zig |
-| 412 | 5549 | `accesskit_rect_height` | `rectHeight` | identity | src/schema/geometry/rect.zig |
-| 413 | 5556 | `accesskit_rect_min_x` | `rectMinX` | identity | src/schema/geometry/rect.zig |
-| 414 | 5563 | `accesskit_rect_max_x` | `rectMaxX` | identity | src/schema/geometry/rect.zig |
-| 415 | 5570 | `accesskit_rect_min_y` | `rectMinY` | identity | src/schema/geometry/rect.zig |
-| 416 | 5577 | `accesskit_rect_max_y` | `rectMaxY` | identity | src/schema/geometry/rect.zig |
-| 417 | 5585 | `accesskit_rect_origin` | `rectOrigin` | identity (both sides extern) + identity | src/schema/geometry/rect.zig |
-| 418 | 5592 | `accesskit_rect_size` | `rectSize` | identity (both sides extern) + identity | src/schema/geometry/rect.zig |
-| 419 | 5600 | `accesskit_rect_abs` | `rectAbs` | identity (both sides extern) + identity | src/schema/geometry/rect.zig |
-| 420 | 5607 | `accesskit_rect_area` | `rectArea` | identity | src/schema/geometry/rect.zig |
-| 421 | 5614 | `accesskit_rect_is_empty` | `rectIsEmpty` | identity | src/schema/geometry/rect.zig |
-| 422 | 5621 | `accesskit_rect_contains` | `rectContains` | identity | src/schema/geometry/rect.zig |
-| 423 | 5629 | `accesskit_rect_union` | `rectUnion` | identity (both sides extern) + identity | src/schema/geometry/rect.zig |
-| 424 | 5638 | `accesskit_rect_union_pt` | `rectUnionPt` | identity (both sides extern) + identity | src/schema/geometry/rect.zig |
-| 425 | 5648 | `accesskit_rect_intersect` | `rectIntersect` | identity (both sides extern) + identity | src/schema/geometry/rect.zig |
-| 426 | 5655 | `accesskit_rect_translate` | `rectTranslate` | identity (both sides extern) + identity | src/schema/geometry/rect.zig |
+| 406 | 5514 | `accesskit_rect_new` | `rectNew` | identity (both sides extern) | src/schema/geometry/rect.zig |
+| 407 | 5520 | `accesskit_rect_from_points` | `rectFromPoints` | identity (both sides extern) + identity | src/schema/geometry/rect.zig |
+| 408 | 5528 | `accesskit_rect_from_origin_size` | `rectFromOriginSize` | identity (both sides extern) + identity | src/schema/geometry/rect.zig |
+| 409 | 5536 | `accesskit_rect_with_origin` | `rectWithOrigin` | identity (both sides extern) + identity | src/schema/geometry/rect.zig |
+| 410 | 5542 | `accesskit_rect_with_size` | `rectWithSize` | identity (both sides extern) + identity | src/schema/geometry/rect.zig |
+| 411 | 5550 | `accesskit_rect_width` | `rectWidth` | identity | src/schema/geometry/rect.zig |
+| 412 | 5557 | `accesskit_rect_height` | `rectHeight` | identity | src/schema/geometry/rect.zig |
+| 413 | 5564 | `accesskit_rect_min_x` | `rectMinX` | identity | src/schema/geometry/rect.zig |
+| 414 | 5571 | `accesskit_rect_max_x` | `rectMaxX` | identity | src/schema/geometry/rect.zig |
+| 415 | 5578 | `accesskit_rect_min_y` | `rectMinY` | identity | src/schema/geometry/rect.zig |
+| 416 | 5585 | `accesskit_rect_max_y` | `rectMaxY` | identity | src/schema/geometry/rect.zig |
+| 417 | 5593 | `accesskit_rect_origin` | `rectOrigin` | identity (both sides extern) + identity | src/schema/geometry/rect.zig |
+| 418 | 5600 | `accesskit_rect_size` | `rectSize` | identity (both sides extern) + identity | src/schema/geometry/rect.zig |
+| 419 | 5608 | `accesskit_rect_abs` | `rectAbs` | identity (both sides extern) + identity | src/schema/geometry/rect.zig |
+| 420 | 5615 | `accesskit_rect_area` | `rectArea` | identity | src/schema/geometry/rect.zig |
+| 421 | 5622 | `accesskit_rect_is_empty` | `rectIsEmpty` | identity | src/schema/geometry/rect.zig |
+| 422 | 5629 | `accesskit_rect_contains` | `rectContains` | identity | src/schema/geometry/rect.zig |
+| 423 | 5637 | `accesskit_rect_union` | `rectUnion` | identity (both sides extern) + identity | src/schema/geometry/rect.zig |
+| 424 | 5646 | `accesskit_rect_union_pt` | `rectUnionPt` | identity (both sides extern) + identity | src/schema/geometry/rect.zig |
+| 425 | 5656 | `accesskit_rect_intersect` | `rectIntersect` | identity (both sides extern) + identity | src/schema/geometry/rect.zig |
+| 426 | 5663 | `accesskit_rect_translate` | `rectTranslate` | identity (both sides extern) + identity | src/schema/geometry/rect.zig |
 
 
 #### `accesskit_point_*` — 4 exports
 
 | # | hdr | C symbol = Zig `export fn` name | Zig implementation | `marshal.zig` conversion | Zig target |
 |---:|---:|---|---|---|---|
-| 427 | 5483 | `accesskit_point_to_vec2` | `pointToVec2` | identity (both sides extern) + identity | src/schema/geometry/point.zig |
-| 428 | 5488 | `accesskit_point_add_vec2` | `pointAddVec2` | identity (both sides extern) + identity | src/schema/geometry/point.zig |
-| 429 | 5494 | `accesskit_point_sub_vec2` | `pointSubVec2` | identity (both sides extern) + identity | src/schema/geometry/point.zig |
-| 430 | 5500 | `accesskit_point_sub_point` | `pointSubPoint` | identity (both sides extern) + identity | src/schema/geometry/point.zig |
+| 427 | 5491 | `accesskit_point_to_vec2` | `pointToVec2` | identity (both sides extern) + identity | src/schema/geometry/point.zig |
+| 428 | 5496 | `accesskit_point_add_vec2` | `pointAddVec2` | identity (both sides extern) + identity | src/schema/geometry/point.zig |
+| 429 | 5502 | `accesskit_point_sub_vec2` | `pointSubVec2` | identity (both sides extern) + identity | src/schema/geometry/point.zig |
+| 430 | 5508 | `accesskit_point_sub_point` | `pointSubPoint` | identity (both sides extern) + identity | src/schema/geometry/point.zig |
 
 
 #### `accesskit_vec2_*` — 6 exports
 
 | # | hdr | C symbol = Zig `export fn` name | Zig implementation | `marshal.zig` conversion | Zig target |
 |---:|---:|---|---|---|---|
-| 431 | 5685 | `accesskit_vec2_to_point` | `vec2ToPoint` | identity (both sides extern) + identity | src/schema/geometry/vec2.zig |
-| 432 | 5690 | `accesskit_vec2_to_size` | `vec2ToSize` | identity (both sides extern) + identity | src/schema/geometry/vec2.zig |
-| 433 | 5695 | `accesskit_vec2_add` | `vec2Add` | identity (both sides extern) + identity | src/schema/geometry/vec2.zig |
-| 434 | 5701 | `accesskit_vec2_sub` | `vec2Sub` | identity (both sides extern) + identity | src/schema/geometry/vec2.zig |
-| 435 | 5707 | `accesskit_vec2_scale` | `vec2Scale` | identity (both sides extern) + identity | src/schema/geometry/vec2.zig |
-| 436 | 5713 | `accesskit_vec2_neg` | `vec2Neg` | identity (both sides extern) + identity | src/schema/geometry/vec2.zig |
+| 431 | 5693 | `accesskit_vec2_to_point` | `vec2ToPoint` | identity (both sides extern) + identity | src/schema/geometry/vec2.zig |
+| 432 | 5698 | `accesskit_vec2_to_size` | `vec2ToSize` | identity (both sides extern) + identity | src/schema/geometry/vec2.zig |
+| 433 | 5703 | `accesskit_vec2_add` | `vec2Add` | identity (both sides extern) + identity | src/schema/geometry/vec2.zig |
+| 434 | 5709 | `accesskit_vec2_sub` | `vec2Sub` | identity (both sides extern) + identity | src/schema/geometry/vec2.zig |
+| 435 | 5715 | `accesskit_vec2_scale` | `vec2Scale` | identity (both sides extern) + identity | src/schema/geometry/vec2.zig |
+| 436 | 5721 | `accesskit_vec2_neg` | `vec2Neg` | identity (both sides extern) + identity | src/schema/geometry/vec2.zig |
 
 
 #### `accesskit_size_*` — 4 exports
 
 | # | hdr | C symbol = Zig `export fn` name | Zig implementation | `marshal.zig` conversion | Zig target |
 |---:|---:|---|---|---|---|
-| 437 | 5662 | `accesskit_size_to_vec2` | `sizeToVec2` | identity (both sides extern) + identity | src/schema/geometry/size.zig |
-| 438 | 5667 | `accesskit_size_scale` | `sizeScale` | identity (both sides extern) + identity | src/schema/geometry/size.zig |
-| 439 | 5673 | `accesskit_size_add` | `sizeAdd` | identity (both sides extern) + identity | src/schema/geometry/size.zig |
-| 440 | 5679 | `accesskit_size_sub` | `sizeSub` | identity (both sides extern) + identity | src/schema/geometry/size.zig |
+| 437 | 5670 | `accesskit_size_to_vec2` | `sizeToVec2` | identity (both sides extern) + identity | src/schema/geometry/size.zig |
+| 438 | 5675 | `accesskit_size_scale` | `sizeScale` | identity (both sides extern) + identity | src/schema/geometry/size.zig |
+| 439 | 5681 | `accesskit_size_add` | `sizeAdd` | identity (both sides extern) + identity | src/schema/geometry/size.zig |
+| 440 | 5687 | `accesskit_size_sub` | `sizeSub` | identity (both sides extern) + identity | src/schema/geometry/size.zig |
 
 
 #### `accesskit_unix_*` — Linux/BSD adapter — 6 exports
 
 | # | hdr | C symbol = Zig `export fn` name | Zig implementation | `marshal.zig` conversion | Zig target |
 |---:|---:|---|---|---|---|
-| 441 | 6275 | `accesskit_unix_adapter_new` | `unixAdapterNew` | scalar tag pass | src/adapters/unix |
-| 442 | 6288 | `accesskit_unix_adapter_free` | `unixAdapterFree` | — (none: scalar/void/pointer only) | src/adapters/unix |
-| 443 | 6297 | `accesskit_unix_adapter_set_root_window_bounds` | `unixAdapterSetRootWindowBounds` | identity | src/adapters/unix |
-| 444 | 6312 | `accesskit_unix_adapter_update_if_active` | `unixAdapterUpdateIfActive` | — (none: scalar/void/pointer only) | src/adapters/unix |
-| 445 | 6323 | `accesskit_unix_adapter_update_window_focus_state` | `unixAdapterUpdateWindowFocusState` | — (none: scalar/void/pointer only) | src/adapters/unix |
-| 446 | 6336 | `accesskit_unix_adapter_debug` | `unixAdapterDebug` | dupCString | src/adapters/unix |
+| 441 | 6283 | `accesskit_unix_adapter_new` | `unixAdapterNew` | scalar tag pass | src/adapters/unix |
+| 442 | 6296 | `accesskit_unix_adapter_free` | `unixAdapterFree` | — (none: scalar/void/pointer only) | src/adapters/unix |
+| 443 | 6305 | `accesskit_unix_adapter_set_root_window_bounds` | `unixAdapterSetRootWindowBounds` | identity | src/adapters/unix |
+| 444 | 6320 | `accesskit_unix_adapter_update_if_active` | `unixAdapterUpdateIfActive` | — (none: scalar/void/pointer only) | src/adapters/unix |
+| 445 | 6331 | `accesskit_unix_adapter_update_window_focus_state` | `unixAdapterUpdateWindowFocusState` | — (none: scalar/void/pointer only) | src/adapters/unix |
+| 446 | 6344 | `accesskit_unix_adapter_debug` | `unixAdapterDebug` | dupCString | src/adapters/unix |
 
 
 #### `accesskit_windows_*` — Win32 adapter — 10 exports
 
 | # | hdr | C symbol = Zig `export fn` name | Zig implementation | `marshal.zig` conversion | Zig target |
 |---:|---:|---|---|---|---|
-| 447 | 6350 | `accesskit_windows_queued_events_raise` | `windowsQueuedEventsRaise` | scalar tag pass | src/adapters/windows |
-| 448 | 6361 | `accesskit_windows_adapter_new` | `windowsAdapterNew` | scalar tag pass | src/adapters/windows |
-| 449 | 6371 | `accesskit_windows_adapter_free` | `windowsAdapterFree` | — (none: scalar/void/pointer only) | src/adapters/windows |
-| 450 | 6383 | `accesskit_windows_adapter_update_if_active` | `windowsAdapterUpdateIfActive` | scalar tag pass | src/adapters/windows |
-| 451 | 6396 | `accesskit_windows_adapter_update_window_focus_state` | `windowsAdapterUpdateWindowFocusState` | scalar tag pass | src/adapters/windows |
-| 452 | 6411 | `accesskit_windows_adapter_handle_wm_getobject` | `windowsAdapterHandleWmGetobject` | opt_lresult_toC | src/adapters/windows |
-| 453 | 6427 | `accesskit_windows_adapter_debug` | `windowsAdapterDebug` | dupCString | src/adapters/windows |
-| 454 | 6439 | `accesskit_windows_subclassing_adapter_new` | `windowsSubclassingAdapterNew` | scalar tag pass | src/adapters/windows |
-| 455 | 6451 | `accesskit_windows_subclassing_adapter_free` | `windowsSubclassingAdapterFree` | — (none: scalar/void/pointer only) | src/adapters/windows |
-| 456 | 6464 | `accesskit_windows_subclassing_adapter_update_if_active` | `windowsSubclassingAdapterUpdateIfActive` | scalar tag pass | src/adapters/windows |
+| 447 | 6358 | `accesskit_windows_queued_events_raise` | `windowsQueuedEventsRaise` | scalar tag pass | src/adapters/windows |
+| 448 | 6369 | `accesskit_windows_adapter_new` | `windowsAdapterNew` | scalar tag pass | src/adapters/windows |
+| 449 | 6379 | `accesskit_windows_adapter_free` | `windowsAdapterFree` | — (none: scalar/void/pointer only) | src/adapters/windows |
+| 450 | 6391 | `accesskit_windows_adapter_update_if_active` | `windowsAdapterUpdateIfActive` | scalar tag pass | src/adapters/windows |
+| 451 | 6404 | `accesskit_windows_adapter_update_window_focus_state` | `windowsAdapterUpdateWindowFocusState` | scalar tag pass | src/adapters/windows |
+| 452 | 6419 | `accesskit_windows_adapter_handle_wm_getobject` | `windowsAdapterHandleWmGetobject` | opt_lresult_toC | src/adapters/windows |
+| 453 | 6435 | `accesskit_windows_adapter_debug` | `windowsAdapterDebug` | dupCString | src/adapters/windows |
+| 454 | 6447 | `accesskit_windows_subclassing_adapter_new` | `windowsSubclassingAdapterNew` | scalar tag pass | src/adapters/windows |
+| 455 | 6459 | `accesskit_windows_subclassing_adapter_free` | `windowsSubclassingAdapterFree` | — (none: scalar/void/pointer only) | src/adapters/windows |
+| 456 | 6472 | `accesskit_windows_subclassing_adapter_update_if_active` | `windowsSubclassingAdapterUpdateIfActive` | scalar tag pass | src/adapters/windows |
 
 
 #### `accesskit_macos_*` — macOS adapter — 16 exports
 
 | # | hdr | C symbol = Zig `export fn` name | Zig implementation | `marshal.zig` conversion | Zig target |
 |---:|---:|---|---|---|---|
-| 457 | 6063 | `accesskit_macos_queued_events_raise` | `macosQueuedEventsRaise` | scalar tag pass | src/adapters/macos |
-| 458 | 6074 | `accesskit_macos_adapter_new` | `macosAdapterNew` | scalar tag pass | src/adapters/macos |
-| 459 | 6083 | `accesskit_macos_adapter_free` | `macosAdapterFree` | — (none: scalar/void/pointer only) | src/adapters/macos |
-| 460 | 6095 | `accesskit_macos_adapter_update_if_active` | `macosAdapterUpdateIfActive` | scalar tag pass | src/adapters/macos |
-| 461 | 6108 | `accesskit_macos_adapter_update_view_focus_state` | `macosAdapterUpdateViewFocusState` | scalar tag pass | src/adapters/macos |
-| 462 | 6122 | `accesskit_macos_adapter_view_children` | `macosAdapterViewChildren` | scalar tag pass | src/adapters/macos |
-| 463 | 6136 | `accesskit_macos_adapter_focus` | `macosAdapterFocus` | scalar tag pass | src/adapters/macos |
-| 464 | 6150 | `accesskit_macos_adapter_hit_test` | `macosAdapterHitTest` | scalar tag pass | src/adapters/macos |
-| 465 | 6164 | `accesskit_macos_adapter_debug` | `macosAdapterDebug` | dupCString | src/adapters/macos |
-| 466 | 6175 | `accesskit_macos_subclassing_adapter_new` | `macosSubclassingAdapterNew` | scalar tag pass | src/adapters/macos |
-| 467 | 6189 | `accesskit_macos_subclassing_adapter_for_window` | `macosSubclassingAdapterForWindow` | scalar tag pass | src/adapters/macos |
-| 468 | 6201 | `accesskit_macos_subclassing_adapter_free` | `macosSubclassingAdapterFree` | — (none: scalar/void/pointer only) | src/adapters/macos |
-| 469 | 6214 | `accesskit_macos_subclassing_adapter_update_if_active` | `macosSubclassingAdapterUpdateIfActive` | scalar tag pass | src/adapters/macos |
-| 470 | 6227 | `accesskit_macos_subclassing_adapter_update_view_focus_state` | `macosSubclassingAdapterUpdateViewFocusState` | scalar tag pass | src/adapters/macos |
-| 471 | 6243 | `accesskit_macos_add_focus_forwarder_to_window_class` | `macosAddFocusForwarderToWindowClass` | — (none: scalar/void/pointer only) | src/adapters/macos |
-| 472 | 6257 | `accesskit_macos_add_focus_forwarder_to_window_class_with_length` | `macosAddFocusForwarderToWindowClassWithLength` | — (none: scalar/void/pointer only) | src/adapters/macos |
+| 457 | 6071 | `accesskit_macos_queued_events_raise` | `macosQueuedEventsRaise` | scalar tag pass | src/adapters/macos |
+| 458 | 6082 | `accesskit_macos_adapter_new` | `macosAdapterNew` | scalar tag pass | src/adapters/macos |
+| 459 | 6091 | `accesskit_macos_adapter_free` | `macosAdapterFree` | — (none: scalar/void/pointer only) | src/adapters/macos |
+| 460 | 6103 | `accesskit_macos_adapter_update_if_active` | `macosAdapterUpdateIfActive` | scalar tag pass | src/adapters/macos |
+| 461 | 6116 | `accesskit_macos_adapter_update_view_focus_state` | `macosAdapterUpdateViewFocusState` | scalar tag pass | src/adapters/macos |
+| 462 | 6130 | `accesskit_macos_adapter_view_children` | `macosAdapterViewChildren` | scalar tag pass | src/adapters/macos |
+| 463 | 6144 | `accesskit_macos_adapter_focus` | `macosAdapterFocus` | scalar tag pass | src/adapters/macos |
+| 464 | 6158 | `accesskit_macos_adapter_hit_test` | `macosAdapterHitTest` | scalar tag pass | src/adapters/macos |
+| 465 | 6172 | `accesskit_macos_adapter_debug` | `macosAdapterDebug` | dupCString | src/adapters/macos |
+| 466 | 6183 | `accesskit_macos_subclassing_adapter_new` | `macosSubclassingAdapterNew` | scalar tag pass | src/adapters/macos |
+| 467 | 6197 | `accesskit_macos_subclassing_adapter_for_window` | `macosSubclassingAdapterForWindow` | scalar tag pass | src/adapters/macos |
+| 468 | 6209 | `accesskit_macos_subclassing_adapter_free` | `macosSubclassingAdapterFree` | — (none: scalar/void/pointer only) | src/adapters/macos |
+| 469 | 6222 | `accesskit_macos_subclassing_adapter_update_if_active` | `macosSubclassingAdapterUpdateIfActive` | scalar tag pass | src/adapters/macos |
+| 470 | 6235 | `accesskit_macos_subclassing_adapter_update_view_focus_state` | `macosSubclassingAdapterUpdateViewFocusState` | scalar tag pass | src/adapters/macos |
+| 471 | 6251 | `accesskit_macos_add_focus_forwarder_to_window_class` | `macosAddFocusForwarderToWindowClass` | — (none: scalar/void/pointer only) | src/adapters/macos |
+| 472 | 6265 | `accesskit_macos_add_focus_forwarder_to_window_class_with_length` | `macosAddFocusForwarderToWindowClassWithLength` | — (none: scalar/void/pointer only) | src/adapters/macos |
 
 
 #### `accesskit_ios_*` — iOS/tvOS/visionOS/watchOS adapter — 13 exports
 
 | # | hdr | C symbol = Zig `export fn` name | Zig implementation | `marshal.zig` conversion | Zig target |
 |---:|---:|---|---|---|---|
-| 473 | 5901 | `accesskit_ios_queued_events_raise` | `iosQueuedEventsRaise` | scalar tag pass | src/adapters/ios |
-| 474 | 5912 | `accesskit_ios_adapter_new` | `iosAdapterNew` | scalar tag pass | src/adapters/ios |
-| 475 | 5925 | `accesskit_ios_adapter_free` | `iosAdapterFree` | — (none: scalar/void/pointer only) | src/adapters/ios |
-| 476 | 5937 | `accesskit_ios_adapter_update_if_active` | `iosAdapterUpdateIfActive` | scalar tag pass | src/adapters/ios |
-| 477 | 5949 | `accesskit_ios_adapter_view_did_appear` | `iosAdapterViewDidAppear` | scalar tag pass | src/adapters/ios |
-| 478 | 5955 | `accesskit_ios_adapter_is_accessibility_element` | `iosAdapterIsAccessibilityElement` | — (none: scalar/void/pointer only) | src/adapters/ios |
-| 479 | 5968 | `accesskit_ios_adapter_accessibility_elements` | `iosAdapterAccessibilityElements` | scalar tag pass | src/adapters/ios |
-| 480 | 5980 | `accesskit_ios_adapter_hit_test` | `iosAdapterHitTest` | scalar tag pass | src/adapters/ios |
-| 481 | 5992 | `accesskit_ios_adapter_debug` | `iosAdapterDebug` | dupCString | src/adapters/ios |
-| 482 | 6004 | `accesskit_ios_subclassing_adapter_new` | `iosSubclassingAdapterNew` | scalar tag pass | src/adapters/ios |
-| 483 | 6019 | `accesskit_ios_subclassing_adapter_for_window` | `iosSubclassingAdapterForWindow` | scalar tag pass | src/adapters/ios |
-| 484 | 6033 | `accesskit_ios_subclassing_adapter_free` | `iosSubclassingAdapterFree` | — (none: scalar/void/pointer only) | src/adapters/ios |
-| 485 | 6046 | `accesskit_ios_subclassing_adapter_update_if_active` | `iosSubclassingAdapterUpdateIfActive` | scalar tag pass | src/adapters/ios |
+| 473 | 5909 | `accesskit_ios_queued_events_raise` | `iosQueuedEventsRaise` | scalar tag pass | src/adapters/ios |
+| 474 | 5920 | `accesskit_ios_adapter_new` | `iosAdapterNew` | scalar tag pass | src/adapters/ios |
+| 475 | 5933 | `accesskit_ios_adapter_free` | `iosAdapterFree` | — (none: scalar/void/pointer only) | src/adapters/ios |
+| 476 | 5945 | `accesskit_ios_adapter_update_if_active` | `iosAdapterUpdateIfActive` | scalar tag pass | src/adapters/ios |
+| 477 | 5957 | `accesskit_ios_adapter_view_did_appear` | `iosAdapterViewDidAppear` | scalar tag pass | src/adapters/ios |
+| 478 | 5963 | `accesskit_ios_adapter_is_accessibility_element` | `iosAdapterIsAccessibilityElement` | — (none: scalar/void/pointer only) | src/adapters/ios |
+| 479 | 5976 | `accesskit_ios_adapter_accessibility_elements` | `iosAdapterAccessibilityElements` | scalar tag pass | src/adapters/ios |
+| 480 | 5988 | `accesskit_ios_adapter_hit_test` | `iosAdapterHitTest` | scalar tag pass | src/adapters/ios |
+| 481 | 6000 | `accesskit_ios_adapter_debug` | `iosAdapterDebug` | dupCString | src/adapters/ios |
+| 482 | 6012 | `accesskit_ios_subclassing_adapter_new` | `iosSubclassingAdapterNew` | scalar tag pass | src/adapters/ios |
+| 483 | 6027 | `accesskit_ios_subclassing_adapter_for_window` | `iosSubclassingAdapterForWindow` | scalar tag pass | src/adapters/ios |
+| 484 | 6041 | `accesskit_ios_subclassing_adapter_free` | `iosSubclassingAdapterFree` | — (none: scalar/void/pointer only) | src/adapters/ios |
+| 485 | 6054 | `accesskit_ios_subclassing_adapter_update_if_active` | `iosSubclassingAdapterUpdateIfActive` | scalar tag pass | src/adapters/ios |
 
 
 #### `accesskit_android_*` — JNI adapter — 13 exports
 
 | # | hdr | C symbol = Zig `export fn` name | Zig implementation | `marshal.zig` conversion | Zig target |
 |---:|---:|---|---|---|---|
-| 486 | 5726 | `accesskit_android_platform_action_from_java` | `androidPlatformActionFromJava` | scalar tag pass | src/adapters/android |
-| 487 | 5735 | `accesskit_android_platform_action_free` | `androidPlatformActionFree` | — (none: scalar/void/pointer only) | src/adapters/android |
-| 488 | 5747 | `accesskit_android_queued_events_raise` | `androidQueuedEventsRaise` | — (none: scalar/void/pointer only) | src/adapters/android |
-| 489 | 5759 | `accesskit_android_adapter_new` | `androidAdapterNew` | scalar tag pass | src/adapters/android |
-| 490 | 5768 | `accesskit_android_adapter_free` | `androidAdapterFree` | — (none: scalar/void/pointer only) | src/adapters/android |
-| 491 | 5780 | `accesskit_android_adapter_update_if_active` | `androidAdapterUpdateIfActive` | scalar tag pass | src/adapters/android |
-| 492 | 5793 | `accesskit_android_adapter_create_accessibility_node_info` | `androidAdapterCreateAccessibilityNodeInfo` | — (none: scalar/void/pointer only) | src/adapters/android |
-| 493 | 5809 | `accesskit_android_adapter_find_focus` | `androidAdapterFindFocus` | — (none: scalar/void/pointer only) | src/adapters/android |
-| 494 | 5826 | `accesskit_android_adapter_perform_action` | `androidAdapterPerformAction` | scalar tag pass | src/adapters/android |
-| 495 | 5841 | `accesskit_android_adapter_on_hover_event` | `androidAdapterOnHoverEvent` | scalar tag pass | src/adapters/android |
-| 496 | 5858 | `accesskit_android_injecting_adapter_new` | `androidInjectingAdapterNew` | scalar tag pass | src/adapters/android |
-| 497 | 5870 | `accesskit_android_injecting_adapter_free` | `androidInjectingAdapterFree` | — (none: scalar/void/pointer only) | src/adapters/android |
-| 498 | 5883 | `accesskit_android_injecting_adapter_update_if_active` | `androidInjectingAdapterUpdateIfActive` | — (none: scalar/void/pointer only) | src/adapters/android |
+| 486 | 5734 | `accesskit_android_platform_action_from_java` | `androidPlatformActionFromJava` | scalar tag pass | src/adapters/android |
+| 487 | 5743 | `accesskit_android_platform_action_free` | `androidPlatformActionFree` | — (none: scalar/void/pointer only) | src/adapters/android |
+| 488 | 5755 | `accesskit_android_queued_events_raise` | `androidQueuedEventsRaise` | — (none: scalar/void/pointer only) | src/adapters/android |
+| 489 | 5767 | `accesskit_android_adapter_new` | `androidAdapterNew` | scalar tag pass | src/adapters/android |
+| 490 | 5776 | `accesskit_android_adapter_free` | `androidAdapterFree` | — (none: scalar/void/pointer only) | src/adapters/android |
+| 491 | 5788 | `accesskit_android_adapter_update_if_active` | `androidAdapterUpdateIfActive` | scalar tag pass | src/adapters/android |
+| 492 | 5801 | `accesskit_android_adapter_create_accessibility_node_info` | `androidAdapterCreateAccessibilityNodeInfo` | — (none: scalar/void/pointer only) | src/adapters/android |
+| 493 | 5817 | `accesskit_android_adapter_find_focus` | `androidAdapterFindFocus` | — (none: scalar/void/pointer only) | src/adapters/android |
+| 494 | 5834 | `accesskit_android_adapter_perform_action` | `androidAdapterPerformAction` | scalar tag pass | src/adapters/android |
+| 495 | 5849 | `accesskit_android_adapter_on_hover_event` | `androidAdapterOnHoverEvent` | scalar tag pass | src/adapters/android |
+| 496 | 5866 | `accesskit_android_injecting_adapter_new` | `androidInjectingAdapterNew` | scalar tag pass | src/adapters/android |
+| 497 | 5878 | `accesskit_android_injecting_adapter_free` | `androidInjectingAdapterFree` | — (none: scalar/void/pointer only) | src/adapters/android |
+| 498 | 5891 | `accesskit_android_injecting_adapter_update_if_active` | `androidInjectingAdapterUpdateIfActive` | — (none: scalar/void/pointer only) | src/adapters/android |
 
 ---
 
@@ -1047,9 +1076,9 @@ the object.
 | `accesskit_android_platform_action` | 913 | not started |
 
 **Five of the 18 are implementable today** and 13 are blocked on adapters that do
-not exist. A C ABI that exports all 498 symbols cannot link on Linux without
+not exist. A C ABI that exports all 500 symbols cannot link on Linux without
 the five platform families, so the first milestone must either ship the Linux
-family or export only the 446 the host declares.
+family or export only the 448 the host declares.
 
 ### 3.6 The four function-pointer typedefs
 
@@ -1284,10 +1313,10 @@ against the census:
 
 | Check | Result |
 |---|---:|
-| `pub extern fn` declarations emitted | 446 |
-| Of the 498 header declarations, those the translator carries | **446** |
+| `pub extern fn` declarations emitted in the historical translator receipt | 446 |
+| Of the 499 current header function declarations, those the historical translator carried | **446** |
 | Names in the translator that the header does not declare | **0** |
-| Names in the header the translator omits | **52 — exactly the platform-gated set** |
+| Names the historical translator omitted from its captured header | **52 — its platform-gated set** |
 
 So the translator is faithful and complete on everything this host declares, and
 it omits precisely the 52 declarations behind `_WIN32`, `__ANDROID__`,
@@ -1311,7 +1340,7 @@ Two consequences for the implementer:
 |---|---|---|
 | `b.addLibrary` (`:842`) | `.version` non-null | Otherwise no `.so.0` symlink; `Compile.zig:505` |
 | `Module.CreateOptions.link_libc` (`Module.zig:234`) | `true` | `accesskit_set_allocator`'s default is the C allocator, and the header's `extern "C"` block is meaningless without libc |
-| `b.addOptions` (`Build.zig:766`) + `Options.addOption` (`Options.zig:39`) | the existing `version` and `minimum_zig_version` | The shared library's version symbol and the header's version macro both read them; `build.zig:57-59` already builds this module |
+| `b.addOptions` (`Build.zig:766`) + `Options.addOption` (`Options.zig:39`) | the existing `version` and `minimum_zig_version` | The shared library's version symbol and the header's version macro both read them; `build.zig:74-76` already builds this module |
 | `capi.installHeader` (`Compile.zig:523`) | nothing | A checked-in path and a destination name |
 | `b.step` (`Build.zig:1355`) | a new `capi-check` step | Carries the `translate-c` diff and the C fixture, neither of which is a compile |
 | `b.addSystemCommand` (`Build.zig:927`) | — | Runs `translate-c` and `cc -std=c11 …` as build steps |
@@ -1507,8 +1536,8 @@ Check 3 is the one that decides 6.2, and it is the first thing to build.
 
 ## 8. What to write, in order
 
-1. `src/capi/root.zig` — the 3 runtime exports and the 440 portable ones the
-   host declares. Start with the geometry families: 14 affine, 21 rect, 6 vec2,
+1. `src/capi/root.zig` — the 4 runtime function exports belong to the 441 portable functions.
+   The separate portable data object makes 442 portable symbols. Start with geometry: 14 affine, 21 rect, 6 vec2,
    4 point, 4 size. They are the most mechanical, they exercise the aggregate
    convention, and they are the ones check 3 needs.
 2. `src/capi/marshal.zig` — 33 distinct conversion recipes, section 2's column.

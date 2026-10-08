@@ -7,14 +7,18 @@ translates each upstream Rust module and each public function into Zig, module
 by module and function by function. It does not wrap, link or call the Rust
 implementation, and it needs no Rust toolchain at any point.
 
-**PowerPC64 C ABI limit:** this publication does not support the PowerPC64 C consumer boundary.
-The linked C consumer crashes on Zig 0.16.0 aggregate-return lowering.
-Independent compiler-only reproductions fail without zaccesskit.
-Pure Zig PowerPC64 tests, all twelve reference cases, and the offline integration scenario passed through QEMU.
-The user accepted publication with this C boundary limit. No compiler change or speculative wrapper is included.
-All checks remain enabled. See `docs/50-verification.md` sections 10.5 and 10.7 for the failing C receipts.
-The corrected-source gate exited 1. Formatting, build, native tests, and AST checks passed.
-External checker failures and the unsupported PowerPC64 C boundary remain disclosed publication limits.
+**PowerPC64 C ABI:** At tested source snapshot `d854c8b0d77385cf8c0c5983832369923fdef2d5`, the private repair passed the Debug C consumer on native x86_64, PPC64 Linux MUSL through QEMU, and AArch64 Linux MUSL through QEMU.
+Each target reported 37,240 checks, 0 failures, and 7/7 steps. The native run is in `artifact://2946`; Main also reported the paired QEMU `test-c` results for PPC64 Linux MUSL and AArch64 Linux MUSL.
+The repair is limited to the known broken PPC64 Linux MUSL families. It is not a general ABI or platform-SDK claim. The canonical Zig 0.16 compiler-control case still fails.
+At earlier source `c45632aa2fe6bcdf344ac7745b9a4350080309ee`, the full C consumer failed the `f32` font and color cases.
+It also failed the Boolean case and twelve real enum controls with two-byte values. That earlier failure set was not limited to 16-byte returns.
+Independent compiler-only reproductions fail without zaccesskit and still demonstrate the canonical compiler-control failure.
+Earlier pure Zig PowerPC64 tests, twelve recorded reference cases, and the offline integration scenario passed through QEMU.
+The earlier accepted publication retained the unsupported boundary. It included no compiler change or speculative wrapper.
+Tested source snapshot `d854c8b0d77385cf8c0c5983832369923fdef2d5` carries 49 private return cases, eight input exports, and the bare TreeId getter return-lowering helper. These private ABI paths are gated to PPC64 Linux MUSL.
+That source also retains 17 WHY comments across nine paths and bounded Mac-provider typed-notification error/no-close changes. The root namespace, seven root declarations, public API, header, and marshalling records remain unchanged.
+The d854 root result is not a full project gate. Main's later pre-guard gate run failed; its stage results are below. Both foreign Debug C-consumer rows passed.
+The required `refAllDecls` guards in `src/root.zig` and `src/adapters/root.zig` prove declaration reachability, not behavior. On foreign targets they do not typecheck or analyze the Windows COM graph. Main narrowed COM-graph analysis to `cpu.arch == .x86_64`; the supported x86_64 analyzer remains required. No post-fix source pin or gate result is available; lint cleanup and a full-gate rerun are pending.
 [Issue #5](https://github.com/CoffeeImpliesCode/zaccesskit/issues/5) is OPEN and tracks the future Zig 0.17 ABI check.
 It does not establish that Zig 0.17 fixes the defect.
 The C artifact requires the LLVM backend on Zig 0.16.0.
@@ -23,10 +27,11 @@ The self-hosted x86 Debug backend failed five linked-C geometry result checks. T
 
 The async design runs the other way round from what the name suggests.
 `std.Io` is the interface. `zio` is one implementation behind it, in the place
-`std.Io.Threaded` and `std.Io.Uring` sit. Every library signature takes
-`io: std.Io`, and a `*zio.Runtime` appears only where a task is spawned, a group
-is driven or a timeout is armed. `docs/30-port-design.md` section 7 and
-`docs/20-zio-and-zig-io.md` section 1 carry the reasoning.
+`std.Io.Threaded` and `std.Io.Uring` sit.
+Blocking entry points take explicit I/O capabilities.
+Native transport owners also receive the runtime needed for owned tasks.
+The pure schema and consumer layers need neither capability.
+`docs/30-port-design.md` sections 2.1 and 12.2 record the boundary.
 
 It tracks two upstream repositories, which version independently:
 
@@ -44,12 +49,11 @@ targets and the generated header already matches it.
 
 ## What is in the tree
 
-The library exists. The table below is a census of the working copy, measured by
-reading the files: module and line counts from `find` and `wc`, and test counts
-from a comment-aware scan for `test "` declarations. The last column counts the
-modules `zig build test` reaches from `src/root.zig`. A milestone moves every
-figure in the table, so treat each one as the reading of a moment and
-re-measure it before you quote it.
+The library exists. The table below preserves a historical source census.
+It does not describe the current source or import graph.
+`docs/30-port-design.md` sections 1.3 and 12 describe the current public contracts.
+`docs/52-translation-ledger.md` records current item dispositions.
+`docs/50-verification.md` records actual test and platform receipts.
 
 | Layer | Modules | Lines | `test "` | In the analysis graph |
 |---|---:|---:|---:|---|
@@ -68,17 +72,17 @@ declarations `include/zaccesskit.h` carries, and `src/adapters/` holds the five
 platform adapters. The layering is a constraint rather than a preference:
 `docs/30-port-design.md` section 3.3 fixes it.
 
-`include/zaccesskit.h` is 6596 lines and declares 498 functions. A Linux build
-exports 446 of them, because 52 sit behind a preprocessor guard that is off
-there. `docs/40-capi-build-map.md` section 1.1 measured both figures, and
-`tools/capi_parity/main.zig` re-measures them per target on demand.
+The earlier header census counted 6596 lines and 498 functions, with 446 Linux exports.
+Those figures are historical, not the current exact-error API inventory.
+`docs/52-translation-ledger.md` maps the added C diagnostics.
+`tools/capi_parity/main.zig` measures header/export parity per target.
 
-### The analysis graph does not cover four files
+### Historical analysis graph: four files were unreachable
 
-`zig build test` compiles the test root `src/root.zig` and follows every
-`@import` from it. That reaches 110 of the 114 modules under `src/`. The other
-four are on disk, are compiled by nobody, and hold 1554 lines and 22 `test "`
-declarations.
+The earlier `src/root.zig` import walk reached 110 of 114 modules.
+At that measurement, four Windows files were unreachable.
+Those findings below are historical, not current missing-provider claims.
+The current source publishes real Windows provider namespaces.
 
 | File | Lines | `test "` | Why nothing imports it |
 |---|---:|---:|---|
@@ -104,17 +108,83 @@ Reproduce the reachability with a walk of the `@import` graph from
 
 ### What the run reports, and what it does not
 
-The corrected-source gate passed its native test stage.
+The earlier corrected-source gate passed its native test stage.
 Its strict x86_64 cross row passed all 1653 library tests and all 1676 linked-C checks.
-The full gate exited 1 because external checker failures and the PowerPC64 C boundary failure remain.
-`docs/50-verification.md` section 10.7 records the final stage results and cross counts.
+That earlier full gate exited 1 because external checker failures and the PowerPC64 C boundary remained.
+`docs/50-verification.md` section 10.7 records that historical gate result and cross counts.
 
-The census above is a historical source measurement, not the final executed test count.
-A declaration count and a pass count are not the same measurement.
+The census above is historical. Declaration counts and executed pass counts are different measurements.
 Neither certifies behavior on a real platform accessibility object.
-The reference checks cover twelve finite, hand-recorded, source-derived cases.
-They do not execute a Rust oracle or establish wire parity.
-The translation ledger remains at 57 open rows.
+The current fixture inventory contains fifteen finite, hand-recorded, source-derived cases.
+Earlier twelve-case receipts remain twelve-case evidence.
+No fixture check executes a Rust oracle or establishes wire parity.
+Use `docs/52-translation-ledger.md` for reconciled source counts, not the earlier 57-open-row summary.
+
+The root publishes seven names: `schema`, `consumer`, `capi`, `adapters`, `Runtime`,
+`version`, and `minimum_zig_version` (`src/root.zig:36-81`).
+`adapters` publishes AT-SPI, Windows, Mac, iOS, and Android namespaces.
+`Runtime` is the same pinned zio runtime type used by native adapters.
+Mandatory declaration-reachability guards remain in the test graph.
+They do not replace observable behavior and ownership tests.
+
+Current portable native-contract tests passed 18 cases and skipped one case in each safety mode.
+The Windows native client cross-build exited 0. No Windows client executed.
+Mac context tests passed ten cases and skipped two native Objective-C cases.
+Saved native-peer receipts match 216 independent read-only GDBus/busctl calls and 54 action/error-reply commands.
+Other bounded receipts match 32 full ACTION JSON callback cases, 101 lifecycle checks, 106 status-epoch checks, and eight positioned FIFO RPCs with observed signals.
+The positioned-boundary receipt matched 114/114 cases and three fresh-provider closes.
+Main-provider close exited 0 with zero late callbacks and an empty registry.
+Native OOM baseline/retry, geometry-boundary, reorder-repair, callback, event, and close cases were observed. The edit-head OOM path was not exercised through the CLI.
+The pinned source oracle confirms that removal after unregister returns UnknownObject.
+Android's complete namespace filter passed 209/209 tests in Debug and 209/209 in ReleaseSafe.
+The receipts are `execute-1-4-green/android-complete-namespace-debug.json` and `execute-1-4-green/android-complete-namespace-releasesafe.json`.
+The `src.adapters.android` filter covers all 13 modules, including scroll, tagged scalar cases, JNI gates and errors, allocation, public C queues, and producer ownership.
+These tests cover the portable JNI seam, not an Android VM, SDK client, device, or emulator.
+The controlled Linux provider matrix is complete through the CLI. It does not prove GUI or screen-reader behavior, Windows or macOS SDK behavior, or iOS or Android device execution.
+An earlier Debug run of the canonical 2051-test graph reported 1996 passes, 43 skips, and 12 failures.
+The ReleaseSafe run reported 1994 passes, 43 skips, and 14 failures.
+`execute-1-4-green/canonical-full-graph-failure-inventory.json` lists those 26 failure contexts.
+The source-corrected 2051-test graph at `3b4e07e5d05a960d57095405c339e7787436014a` exited 0 in both modes.
+Each corrected-source receipt reports 2,008 passed, 43 skipped, and 0 failed.
+The receipts are `execute-1-4-green/canonical-graph-source-corrected-debug.json` and `execute-1-4-green/canonical-graph-source-corrected-releasesafe.json`.
+
+At prior source snapshot `9741daec59b72c4c0d25843bb3e5c9af2d3abd4a`, the test run exited 0 with 31/31 build steps.
+Each root mode reported 2,021 passes, 43 skips, and 0 failures out of 2,064 tests. These are historical results, not results for the later guard-patch source.
+
+Historical BG250 output (`artifact://2827`) for tested source snapshot `320cb011918e099317136c226d43a2abf3d665d0` reported 31/31 build steps.
+Each Debug and ReleaseSafe root run reported 2,028 passes, 43 SDK skips, and 0 failures out of 2,071 tests. Each root run found two fuzz tests.
+Dedicated fuzz shards passed 440/440 in both modes and found three fuzz tests.
+Benchmarks passed 9/9 in both modes. Native-contract tests passed 18 and skipped one in each mode.
+Integration passed 918/918 in both modes and found one fuzz test per mode. Reference tests passed 785/785 in both modes.
+The native Debug C-consumer run at that snapshot passed 34,594 checks with no failures and recorded 2,093 allocations, 2,093 frees, and zero active allocations.
+These historical test shards overlap. Do not sum them.
+
+Main's completed `zig build test --summary all` output at tested source snapshot `d854c8b0d77385cf8c0c5983832369923fdef2d5` exited 0 with 31/31 steps (`artifact://2946`).
+Each Debug and ReleaseSafe root run had 2,070 tests: 2,027 passed, 43 SDK skips, and 0 failures. Each root run found two fuzz tests.
+Integration passed 918/918 in both modes and found one fuzz test per mode. Reference passed 785/785 in both modes.
+Dedicated fuzz shards passed 440/440 in both modes and found three fuzz tests. Benchmarks passed 9/9 in both modes.
+Native-contract tests passed 18 and skipped one in each mode. These snapshot shards overlap and must not be summed.
+The native Debug C consumer passed 37,240 checks with no failures and 7/7 steps. It recorded 2,095 allocations, 2,095 frees, and zero active allocations.
+Its output also records 1,669 strings, four custom actions, seven action lists, 55 nodes, two tree infos, and three tree updates (`artifact://2946`).
+Main's Debug QEMU `test-c` runs for PPC64 Linux MUSL and AArch64 Linux MUSL each passed 37,240 checks with no failures and 7/7 steps.
+These C-consumer results are Debug-only. No ReleaseSafe C-consumer result is recorded. The d854 test-stage result is not a full project gate.
+
+The approved bounded Linux AT-SPI smoke passed at source `c45632aa2fe6bcdf344ac7745b9a4350080309ee`.
+Its receipt is `execute-1-4-green/approved-bounded-native-bus-smoke.json`.
+It used approved private storage and an explicit approved daemon address.
+It queued and applied 11 edits, made 14 commits, and sent two click callbacks.
+Both stock clients observed 14 cache entries before removal and 13 after.
+They returned `UnknownObject` for the removed object and saw empty registries after close.
+The smoke matched `AéΩ😀😀`, four 256-byte replacements, a 1,024-byte value, and an empty end cursor.
+Both provider tasks joined, all five owned processes stopped with pidfds and exited 0, and no unrelated process was killed.
+It restored `IsEnabled` and `ScreenReaderEnabled` to false and recorded zero late callbacks.
+It exposed the native `click` action only. It makes no `custom42`, native OOM, desktop UI, or `nogui` claim.
+Its transport binary matched tested source snapshot `320cb011918e099317136c226d43a2abf3d665d0`; no binary identity with the d854 or later guard-patch source is established.
+
+BG249 remains red for the private 49-return candidate at tested source snapshot `320cb011918e099317136c226d43a2abf3d665d0`. No full C49 pass is recorded for that snapshot.
+Main's latest reported pre-guard full-gate run passed `fmt`, `build`, `test`, and `ast-check`, then reported 877 `ziglint` findings; `zbc` and `zwanzig` each terminated with exit status 134 (tool failures, not finding counts). A foreign COM cross-compilation failure occurred at `src/adapters/root.zig` (`refAllDecls(windows)` reached `unsupported.winapi`). The foreign Debug C-consumer rows passed.
+Main narrowed COM analysis to `cpu.arch == .x86_64` while preserving required root reachability guards. The x86_64 analyzer remains required. No post-fix source pin or gate result is available; lint cleanup continues and the gate rerun is pending. `docs/50-verification.md` section 11 records the exact receipts and limits.
+Nogui remains source-only and was not executed.
 
 ## Why a direct translation
 
@@ -377,6 +447,10 @@ ordinary test rather than as a fuzz target.
 
 ## Layout
 
+This listing preserves the earlier directory census.
+Module, dependency, build-step, and document counts below are historical.
+The current root publishes seven names, including `adapters` and the shared `Runtime` type.
+
 ```text
 zaccesskit/
 ├── .envrc                  direnv hook, loads the host scratch policy first
@@ -393,7 +467,7 @@ zaccesskit/
 ├── include/
 │   └── zaccesskit.h        the C ABI, checked in rather than generated
 ├── src/
-│   ├── root.zig            the module root; re-exports the three namespaces
+│   ├── root.zig            the module root; current public names are listed above
 │   ├── schema/             24 modules: the platform-neutral vocabulary
 │   ├── consumer/           28 modules: the tree, its queries, the update protocol
 │   ├── capi/               14 modules: the 498 header declarations in Zig
@@ -421,10 +495,9 @@ zig-pkg -> /tmp/cache/zaccesskit/pkg
 `.jj/` and `.git/` hold the colocated version control. `.devenv/` and `.direnv/`
 are generated. `codedb.snapshot` is an index artifact and is ignored.
 
-Five object files sit in the repository root: `probe2.o`, `probe6.o`, `probe7.o`,
-`probe8.o` and `probe9.o`, together about 30 MB. They are scratch output from
-the geometry probes `docs/19` records, nothing imports them, and `.gitignore`
-does not name them. Delete them.
+The earlier geometry research left five probe object files, as recorded in `docs/19`.
+That historical inventory is not a current filesystem observation.
+The standing scratch-cleanup requirements in `AGENTS.md` remain unchanged.
 
 The adapter order is fixed: `atspi`, `windows`, `macos`, `ios`, `android`.
 AT-SPI comes first because it is the only adapter whose protocol runs on this

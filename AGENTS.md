@@ -233,24 +233,22 @@ Each item names the failure it prevents. Do not rediscover them.
   fuzz` over the 823 lines of `zig-gate` returns `0`. A fuzz step therefore never
   runs unless a gate line in `docs/40-plan.md` names it. Put the target file and
   the corpus directory in that line.
-- **`src/root.zig` declares five names, and every one of them earns its
-  place.** It re-exports the three namespaces `schema`, `consumer` and `capi`,
-  and it mirrors `version` and `minimum_zig_version` out of `build.zig.zon`
-  through the `build_options` module. It used to be a module doc comment and
-  nothing else, and the `empty-file` warning `zlint` reported for it was the
-  correct verdict on that file. The file is not that file any more, so the
-  warning and the exemption that allowed it are both gone. Do not add a
-  placeholder `pub const`, an `export fn` or an unused import to quiet a
-  linter, and do not flatten the three namespaces into the root:
-  `docs/30-port-design.md` record R2 fixes them one level down, because a
-  consumer names those types in one signature.
-- **A re-export nothing references analyses nothing.** Zig analyses lazily, so
-  `pub const schema = @import("schema/root.zig")` compiles without looking at
-  one module under `src/schema/`. `zig build test` reported green that way,
-  having checked two constants and two tests. Each of the three namespaces
-  therefore has a test in `src/root.zig` that calls
-  `std.testing.refAllDecls` on it, and a fourth namespace needs one in the
-  same change.
+- **`src/root.zig` declares seven names, and each earns its place.**
+  It publishes `schema`, `consumer`, `capi`, `adapters`, `Runtime`, `version`,
+  and `minimum_zig_version` at `src/root.zig:36-81`.
+  `adapters` publishes the five platform namespaces.
+  `Runtime` exposes the same pinned zio runtime type used by those adapters.
+  The version constants come from `build.zig.zon` through `build_options`.
+  Do not add a placeholder declaration, unused import, or export to quiet a linter.
+  Do not flatten the namespaces into the root.
+  `docs/30-port-design.md` record R2 keeps types under their owning namespace.
+- **A re-export nothing references analyzes nothing.** Zig analyzes lazily.
+  A namespace import alone does not force its declarations into the test graph.
+  Keep the mandatory `std.testing.refAllDecls` namespace guards in `src/root.zig`
+  and `src/adapters/root.zig`.
+  Add the corresponding guard in the same change when a namespace becomes public.
+  These guards prove reachability, not behavior or native platform execution.
+  Pair them with meaningful boundary-value and ownership tests.
 - **Z001 is off in `.ziglint.zon`, and it stays off.** Z001 asks for a
   camelCase function name. 498 of its findings are the C ABI surface, where
   the Zig identifier **is** the C symbol in `include/zaccesskit.h` byte for
@@ -318,7 +316,7 @@ Each item names the failure it prevents. Do not rediscover them.
   | Android | `adapter.zig:677` `append_error` | `?Allocator.Error`, and `QueuedEvents.append` reports no other tag |
   - **This was a real defect twice, and both fixes are in the tree.** Every
     Windows slot once ran `catch { self.failure.out_of_memory = true; }`, so
-    every `QueryError` a walk raised reached `adapter.zig:305` as
+    every `QueryError` a walk raised reached `adapter.zig:307` as
     `error.OutOfMemory` and the `query_error` field was written by nothing but
     a test; `change_handler.zig:1061` names it. The macOS generator once held
     the same bit. **A caller that answers every tag with one sentinel does not
@@ -559,7 +557,7 @@ Each item names the failure it prevents. Do not rediscover them.
   init --colocate`. Use `jj`. Never run a raw git command except `jj git push`.
 - **Start new work on a clean change.** Run `jj st`. If the change is dirty,
   checkpoint it with `jj commit -m "wip: ..."`, then `jj new`.
-- **Do parallel work in a worktree.** `jj worktree add <path>`. Two agents never
+- **Do parallel work in an isolated workspace.** `jj workspace add <path>`. Two agents never
   edit one working copy.
 - **Commit only when asked.** Never commit a red tree. A red gate blocks the
   push and not a workaround.
@@ -632,29 +630,28 @@ Every item can fail, and every failure points at a defect.
 
 ## 11. What this host cannot run, and how each limit is proved
 
-Three things in this repository cannot be verified on a buildhost host. A claim
-that they work is a claim you have not checked. Do not write one.
+Host compilation, portable execution, and real platform execution are separate evidence classes.
+Do not claim a native result without its actual command, output, and platform receipt.
 
 |Limit|Evidence it is a limit|
 |---|---|
-|The five platform adapters run on Linux only, through a refusal seam|AppKit, UIKit, Win32, X11 and the AT-SPI bus are all absent. `test -f /usr/include/X11/extensions/XTest.h` and the same for `Xfixes.h`, `XInput2.h` and `xkbcommon.h` return no file, while the runtime libraries are present. Each adapter compiles and its module graph type-checks, and no adapter reaches a real platform object.|
-|`aarch64-linux` and `powerpc64-linux` cannot execute the COM layer|The COM entry points carry `callconv(.winapi)`, which resolves on neither foreign target. `zig build cross-test` runs the Debug shard under `qemu_user` on both and reports `status=pass` for the shard, so the row proves the tree compiles and its pure halves execute, and it proves nothing about the COM surface. The admitted consequence is that a COM defect cannot be caught by any row in the matrix.|
-|AT-SPI may be unable to register on this host|goose v3.3.0 never learns its own unique bus name on this D-Bus, so the adapter cannot complete registration. Every AT-SPI path is exercised through the refusal seam instead. `[OBSERVED]` rather than proved, because the failure is in the bus, not in this tree.|
+| No native Windows, Mac, iOS, or Android client execution receipt exists in the current record | `docs/50-verification.md` section 11 records the Android portable JNI-boundary receipts and the Windows client cross-build. The Android namespace suite passed 209/209 tests in Debug and 209/209 in ReleaseSafe. The receipts are `execute-1-4-green/android-complete-namespace-debug.json` and `execute-1-4-green/android-complete-namespace-releasesafe.json`. These tests do not prove Android VM, SDK, device, or emulator execution. The Windows cross-build does not prove client execution |
+| Foreign Linux pure tests do not execute the COM layer | The COM target restrictions and earlier cross results remain separate from real Windows UI Automation. Main reported that a PPC64/AArch64 gate attempt failed at `src/adapters/root.zig` when `refAllDecls(windows)` reached unsupported `winapi`; both foreign Debug C-consumer rows passed. Required root `refAllDecls` guards prove reachability, not behavior, and do not typecheck or analyze the Windows COM graph on foreign targets. Main narrowed COM analysis to `cpu.arch == .x86_64`; the supported x86_64 analyzer remains required, but no post-fix source pin or gate result is recorded |
+| The proof is limited to the controlled Linux CLI matrix | Receipts show registration and 216 independent read-only calls across all 12 interfaces. Other receipts record 54 action/error-reply commands, 32 full ACTION JSON callbacks, 101 lifecycle checks, 106 status-epoch checks, eight positioned FIFO RPCs with observed signals, and 114/114 positioned-boundary cases with three fresh-provider closes. Main-provider close exited 0 with zero late callbacks and an empty registry. Native OOM baseline/retry, geometry-boundary, reorder-repair, callback, event, and close cases were observed; the edit-head OOM path was not exercised through the CLI. The pinned source oracle confirms that removal after unregister returns UnknownObject. This Linux CLI proof does not establish GUI, screen-reader, native SDK, or device behavior. The earlier canonical 2051-test graph reported 1996 Debug passes, 43 skips, and 12 failures, and 1994 ReleaseSafe passes, 43 skips, and 14 failures; its 26 contexts are in `execute-1-4-green/canonical-full-graph-failure-inventory.json`. The earlier corrected graph at `3b4e07e5d05a960d57095405c339e7787436014a` passed 2,008 tests, skipped 43, and failed none in both modes. At historical source `9741daec59b72c4c0d25843bb3e5c9af2d3abd4a`, the root runs reported 2,021 passes, 43 skips, and no failures per mode. Historical BG250 output at tested source snapshot `320cb011918e099317136c226d43a2abf3d665d0` reported 2,071 root tests per mode: 2,028 passed, 43 SDK-skipped, 0 failed; 31/31 steps. Its dedicated fuzz shards passed 440/440, benchmarks 9/9, native-contract 18 plus one skip per mode, integration 918/918, reference 785/785, and native Debug C consumer 34,594/0 with 2,093 allocations/frees and zero active allocations. These historical shards overlap and must not be summed. Main's completed d854 `zig build test --summary all` output (`artifact://2946`) exited 0 with 31/31 steps. Each Debug and ReleaseSafe root run had 2,070 tests: 2,027 passed, 43 SDK-skipped, 0 failed; each found two fuzz tests. Integration passed 918/918 per mode with one fuzz test found; reference passed 785/785; fuzz passed 440/440 per mode with three targets found; benchmarks passed 9/9; native-contract passed 18 and skipped one per mode. The native Debug C consumer passed 37,240 checks with no failures and 7/7 steps, with 2,095 allocations, 2,095 frees, zero active allocations, 1,669 strings, four custom actions, seven action lists, 55 nodes, two tree infos, and three tree updates; see `artifact://2946`. Main also reported Debug QEMU `test-c` passes for PPC64 Linux MUSL and AArch64 Linux MUSL, each 37,240 checks, 0 failures, 7/7 steps. These C-consumer results are Debug-only. The approved bounded Linux AT-SPI smoke passed at source `c45632aa2fe6bcdf344ac7745b9a4350080309ee`; its receipt is `execute-1-4-green/approved-bounded-native-bus-smoke.json`. It used approved storage and an explicit approved daemon address, applied 11 edits across 14 commits, and sent two click callbacks. Both stock clients saw 14 cache entries before removal and 13 after, returned `UnknownObject` for removal, and observed empty registries after close. The run matched `AéΩ😀😀`, four 256-byte replacements, a 1,024-byte value, and an empty end cursor. Provider tasks joined, five owned processes exited 0 after pidfd termination, no unrelated process was killed, settings were restored, and there were zero late callbacks. Its transport binary matches tested source snapshot `320cb011918e099317136c226d43a2abf3d665d0`. The BG249 private-candidate probe remains red at tested source snapshot `320cb011918e099317136c226d43a2abf3d665d0` for Color, Decoration, and TreeId setter parameters and a Rect segmentation fault; no full C49 pass is recorded for that snapshot. At tested source snapshot `d854c8b0d77385cf8c0c5983832369923fdef2d5`, the private ABI repair covers the known broken PPC64 Linux MUSL families and the Debug C consumer passed on native, PPC64 Linux MUSL QEMU, and AArch64 Linux MUSL QEMU. The canonical Zig 0.16 compiler-control failure remains unresolved. The completed d854 test-stage result is not a full project gate. Main later reported that a PPC64/AArch64 gate attempt failed at `src/adapters/root.zig` when `refAllDecls(windows)` reached unsupported `winapi`; it narrowed COM analysis to `cpu.arch == .x86_64` while preserving required root reachability guards. The x86_64 analyzer remains required. No post-fix source pin or gate result is available; the full gate remains pending. Section 11.3 records the exact authority |
+| Latest full-gate attempt | Main's reported pre-guard run passed `fmt`, `build`, `test`, and `ast-check`, then reported 877 `ziglint` findings; `zbc` and `zwanzig` each terminated with exit status 134 (tool failures, not finding counts). Foreign Windows COM cross-compilation failed at `src/adapters/root.zig` (`refAllDecls(windows)` reached `unsupported.winapi`). Both foreign Debug C-consumer rows passed. Main narrowed COM analysis to `cpu.arch == .x86_64`; required root declaration guards remain reachability checks, and the x86_64 analyzer remains required. Lint cleanup continues. No post-fix source pin or gate result is available; the latest gate failed and a rerun is pending |
 
-**What a green gate therefore proves.** `zig build test` passing at 1556 in Debug
-and ReleaseSafe, `zig build fuzz` at 353, `zig fmt --check` clean,
-`zig build capi-parity` in parity on five targets, `zig ast-check` parsing every
-file under `src/`, and `cross-test` at `status=pass` for x86_64-linux,
-aarch64-linux and powerpc64-linux together prove that the tree compiles, that
-its pure halves execute on three architectures, and that the C ABI matches the
-upstream header symbol for symbol. They prove nothing about any adapter
-talking to a real accessibility bus, and no line in a commit message may say
-otherwise.
+**What a green gate proves.** A gate receipt covers only the stages, declarations,
+targets, and executed tests in that receipt.
+Historical 1556-test and 353-corpus counts are not current suite counts.
+`docs/50-verification.md` records exact counts and actual stage failures.
+The earlier corrected-source gate in section 10.7 exited 1, not 0.
+Portable checks, cross-compilation, header parity, and a reachable registry do not prove native provider behavior.
+No commit message may claim more than the observed receipt establishes.
 
-**Where the translation gap is.** `docs/52-translation-ledger.md` carries one
-row per upstream public item with both `path:line` values. At the last measured
-merge it held 1356 unique rows: 457 ported, 536 adapted, 194 not-applicable and
-169 open. Every open row names what blocks it, and the blockers are these three
-host limits plus a handful of house rules that forbid the shape the port would
-need. The count is a measurement, not an estimate, and it changes when a row is
-re-examined.
+**Where the translation gap is.** `docs/52-translation-ledger.md` maps upstream
+public items with both `path:line` values.
+An earlier measurement had 1356 rows: 457 ported, 536 adapted, 194 not-applicable,
+and 169 open.
+That count is historical. Use the reconciled ledger for current dispositions.
+A source mapping, an open GitHub issue, and a native acceptance result are different records.
+Keep unresolved source rows separate from implemented portable items and unverified native behavior.

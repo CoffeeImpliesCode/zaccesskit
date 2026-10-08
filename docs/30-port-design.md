@@ -9,7 +9,8 @@ and `local://zaccesskit-deps.md`, plus four read-only upstream checkouts at the 
 
 **Proof labels.** Source reading, exercised compilation, and runtime observation are separate evidence classes.
 `docs/50-verification.md` records observed checks and their limits.
-The module budgets below remain design targets, not measured sizes.
+Section 12 records the implemented contracts for steps 1–4.
+Older implementation sketches and module budgets remain design history, not current source or measured sizes.
 ---
 ## 1. The pin and the surface
 ### 1.1 The compiler line
@@ -33,7 +34,7 @@ that build reaches.
 |---|---|---|---|
 | Core crate | `github.com/AccessKit/accesskit` | `466e24e252103f4d82bd6fbab98141b551e46e0c` | `accesskit` 0.25.1, `accesskit_consumer` 0.39.1 |
 | C bindings | `github.com/AccessKit/accesskit-c` | `8b6ed37c20ed4c59390e253407983333053662ba` | `accesskit-c` 0.23.1 |
-| D-Bus | `github.com/luxluth/goose`, tag `v3.3.0` | `8c6ee3a984a3b314bb921e3f8f6428a51a6d93e1` | 3.3.0 |
+| Historical D-Bus probe, not the implemented transport | `github.com/luxluth/goose`, tag `v3.3.0` | `8c6ee3a984a3b314bb921e3f8f6428a51a6d93e1` | 3.3.0 |
 | Runtime | `github.com/lalinsky/zio` | `2662fdc45997611b962b560c513c16963475a01b` | 0.18.0 |
 
 Every `lib/std` citation in this document is `ziglang/zig` at `24fdd5b7a4c1c8b5deb5b56756b9dbc8e08c86a8`.
@@ -49,9 +50,11 @@ about how upstream intends to version the header in future.
 ```
 ### 1.3 The bounded supported consumer surface
 Two routes define the supported surface.
-`dep.module("zaccesskit")` publishes `schema`, `consumer`, `capi`, `version`, and `minimum_zig_version`.
-The schema and consumer namespaces provide the native value types, tree store, queries, and update protocol.
-The root does not publish separate `handlers` or `adapters` namespaces.
+`dep.module("zaccesskit")` publishes `schema`, `consumer`, `capi`, `adapters`, `Runtime`, `version`, and `minimum_zig_version`.
+The schema and consumer namespaces provide native value types, tree queries, and the update protocol.
+`adapters` publishes five platform namespaces. `Runtime` is the same pinned zio runtime type used by the adapters.
+There is no separate root `handlers` namespace. The handlers belong to `schema`.
+Source: `src/root.zig:36-64`, `src/adapters/root.zig:6-10`.
 The C route consists of the installed header and linked library.
 `docs/31-c-abi-design.md` owns its symbols and ownership rules.
 ### 1.4 What this package publishes
@@ -94,8 +97,11 @@ reaches a platform type. **Loop 3, the platform adapter.** Owns every byte of I/
 decodes D-Bus messages, dispatches method calls onto the exported objects, and pushes `TreeUpdate` values into loop 1. It is the only place a `std.Io` handle reaches an operating system and the only
 place a `*zio.Runtime` may spawn, group or arm a timeout.
 ### 2.1 Where `io` enters, and where `*zio.Runtime` is allowed
-The rule: **every library signature takes `io: std.Io`; a `*zio.Runtime` appears only where a task is spawned, a group is driven, or a timeout is armed.** zio implements `std.Io` rather than
-replacing it, and the third declaration below is the strongest evidence for it because it is a bare pointer cast.
+The rule: **blocking entry points take explicit I/O capabilities.**
+Native transport owners also receive the runtime needed for owned tasks.
+The pure schema and consumer layers need neither capability.
+zio implements `std.Io` rather than replacing it.
+Section 12.2 records the implemented constructor and lifetime contracts.
 
 ```text
 Evidence: The two platform-neutral crates contribute 8253 non-test lines against a 250-pure-line house limit; the smallest module count respecting the limit is 33, and 47 is proposed at 176 lines
@@ -131,7 +137,7 @@ not an estimate.
 | Serde, schemars, pyo3 generators | they exist to generate other languages; the port's only generated surface is a hand-written header | `docs/31` section 4.1 |
 | Fuzzing | `-ffuzz` does not compile in Zig 0.16.0, so no fuzz gate is promised | `docs/22` section 9.7 |
 | A Python binding | no target consumer is Python | `docs/17` section 3 |
-| A second async runtime | goose is built on `std.Io`, not on zio; merging them is impossible and a second D-Bus client costs the wire format | `docs/17` section 8 |
+| A second async runtime | The implemented transport uses the pinned zio public socket and task APIs | section 12.2 |
 ---
 ## 3. The module layout
 
@@ -267,12 +273,14 @@ per update. And position-based equality, because upstream compared by slot posit
 commit fixed it once clone buffer reuse broke the slot correspondence, and a sorted slice makes the comparison structural.
 ### 3.5 The root re-export list
 
-The current root declares these five names:
+The current root declares seven names:
 
 ```zig
 pub const schema = @import("schema/root.zig");
 pub const consumer = @import("consumer/root.zig");
 pub const capi = @import("capi/root.zig");
+pub const adapters = @import("adapters/root.zig");
+pub const Runtime = @import("zio").Runtime;
 pub const version = @import("build_options").version;
 pub const minimum_zig_version = @import("build_options").minimum_zig_version;
 ```
@@ -281,9 +289,9 @@ pub const minimum_zig_version = @import("build_options").minimum_zig_version;
 Its namespace tests reach the declared schema, consumer, and C ABI exports.
 The pure schema and consumer layers do not start a runtime.
 
-> **Record R2 — the root carries three namespaces, not a flat index.** **Priority.** Make the path carry the
-> taxonomy. **Constraint.** The published set is roughly 60 names across three audiences: a platform-adapter
-> author, an application author and a C adapter author. **Cost imposed on consumers.** A consumer writes
+> **Record R2 — the root carries namespaces, not a flat index.** **Priority.** Make the path carry the
+> taxonomy. **Constraint.** The public names serve platform-adapter,
+> application, and C adapter authors. **Cost imposed on consumers.** A consumer writes
 > `zaccesskit.schema.Role`; every reorganisation of a subtree moves a spelling; a consumer who wants the short
 > spelling in a signature waits for a second path and then both paths must be documented. **The counterchoice**,
 > a flat index of explicit re-exports, the shape `lib/std/std.zig` ships, with `ArrayList` as a `pub fn` factory
@@ -592,7 +600,7 @@ never from inside the handler. 6. **Reply.** The D-Bus method return is sent aft
 | the `NodeRef` | the tree | nobody: it is a borrow | never |
 | the `ActionRequest` payload | the adapter's allocator | the adapter | before the method reply |
 | the handler context | the application | the application | it must outlive every call |
-| the bus socket | goose | `Connection.close` | once, at adapter teardown |
+| the bus socket | the explicit native transport owner | owned connection close | once, after transport tasks join |
 
 **Cancellation, three named obligations.** A D-Bus method call is a request, not
 a cancellation. A queued action is cancellable only before the handler starts, because once `do_action` is entered the application owns it and no cancellation exists; a handler that blocks
@@ -717,7 +725,12 @@ three are byte layouts and none is otherwise exercised off the host byte order.
 
 **No bare `!` in any public signature.** zio has four inferred error sets in
 `net.zig`; the port wraps each call in a `catch` into a declared set.
-### 7.2 The D-Bus integration, in six parts
+### 7.2 Historical Goose proposal, superseded by section 12.2
+
+This subsection preserves the original proposal and probe evidence.
+The implemented transport uses public zio sockets and a port-owned D-Bus codec.
+It does not use, patch, or vendor Goose.
+The proposed re-export, nonblocking reset, and fetched-tree patch below are not current build behavior.
 **1, the zio-backed `std.Io`.** goose is written against `std.Io`, so the adapter
 passes `zio.fromRuntime(rt, .blocking)`. Three re-export lines are missing from zio's root module today, and adding `src/io.zig` as a second module fails with `file exists in modules 'zio_io' and
 'zio'`. The port opens an upstream pull request for the re-exports and, if it is refused, adds a three-line local wrapper.
@@ -769,7 +782,7 @@ not exist, so this is not a measurement.
 | **Total** | **630** | |
 goose keeps the connection, the SASL `EXTERNAL` handshake, the message codec, alignment and endianness, fd passing over `SCM_RIGHTS`, match rules, signal dispatch and the introspection XML
 reader.
-### 7.3 How the fix is carried
+### 7.3 Historical fetched-tree patch proposal, not implemented
 
 > **Record R5 — the fix is a build-time patch on the fetched tree, with an upstream pull request opened in
 > parallel.** **Priority.** Make an unpatched goose impossible to link, so the failure cannot appear as
@@ -868,7 +881,7 @@ because `-femit-h` is broken on Zig 0.16.0, the zero-Rust rule forbids cbindgen,
 | Holds | Pays | Must know |
 |---|---|---|
 | an allocator for every type that owns a buffer | one `deinit` per owned value, in order, exactly once | a copy of `Properties` copies the handle, not the storage, so a copy is not a second owner |
-| a `std.Io` value for every call that can block | one parameter on every such entry point | the provider must stay live for the call and is never retained |
+| an explicit `std.Io` capability and any required runtime authority | one parameter on each blocking entry point | runtime authority must outlive retained providers and queues. Section 12 defines success-only transfer |
 | the path spelling for every published name | a longer path than `zaccesskit.Role` | only the root list is a supported route; a `pub` declaration no consumer imports is not published |
 | a `NodeRef` borrow tied to one `TreeState` | the tree must outlive the ref | a ref into the next state is invalid once `Tree.update` returns |
 | nothing to release for the three application vtables | the handler state must outlive the adapter | a missing required slot is a compile error; a `null` defaulted slot is a silent no-op |
@@ -900,10 +913,270 @@ would settle it.
 |---|---|---|
 | 1 | Whether Zig 0.16.0 lowers a 48-byte aggregate return and a 48-byte aggregate argument the way the C convention does. Nothing in the language reference and nothing in this checkout settles it, and the installed toolchain ships `lib/` and the `zig` binary but not the compiler's `src/`. | The exercised compilation `docs/31` calls check 5, run on one x86-64 target and on `powerpc64-linux`. Record E names the shim fallback if it fails |
 | 2 | The per-platform module count and schedule. The five adapters hold 20113 upstream Rust lines, which at the 250-line limit is 81 to 101 modules, and this document does not fix the number. | `docs/40-plan.md` scheduling the adapters against its own milestones |
-| 3 | Whether the zio `fromRuntime` re-export lands upstream. The port needs three lines that change no behaviour and can proceed with a local wrapper instead. | The upstream pull request's outcome, or the decision to keep the local wrapper permanently |
-| 4 | Whether a goose release after v3.3.0 fixes the `O_NONBLOCK` reset, the `EAGAIN` folding, the `SocketIterator` widening or the blocking `methodCall`. This document pins v3.3.0 and says nothing about a later release. | A new goose tag, re-probed as `docs/26-goose-live-bus-probe.md` did |
+| 3 | The historical zio `fromRuntime` re-export question no longer controls this transport | The implemented route uses public zio socket and task APIs without that re-export |
+| 4 | Later Goose fixes are not evaluated here and do not control the implemented transport | A separate future dependency decision and new source/runtime evidence |
 | 5 | Whether the macOS, iOS and Android adapters link against real system libraries on a host that has the SDKs. This host builds objects for those targets and cannot link executables, and there is no Wine. | A host with the SDKs, or the SDK-less `build-obj` results those three already produce |
 | 6 | What `zig-cov` will report for the port. The house gate measures line coverage only, and no threshold is promised here. | The first `zig-gate` run over the port, recorded in `docs/50-verification.md` |
 
 Compilation is not an open design question.
 `docs/50-verification.md` records the builds that reached source paths and the runs that checked behavior.
+
+## 12. Implemented contracts for steps 1–4
+
+The upstream pins in section 1.2 remain unchanged.
+`docs/52-translation-ledger.md` records item dispositions and immutable source revisions.
+The mappings below use formatted source `d854c8b0d77385cf8c0c5983832369923fdef2d5`.
+Earlier actual complete-graph receipts belong to pre-format source `3b4e07e5d05a960d57095405c339e7787436014a`.
+Formatting adds no execution proof. The final gate remains pending.
+`docs/50-verification.md` section 11 separates portable, cross-build, and native evidence.
+
+### 12.1 Publication, transactions, and callback ownership
+
+The public native route is `zaccesskit.adapters.<platform>`.
+The platform namespaces are `atspi`, `windows`, `macos`, `ios`, and `android`.
+`zaccesskit.runtime` exposes the same zio dependency type, not a second runtime.
+The C route remains the installed header and linked artifact.
+Source: `src/root.zig:60-64`, `src/adapters/root.zig:6-10`.
+
+Checked publication distinguishes `inactive`, `rejected`, and `committed`.
+Rejection preserves the committed tree, focus, metadata, graft maps, callback log, and host baseline.
+A committed result can carry a notification error without becoming a rejected transaction.
+The caller advances its baseline after commit, before it reports notification errors.
+The current-full supplier provides the same-frame full snapshot when activation requires one.
+It does not reconstruct a tree from a stale prepared delta.
+Borrowed input remains caller-owned. Owned input follows the API's consuming contract.
+
+| Behavior | Pinned upstream source | Zig source |
+|---|---|---|
+| Windows checked publication and current-full selection | `adapters/windows/src/adapter.rs:463-494,529-624` | `src/adapters/windows/adapter.zig:67-87,149-180` |
+| Linux checked native publication | `adapters/atspi-common/src/adapter.rs:419-478,518-578`, `adapters/unix/src/adapter.rs:196-219` | `src/adapters/atspi/adapter.zig:36-75,174,298-353,453-514,545-553,633-644,646-673,741-761,915-930,977-986` |
+| Mac checked and prepared publication | `adapters/macos/src/adapter.rs:89,114,151,223,248,275` | `src/adapters/macos/native.zig:118,237-261,436-547,549,561,619` (historical owner: `7d9c2a344db4ea28d79c5864f9ba5773de25bbd3`) |
+The current provider sweep is bounded by 65536 entries (`src/adapters/macos/native.zig:27,731-749`). If the map cannot be fully reconciled under that structural bound, it returns ProviderLimitExceeded.
+Preparation preserves the committed tree and prepared queue ownership, but this structural error replaces the committed notification_error (`:619-638`). No close-path change or native SDK execution is implied.
+| C owning action payload and public release | `accesskit-c/src/common.rs:1084-1090,1128-1131` | `src/schema/update.zig:495-520`, `src/capi/action_request.zig:312-316` |
+| Core constructor, owned and borrowed | `accesskit_consumer/src/tree.rs:592-618` | `src/consumer/tree.zig:290-315` |
+| Core update, owned and borrowed | `accesskit_consumer/src/tree.rs:620-628` | `src/consumer/tree.zig:413-438` |
+| Failure-atomic preparation, callback emission, and commit | `accesskit_consumer/src/tree.rs:640-706` | `src/consumer/tree.zig:481-658` |
+| Dirty recovery and focus retry | `accesskit_consumer/src/tree.rs:630-637` | `src/consumer/tree.zig:438-462,1507-1560` |
+| Parent-only promotion and graft-root slot preflight | `accesskit_consumer/src/tree.rs:229-315,461-481` | `src/consumer/tree_apply.zig:208,283`, `src/consumer/tree_grafts.zig:245,481` |
+| Custom action description rollback and transfer | `accesskit/src/lib.rs:1012,1046` | `src/schema/props/table.zig:678,866` |
+
+The native checked outcome and current-full supplier shapes are port additions.
+They preserve explicit rejection and post-commit reporting rather than reproducing Rust signatures.
+The detailed core transaction, graft, and retry rows remain in the translation ledger.
+
+The C callback owns its transferred action request.
+It frees the request exactly once before callback return.
+The request owns its copied string payload independently of the source tree.
+Activation and tree-factory callbacks transfer each nonnull owning C update to the library.
+The shared conversion consumes that handle on success and error.
+Source: `accesskit-c/src/common.rs:1098,1134,1171,1233`,
+`src/capi/boundary.zig:52-71`, `src/schema/update.zig:375-385,526-530`.
+
+The installed C allocator requires at least eight-byte alignment.
+The port supplies higher native alignment without changing that callback API.
+It stores the original pointer before the aligned payload and returns that pointer to the same captured free callback.
+Resize and remap do not alter a live aligned block.
+This alignment adapter is a port-only addition at `src/capi/allocation.zig:440-510`.
+The C diagnostics add `operation_failed` and a static exact error name.
+They preserve `none` and `out_of_memory`.
+Source: `src/capi/allocation.zig:69-81,214-288`, `include/zaccesskit.h:1780-1784,6507-6515`.
+
+### 12.2 Explicit I/O and success-only runtime authority
+
+Native adapters take explicit I/O capabilities.
+The pure schema and consumer operations need no I/O parameter.
+There is no global runtime.
+
+`RuntimeRelease` transfers only at the final successful constructor return.
+A failed constructor leaves the runtime lease caller-owned and never invokes its release hook.
+The outer Windows subclass constructor gives its inner constructor no release hook.
+It arms the retained authority only after outer attachment succeeds.
+Source: `adapters/windows/src/subclass.rs:82-171`,
+`src/adapters/windows/subclass.zig:95-148`,
+`src/adapters/windows/adapter.zig:149-180`,
+`src/adapters/windows/context.zig:54-57,389-399`.
+
+Close rejects new admission and joins admitted callbacks before it releases owner state.
+Weak provider handles can outlive adapter close.
+The final weak release ends retained runtime authority.
+The provider allocator must remain independently valid through all cleanup, including cleanup after the runtime-release hook.
+An allocator owned by that released runtime cannot satisfy this contract.
+Source: `adapters/windows/src/context.rs:19-97`,
+`src/adapters/windows/context.zig:277-400`, `src/adapters/windows/com.zig:217-225`.
+
+Mac creation uses the same success-only rule.
+Mac queries hold an admitted owner pin, but release the tree guard before native calls and action callbacks.
+Close joins pins and clears the owner before provider resources disappear.
+The placeholder-to-current-full epoch has only the transition `0` to `1`.
+It does not invent generic per-ID generations.
+Source: `src/adapters/macos/context.zig:48-127,129-211`,
+`src/adapters/macos/native.zig:118-144,300-351,1692-1761` at the formatted revision above.
+
+Linux takes `gpa`, `io`, and `*Runtime` explicitly.
+Its reader, writer, bounded queues, completion receipts, and close barrier belong to one transport owner.
+Enqueue success does not mean a tree update committed.
+The owner settles accepted work and joins transport tasks before runtime destruction.
+The upstream comparison is `adapters/unix/src/context.rs:33-76,169-313`,
+`adapters/unix/src/atspi/bus.rs:39-103`, and `adapters/unix/src/executor.rs:34-87`.
+The explicit runtime, bounded pump, and join barrier are port extensions, not copied Rust API shapes.
+Source: `src/adapters/atspi/adapter.zig:178-181,364-400`,
+`src/adapters/atspi/adapter.zig:178-181,364-400; src/adapters/atspi/pump.zig:24-25,30-34,40-49,97-122,126-164,198-232,235-268,270-289,291-317,335-350,501-556,558-588,591-651,652-683,708-726; src/adapters/atspi/bus.zig:634-655,699-729,933-953,961-989,991-1096,1132-1157`.
+The private `registration_pending` flag at `src/adapters/atspi/adapter.zig:174` withholds notification delivery until registry synchronization succeeds.
+`prepareNotifications` and reconciliation at `:545-631` refresh current registered cache nodes, remove duplicate/gone IDs, and retain owned events if preparation fails.
+A committed tree is not rolled back by this late notification error (`:453-514`). Focus uses the pending-registration gate; close frees withheld adds before terminal removal (`:633-644,741-761,915-930,977-986`).
+This is port-owned safety behavior. Pinned upstream `adapters/atspi-common/src/adapter.rs:49-82,307-316` registers before cache/event delivery; it does not provide this retry mechanism.
+Current transport Options.pump_steps_limit at `src/adapters/atspi/bus.zig:933-953` defaults to u64 max and applies separately to owner, reader, and writer lifetime dispatch loops.
+Error.PumpLimit is `:634-655`; the loops and terminal settlement are `src/adapters/atspi/pump.zig:235-268,558-588,591-651,652-683,708-726`.
+Zero prevents the first dispatch-loop operation, not native startup I/O. Exhaustion closes writer admission and settles accepted but unperformed work with PumpLimit; an in-progress write keeps its real outcome.
+Address alternatives at `src/adapters/atspi/bus.zig:699-729` use a byte-derived bound and preserve the last candidate error, with no invented AddressLimit tag.
+The C wrapper owns its environment, I/O provider, runtime, and native adapter.
+It destroys the native adapter before those authorities.
+Source: `src/adapters/atspi/root.zig:97-187,285-323`.
+
+### 12.3 Native Windows and Mac providers
+
+Windows now has actual COM node and text range providers, owning queued events, and native Automation values.
+Providers keep weak context handles, not live `NodeRef`, `Range`, or adapter pointers.
+Final COM release destroys provider state exactly once.
+Registry removal releases registry ownership before later fallible notification work.
+Queues own old and new values and transfer event ownership only after append succeeds.
+Source: `adapters/windows/src/node.rs:743-825`, `adapters/windows/src/text.rs:209-221`,
+`src/adapters/windows/elements.zig:130`, `src/adapters/windows/queued_events.zig:81,133`,
+`src/adapters/windows/change_handler.zig:358-423`, `src/adapters/windows/root.zig:48`.
+The item ledger maps every provider interface and text operation.
+No Linux portable check establishes real UI Automation execution.
+
+Mac installs all 54 node selectors and the four view selectors from the pinned upstream tables.
+The text provider handles the thirteen text selectors and UTF-16 index conversions.
+Native objects resolve through a leased context rather than a retained tree borrow.
+View attachment is reversible and per-instance.
+Attachment does not patch the window class implicitly.
+Explicit focus forwarding applies only to the caller's registered custom NSWindow class.
+Source: `adapters/macos/src/node.rs:412-1234`, `adapters/macos/src/subclass.rs:179-191`,
+`src/adapters/macos/attributes.zig:187-249,272-277`,
+`src/adapters/macos/platform_node.zig:44-83,365`,
+`src/adapters/macos/platform_text.zig:309-326,498,568-631` at the formatted revision above.
+Current subclass safety is `src/adapters/macos/subclass.zig:8,16-17,21-44,47-60,62-86,88-118,120-129,131-153`; focus patch validation is `src/adapters/macos/patch.zig:13-48,50-57`.
+The runtime subclass reuses only the exact superclass and matching method implementations/encodings. It does not change foreign NSView instance layout.
+The associated NSObject holder validates its state ivar encoding, offset, pointer alignment, and object-size bounds before access. Its deallocation frees state, releases the weak context, and calls superclass deallocation.
+These are source contracts, not AppKit execution.
+
+The selected SDK's representable Objective-C runtime declarations come from `translate-c`.
+Only four polymorphic message-dispatch symbols need typed ABI casts.
+The AppKit seam has sixteen hidden SDK-compiled bodies.
+They comprise two notification forwards, three announcement getters, and eleven style-key getters.
+The named rung-four reason is Objective-C interfaces and opaque NSString declarations that `translate-c` cannot represent.
+The shim returns real SDK constants without copies or fabricated keys.
+Source: `src/adapters/macos/runtime.h`,
+`src/adapters/macos/foundation.m:33-108`, `src/adapters/macos/foundation.h:14-24`.
+SDK declaration provenance is Apple header blob `d46725739a34f180d2d7913e0ca96a50c783a72d`:
+`NSAccessibilityConstants.h:130-142,187-189,565-569`.
+This source mapping is not a Mac SDK compilation or runtime receipt.
+
+### 12.4 Twelve AT-SPI interfaces and positioned edits
+
+The Linux source implements all twelve pinned interfaces.
+`docs/52-translation-ledger.md` maps each interface's methods, properties, and common-node counterparts.
+The object register exports mandatory and computed optional interfaces.
+Missing objects use `UnknownObject`. A valid missing interface uses `UnknownInterface`.
+Image and Text multiple outputs use flattened D-Bus signatures, not an extra enclosing structure.
+Upstream paths in this table are relative to `adapters/unix/src/atspi/interfaces/`.
+Zig paths are relative to `src/adapters/atspi/interfaces/`.
+
+| Interface | Pinned upstream source | Zig source |
+|---|---|---|
+| Accessible | `accessible.rs:33-145,166-245` | `accessible.zig:18-38,40-173` |
+| Action | `action.rs:21-50` | `action.zig:9-19,21-62` |
+| Application | `application.rs:13-38` | `application.zig:13-19,21-48` |
+| Cache | `cache.rs:31-112` | `cache.zig:15-19,21-86` |
+| Component | `component.rs:27-76` | `component.zig:10-19,21-77` |
+| Document | `document.rs:29-60` | `document.zig:10-21,23-56` |
+| EditableText | `editable_text.rs:27-52` | `editable_text.zig:12-21,23-89` |
+| Hyperlink | `hyperlink.rs:26-63` | `hyperlink.zig:9-18,20-55` |
+| Image | `image.rs:22-50` | `image.zig:10-18,20-56` |
+| Selection | `selection.rs:26-82` | `selection.zig:9-20,22-61` |
+| Text | `text.rs:27-159` | `text.zig:15-38,42-168` |
+| Value | `value.rs:23-49` | `value.zig:9-15,17-47` |
+
+The wire domains use AT-SPI numeric values, not schema ordinals.
+Roles, states, layers, and relations carry complete domain sweeps and literal-value fixtures.
+Their authority is `atspi-common` 0.13.0 source, not live captured bytes.
+Source: `atspi-common/src/role.rs:337-467`, `state.rs:18-221,372-376,478-508`,
+`relation_type.rs:6-121`, `lib.rs:128-150`,
+`src/adapters/atspi/wire.zig:283-321,343-524,610-652,706-754`.
+
+The SENDER field accepts a valid unique name or exactly `org.freedesktop.DBus`.
+This reserved driver identity is not permission for arbitrary well-known senders.
+Upstream: `zbus_names` 4.3.4 `src/unique_name.rs:31-39`
+([source](https://docs.rs/crate/zbus_names/4.3.4/source/src/unique_name.rs#L31-L39)),
+and D-Bus 0.43 [header fields](https://dbus.freedesktop.org/doc/dbus-specification.html#message-protocol-header-fields)
+and [message-bus identity](https://dbus.freedesktop.org/doc/dbus-specification.html#message-bus).
+Zig: `src/adapters/atspi/dbus.zig:512-518,549,855,1294-1323,1325-1340,1341-1357`,
+historical owner snapshot `c6ac4e75eb6c3596a430e9f0f9088aee8576c56a`.
+The captured Hello packet and independent registry registration are narrow observations.
+They do not prove the remaining real provider matrix.
+
+The optional immutable `Callbacks.editable_text` slot accepts a half-open Unicode-scalar replacement range.
+`replacement_utf8` is a length-delimited borrow valid through the synchronous callback.
+The host copies accepted bytes once into its existing ordered FIFO.
+The native adapter adds no second text copy or command queue.
+A null slot preserves pinned `InsertText` and `DeleteText` `NotSupported` behavior after signature validation.
+`SetTextContents` stays on the ordinary action channel. Copy, cut, and paste stay unsupported.
+Source: `adapters/unix/src/atspi/interfaces/editable_text.rs:27-52`,
+`src/adapters/atspi/objects.zig:36-48,83`,
+`src/adapters/atspi/interfaces/editable_text.zig:31-81`.
+
+The enabled slot rejects negative scalar offsets, reversed ranges, and split UTF-8 byte prefixes.
+It does not use stale published character counts as an upper bound.
+The live host model validates each accepted edit when it drains its FIFO.
+False maps to `Failed` with `CallbackFailed`. Exact callback errors, including `OutOfMemory`, remain named.
+The callback runs on the owned pump lane without a tree guard.
+Close stops admission and joins it before userdata release.
+Source: `src/adapters/atspi/dispatch.zig:43-46,75-86,157,1148-1164,1273-1580`,
+`src/adapters/atspi/adapter.zig:870-888`.
+This callback is a port extension, not a changed standard schema or C action payload.
+
+### 12.5 Mobile errors and recorded geometry
+
+Mobile C action producers use the shared owning conversion.
+The callback receives an independent request in the configured C allocator domain.
+`OutOfMemory` and `InteriorNul` remain distinct.
+The exact-error diagnostic is a port addition, not an upstream mobile error API.
+
+| Behavior | Pinned upstream source | Zig source |
+|---|---|---|
+| Android action producer | `adapters/android/src/adapter.rs:805` | `src/adapters/android/adapter.zig:636-644` |
+| iOS action producer | `adapters/ios/src/context.rs:92-94` | `src/adapters/ios/root.zig:1068,1088-1092` |
+| Android null-factory refusal | `adapters/android/src/adapter.rs:554` | `src/adapters/android/root.zig:244-509,867-874` |
+| iOS activation and update refusals | `adapters/ios/src/adapter.rs:128-188,398-436` | `src/adapters/ios/root.zig:565-631,1275-1308,1351-1362` |
+| iOS raw public debug CString | `adapters/ios/src/adapter.rs:327-333` | `src/adapters/ios/root.zig:751-760,1675-1693` |
+| C request payload and outer release | `accesskit-c/src/common.rs:1166-1197` | `src/adapters/android/adapter.zig:914-915,987-989`, `src/adapters/ios/root.zig:2608-2610` |
+
+Only exact `OutOfMemory` maps to `out_of_memory`.
+Other finite failures map to `operation_failed` with their original static error names.
+Ordinary `NoWindow` and `NoCoordinateSpace` absence remains unchanged.
+The first event-slot error keeps diagnostic authority over later failures.
+Source: `src/adapters/ios/root.zig:1104-1117,1856-1859`,
+`src/capi/allocation.zig:239-288`.
+
+Android scrolled payloads preserve independent axes and optional maxima by value.
+The zero-maximum failure exposed a sorted-property merge defect.
+The correction preserves sorted unique property order and owning payload cleanup.
+Source: `accesskit/src/lib.rs:1164-1167`, `src/schema/props/table.zig:1512-1563`,
+historical table-only snapshot `e8cd20cbd2b07ab3b96bf0ce97c0c3db3aa1e14a`.
+Focused and full-table checks passed. The complete Android namespace then passed 209/209 tests in both Debug and ReleaseSafe.
+The queue-OOM fixture also needed correction to reach the intended post-commit refusal.
+Actual receipts are `execute-1-4-green/android-complete-namespace-debug.json` and `android-complete-namespace-releasesafe.json`.
+The qualified `src.adapters.android` filter covers all thirteen modules.
+This closes the named portable scroll acceptance, not real VM, SDK, or device acceptance.
+The final whole-project graph and gate remain separate.
+`docs/52-translation-ledger.md` maps the source.
+`docs/50-verification.md` section 11 records actual receipts without claiming JNI execution.
+
+The recorded geometry inventory now adds far-edge exclusion, empty-origin containment, and the all-zero affine inverse.
+Source: `accesskit/src/geometry.rs:519-521,99-113`,
+`test/fixtures/geometry.json:7-9`, `reference_root.zig:194-209,260-280`,
+`test/c_consumer/consumer.c:1791-1810,1867-1876`.
+These are hand-recorded source fixtures, not executed Rust or native platform evidence.
+No speedup claim follows from their addition or the synthetic profiles.
