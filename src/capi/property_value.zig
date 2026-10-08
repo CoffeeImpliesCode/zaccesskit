@@ -1,5 +1,5 @@
 //! The C enumerations that cross this boundary: nineteen declarations and the
-//! 272 tags they carry, in one table, with the bijection between a C enumerator
+//! 273 tags they carry, in one table, with the bijection between a C enumerator
 //! and a Zig variant proven in both directions.
 //!
 //! **What this file is.** A registry, not an export. `include/zaccesskit.h`
@@ -27,14 +27,14 @@
 //!
 //! **Why the table names both spellings.** A C enumerator and a Zig variant are
 //! two names for one wire byte, and either can be wrong without the other
-//! being wrong. The header spells every one of the 272 as `ACCESSKIT_`, then
+//! being wrong. The header spells every one of the 273 as `ACCESSKIT_`, then
 //! the enumeration's own name in upper case, then `_`, then the variant's name
 //! in upper case, with the trailing underscore a reserved Zig word carries
 //! dropped: Zig `left_to_right` is `ACCESSKIT_TEXT_DIRECTION_LEFT_TO_RIGHT`, and
 //! Zig `true_` is `ACCESSKIT_INVALID_TRUE`. The one spelling that departs is
 //! the *type* name of `accesskit_action_data_Tag`, which drops its own `_Tag`
 //! suffix from the tag names, and `c_prefix` is the field that records it. The
-//! `comptime` block derives all 272 from the row and the variant name and
+//! `comptime` block derives all 273 from the row and the variant name and
 //! compares, so a C name that is unique but wrong still fails the build.
 //!
 //! **The two directions, and the difference between them.** Every C tag must
@@ -42,7 +42,7 @@
 //! tag. The first is proved at compile time, by resolving each row's variant
 //! name against its enum and checking that the variant carries the discriminant
 //! the row places it at; the second is proved at run time by a test that walks
-//! all 272 entries and holds each C name to appear once in the whole table. A
+//! all 273 entries and holds each C name to appear once in the whole table. A
 //! one-way check is a spot check wearing a total's name, so both halves are
 //! here.
 //!
@@ -67,7 +67,7 @@
 //! `enum_domain_count`, which is nineteen and is read off the type. The second
 //! is the flattening that builds `tag_entries`, whose bound is `tag_count`,
 //! which is
-//! 272 and is read off `enum_rows` rather than repeated. Nothing else in this
+//! 273 and is read off `enum_rows` rather than repeated. Nothing else in this
 //! file loops over a domain.
 //!
 //! **What this file deliberately does not do.** It does not decode, because the
@@ -92,7 +92,7 @@ const testing = std.testing;
 /// The members are this file's key for a row, and the order is the order the
 /// declarations stand in `include/zaccesskit.h`: the seventeen wire enums at
 /// lines 220 to 876, then `accesskit_action_data_Tag` at 1606, then
-/// `accesskit_error` at 1774. `enum_domain_count` reads the count off this type,
+/// `accesskit_error` at 1780. `enum_domain_count` reads the count off this type,
 /// and the `comptime` block checks that `enum_rows` has one row per member in
 /// this order, so a twentieth enumeration is a build failure here.
 pub const EnumDomain = enum {
@@ -134,8 +134,8 @@ pub const EnumDomain = enum {
     /// carries is absent from the eight enumerator names it declares, which is
     /// the one departure from the spelling rule this file's doc records.
     action_data_tag,
-    /// `accesskit_error`, at `:1774`. The tag `accesskit_last_error` returns,
-    /// and the only failing member of it is `ACCESSKIT_ERROR_OUT_OF_MEMORY`.
+    /// `accesskit_error`, at `:1780`. The tag `accesskit_last_error` returns
+    /// distinguishes allocation failure from other operation failures.
     error_tag,
 };
 
@@ -183,7 +183,7 @@ pub const EnumRow = struct {
 
 /// Every C enumeration this boundary crosses, in header order.
 ///
-/// Nineteen rows and 272 tags between them. The table is the only copy of this
+/// Nineteen rows and 273 tags between them. The table is the only copy of this
 /// data in the repository: nothing else in `src/capi/` writes an enumerator
 /// name, and nothing else in `src/capi/` lists an enumeration's width.
 pub const enum_rows: [enum_domain_count]EnumRow = .{
@@ -652,12 +652,13 @@ pub const enum_rows: [enum_domain_count]EnumRow = .{
     .{
         .key = .error_tag,
         .c_name = "accesskit_error",
-        .header_line = 1774,
+        .header_line = 1780,
         .c_prefix = "ERROR",
         .zig_type = allocation.Tag,
         .tags = &.{
             .{ .c_name = "ACCESSKIT_ERROR_NONE", .zig_name = "none" },
             .{ .c_name = "ACCESSKIT_ERROR_OUT_OF_MEMORY", .zig_name = "out_of_memory" },
+            .{ .c_name = "ACCESSKIT_ERROR_OPERATION_FAILED", .zig_name = "operation_failed" },
         },
     },
 };
@@ -671,7 +672,7 @@ pub fn rowFor(comptime key: EnumDomain) EnumRow {
     return enum_rows[@intFromEnum(key)];
 }
 
-/// How many tags `enum_rows` carries between them: 272.
+/// How many tags `enum_rows` carries between them: 273.
 ///
 /// Read off the table rather than repeated, so a row that gains or loses a tag
 /// is counted here with no edit, and the `comptime` block pins the result
@@ -715,7 +716,7 @@ pub const TagEntry = struct {
 /// Both come from one pass so the two cannot disagree: the entries and the
 /// verdicts are read off the same walk of the same table. The walk is the only
 /// loop in this file that runs over the tag domain, and its bound is
-/// `tag_count`, which is 272.
+/// `tag_count`, which is 273.
 const flat = flatten();
 
 /// The flattened table, one entry per tag, in row order.
@@ -726,7 +727,7 @@ pub const tag_entries: [tag_count]TagEntry = flat.entries;
 
 /// The flattened table and the per-row verdicts, in one pass.
 fn flatten() struct { entries: [tag_count]TagEntry, rows_agree: [enum_domain_count]bool } {
-    // The walk is one evaluation over 272 entries, which is past the 1000
+    // The walk is one evaluation over 273 entries, which is past the 1000
     // backwards branches the evaluator allows by default. The quota is raised
     // rather than the walk split, because a split would let the two halves
     // disagree and a disagreement here is the whole thing this file exists to
@@ -794,15 +795,15 @@ const row_facts: struct {
 };
 
 comptime {
-    // Every walk in this block is over the whole 272-tag table at once, which is
+    // Every walk in this block is over the whole 273-tag table at once, which is
     // past the 1000 backwards branches the evaluator allows by default. The
     // quota is raised once here rather than per check, because a per-check quota
     // would let one check's exhaustion look like another's failure.
     @setEvalBranchQuota(200_000);
     // The two bounds this file's loops run over, pinned against the header's
-    // own numbers: nineteen enumerations, 272 enumerators between them.
+    // own numbers: nineteen enumerations, 273 enumerators between them.
     if (enum_domain_count != 19) @compileError("the header declares nineteen enumerations");
-    if (tag_count != 272) @compileError("the header declares 272 enumerators");
+    if (tag_count != 273) @compileError("the header declares 273 enumerators");
 
     // `enum_rows` has one row per member of `EnumDomain`, in this order, so a
     // twentieth enumeration is a build failure here rather than a row nobody
@@ -814,7 +815,7 @@ comptime {
         std.debug.assert(std.mem.startsWith(u8, enum_rows[index].c_name, "accesskit_"));
     }
 
-    // The spelling rule, all 272 of them, and the resolution of every row's
+    // The spelling rule, all 273 of them, and the resolution of every row's
     // variant name against its enum. This is the first half of the bijection:
     // every C tag names exactly one Zig variant, at the wire byte the header
     // numbers it.
@@ -874,7 +875,7 @@ fn expectedCNameLength(comptime row: EnumRow, comptime zig_name: []const u8) usi
 /// The C enumerator the spelling rule produces for `zig_name` in `row`.
 ///
 /// `ACCESSKIT_` ++ the row's prefix ++ `_` ++ the variant's name in upper
-/// case, with a trailing underscore dropped. The header spells all 272 this
+/// case, with a trailing underscore dropped. The header spells all 273 this
 /// way, and this is what makes a C name that is unique but wrong a build
 /// failure rather than a test that passes.
 fn expectedCName(
@@ -970,12 +971,58 @@ fn assertGate(comptime key: EnumDomain, comptime decode: anytype) void {
 test "the table holds the nineteen enumerations the header declares" {
     try testing.expectEqual(@as(u32, 19), enum_domain_count);
     try testing.expectEqual(enum_domain_count, enum_rows.len);
-    try testing.expectEqual(@as(u32, 272), tag_count);
+    try testing.expectEqual(@as(u32, 273), tag_count);
     try testing.expectEqual(tag_count, tag_entries.len);
 }
 
+test "the port error enum registry preserves the three C names and wire values" {
+    // Record the port-only header cases independently of the registry.
+    const Case = struct {
+        c_name: []const u8,
+        tag: allocation.Tag,
+        wire: c_int,
+    };
+    const cases = [3]Case{
+        .{ .c_name = "ACCESSKIT_ERROR_NONE", .tag = .none, .wire = 0 },
+        .{ .c_name = "ACCESSKIT_ERROR_OUT_OF_MEMORY", .tag = .out_of_memory, .wire = 1 },
+        .{ .c_name = "ACCESSKIT_ERROR_OPERATION_FAILED", .tag = .operation_failed, .wire = 2 },
+    };
+    const row = rowFor(.error_tag);
+    try testing.expectEqualStrings("accesskit_error", row.c_name);
+    try testing.expectEqual(EnumDomain.error_tag, row.key);
+    try testing.expect(row.zig_type == allocation.Tag);
+    try testing.expectEqual(cases.len, row.tags.len);
+    try testing.expectEqual(cases.len, @typeInfo(allocation.Tag).@"enum".fields.len);
+
+    inline for (cases, 0..) |case, index| {
+        const entry = row.tags[index];
+        try testing.expectEqualStrings(case.c_name, entry.c_name);
+        try testing.expectEqualStrings(@tagName(case.tag), entry.zig_name);
+        try testing.expectEqual(case.wire, @intFromEnum(case.tag));
+        const actual_tag = @field(row.zig_type, entry.zig_name);
+        try testing.expectEqual(case.tag, actual_tag);
+        try testing.expectEqual(case.wire, @intFromEnum(actual_tag));
+    }
+
+    // Check the flattened entries themselves, not only the row parity verdict.
+    const error_row_index = @intFromEnum(EnumDomain.error_tag);
+    var found: usize = 0;
+    for (tag_entries) |entry| {
+        if (entry.row_index == error_row_index) {
+            try testing.expect(found < cases.len);
+            const case = cases[found];
+            try testing.expectEqualStrings(case.c_name, entry.c_name);
+            try testing.expectEqualStrings(@tagName(case.tag), entry.zig_name);
+            try testing.expectEqual(@as(u32, @intCast(case.wire)), entry.discriminant);
+            try testing.expectEqual(cases.len, entry.row_length);
+            found += 1;
+        }
+    }
+    try testing.expectEqual(cases.len, found);
+}
+
 test "every C tag names exactly one Zig variant, at the byte the header numbers it" {
-    // The first direction, over all 272 entries and not a sample. `resolved` is
+    // The first direction, over all 273 entries and not a sample. `resolved` is
     // the compile-time answer to "is `zig_name` a declared variant of this row's
     // enum, and does it carry the wire byte the row places it at", so a false
     // here is a tag with no variant behind it or a variant at the wrong byte.

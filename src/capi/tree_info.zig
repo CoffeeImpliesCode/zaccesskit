@@ -97,13 +97,13 @@
 //! gives the channel: `allocation.allocator() std.mem.Allocator`, the accessor
 //! `docs/40-capi-build-map.md` section 2 shows at each allocating export;
 //! `allocation.clearError() void`, which every export calls on entry because
-//! `include/zaccesskit.h:6479-6480` says the tag is valid only for the call that
-//! set it; and `allocation.failWith(.out_of_memory)`, the one failing tag this
-//! file can record, which is `ACCESSKIT_ERROR_OUT_OF_MEMORY` at
-//! `include/zaccesskit.h:1763` and the only failing member of the two-member
-//! `accesskit_error` at `:1761-1764`. `marshal.zig` owns the conversions this
-//! file calls: `dup_c_string`, `string_free`, `c_string_to_slice` and
-//! `c_bytes_to_slice`.
+//! `include/zaccesskit.h:6502-6506` says other functions clear both diagnostics
+//! on entry; and `allocation.failWith(.out_of_memory)`, the tag this module
+//! uses for allocation failures, `ACCESSKIT_ERROR_OUT_OF_MEMORY` at
+//! `include/zaccesskit.h:1782`. The full C error domain has three members at
+//! `include/zaccesskit.h:1780-1784`; this module's failure paths are OOM-only.
+//! `marshal.zig` owns the conversions this file calls: `dup_c_string`,
+//! `string_free`, `c_string_to_slice` and `c_bytes_to_slice`.
 //!
 //! **What a `void` export does when it cannot fail.** `accesskit_tree_info_free`
 //! on a null handle and a setter whose copy does not fit in memory are both
@@ -404,10 +404,9 @@ pub fn treeInfoDebug(
     defer owning.deinit();
     formatTreeInfo(&tree.tree, &owning.writer) catch |err| switch (err) {
         // `std.Io.Writer.Allocating.drain` returns `error.WriteFailed` from one
-        // place, `lib/std/Io/Writer.zig:2705`, and that place is the
-        // `ensureUnusedCapacity` call that could not make room. A writer that
-        // owns its buffer and grows it has no other way to fail, so the C
-        // layer's one failing tag answers it.
+        // place, `lib/std/Io/Writer.zig:2705`, when `ensureUnusedCapacity`
+        // cannot grow the buffer. This writer owns its buffer, so that failure
+        // means allocation growth failed and maps to `error.OutOfMemory`.
         error.WriteFailed => return error.OutOfMemory,
     };
     const text = try owning.toOwnedSliceSentinel(0);
