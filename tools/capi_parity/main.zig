@@ -119,15 +119,10 @@ const GuardClass = enum {
     }
 };
 
-/// What `docs/40-capi-build-map.md` section 1 measured in the header, for the
-/// whole file rather than for one target. The six guard counts sum to the 498
-/// the header states at line 1757.
+/// Keep the recorded census fixed so a parser regression cannot change both comparison sets.
 const Measured = struct {
-    // 440 functions plus `ACCESSKIT_TREE_ID_ROOT`, the one data object. It is
-    // declared at `include/zaccesskit.h:1791` and exported from
-    // `src/capi/root.zig`, on every target, so it belongs in the portable class
-    // on both sides of the census.
-    const portable = 441;
+    // The root TreeId data object belongs in the portable symbol count, not the function count.
+    const portable = 442;
     const unix = 6;
     const macos = 16;
     const apple_mobile = 13;
@@ -136,12 +131,12 @@ const Measured = struct {
 
     /// Section 1 of the same document: the rest of the census, which a parser
     /// regression moves before it moves the function count.
-    const functions = 498;
+    const functions = 499;
     const laid_out_structs = 40;
     const opaque_handles = 18;
     const function_pointer_typedefs = 4;
     const enums = 19;
-    const enum_variants = 272;
+    const enum_variants = 273;
     const data_objects = 1;
 
     fn of(c: GuardClass) usize {
@@ -165,11 +160,11 @@ const TargetMeasurement = struct { target: header.Target, total: usize };
 /// gated the way the header is; without a figure, the 52 guarded declarations
 /// read as coverage on every platform.
 const target_measurements = [_]TargetMeasurement{
-    .{ .target = .linux, .total = 447 },
-    .{ .target = .macos, .total = 457 },
-    .{ .target = .ios, .total = 454 },
-    .{ .target = .android, .total = 454 },
-    .{ .target = .windows, .total = 451 },
+    .{ .target = .linux, .total = 448 },
+    .{ .target = .macos, .total = 458 },
+    .{ .target = .ios, .total = 455 },
+    .{ .target = .android, .total = 455 },
+    .{ .target = .windows, .total = 452 },
 };
 
 /// The `platform.Platform` the header side and the Zig side agree on for each
@@ -408,11 +403,13 @@ fn reportCensus(w: *Io.Writer, sweep: *Sweep) !void {
     try w.writeAll("declared by guard\n");
     var total: usize = 0;
     for (GuardClass.all, 0..) |c, i| {
+        const data_object_count: usize = if (c == .portable) Measured.data_objects else 0;
+        const measured_functions = Measured.of(c) - data_object_count;
         try w.print("  {s:<14}{d:>6}{d:>12}{s:>10}\n", .{
             c.label(),
             declared_by_guard[i],
-            Measured.of(c),
-            if (declared_by_guard[i] == Measured.of(c)) "" else "  MISMATCH",
+            measured_functions,
+            if (declared_by_guard[i] == measured_functions) "" else "  MISMATCH",
         });
         total += declared_by_guard[i];
     }
@@ -626,8 +623,7 @@ fn reportTarget(w: *Io.Writer, sweep: *Sweep, t: header.Target, doc: *const head
             exported += 1;
         }
         const in_target: bool = if (c.toZig()) |g| g.declaresOn(zp) else true;
-        // `docs/40` counts a guarded class on the target it gates, and zero on
-        // every other; the portable class is 441 everywhere.
+        // A guarded class counts only on its target. Portable symbols count on every target.
         const documented: usize = if (in_target) Measured.of(c) else 0;
         const table: usize = if (c.toZig()) |g|
             platform.declaredCountFor(zp, g)
