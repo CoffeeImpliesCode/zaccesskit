@@ -92,8 +92,11 @@ pub const Member = struct {
 ///
 /// The answer is a local reference and the caller releases it with
 /// `deleteLocalRef` before the end of the frame.
+/// A pending exception prevents lookup. A failed acquisition releases its result.
 pub fn findClassChecked(table: JniTable, class: Class) CallError!JClass {
+    if (table.exceptionCheck()) return error.JavaException;
     const found = table.findClass(class.internal_name);
+    errdefer if (found != null) table.deleteLocalRef(found);
     if (table.exceptionCheck()) return error.JavaException;
     if (found == null) return error.JavaMemberMissing;
     return found;
@@ -133,7 +136,24 @@ pub fn callVoidChecked(
 /// Calls `member` on `object` and answers its reference.
 ///
 /// The answer is a local reference and the caller releases it.
+/// A failed call releases any result reference before it reports the exception.
 pub fn callObjectChecked(
+    table: JniTable,
+    object: JObject,
+    member: Member,
+    args: []const JValue,
+) CallError!JObject {
+    const answer = try callObjectNullableChecked(table, object, member, args);
+    if (answer == null) return error.JavaMemberMissing;
+    return answer;
+}
+
+/// Calls a reference-returning member whose successful result may be null.
+///
+/// Null is an ordinary Java result, not a missing member. Lookup failures and
+/// exceptions retain their exact tags; an exceptional result reference is released.
+/// The caller owns a successful non-null local reference and releases it.
+pub fn callObjectNullableChecked(
     table: JniTable,
     object: JObject,
     member: Member,
@@ -142,14 +162,14 @@ pub fn callObjectChecked(
     if (object == null) return error.JavaMemberMissing;
     const method = try methodIdChecked(table, member);
     const answer = table.callObjectMethod(object, method, args);
+    errdefer if (answer != null) table.deleteLocalRef(answer);
     if (table.exceptionCheck()) return error.JavaException;
-    if (answer == null) return error.JavaMemberMissing;
     return answer;
 }
 
 /// Calls the static `member` on its own class and answers its reference.
 ///
-/// The class and the answer are local references and the caller releases both.
+/// The caller releases the answer. This helper releases its class and any failed result.
 /// The class is resolved once here rather than through `methodIdChecked`, which
 /// would resolve it a second time: a static call needs the class both for the
 /// id and for the call itself, so one lookup serves both.
@@ -164,6 +184,7 @@ pub fn callStaticObjectChecked(
     if (table.exceptionCheck()) return error.JavaException;
     if (method == null) return error.JavaMemberMissing;
     const answer = table.callStaticObjectMethod(class, method, args);
+    errdefer if (answer != null) table.deleteLocalRef(answer);
     if (table.exceptionCheck()) return error.JavaException;
     if (answer == null) return error.JavaMemberMissing;
     return answer;
@@ -309,6 +330,11 @@ const Recorder = struct {
     void_calls: usize = 0,
     /// What `exceptionCheck` answers.
     exception_pending: bool = false,
+    /// Whether an object call leaves an exception beside its nonnull result.
+    throw_object: bool = false,
+    throw_class: bool = false,
+    released_class: usize = 0,
+    released_object: usize = 0,
     /// How many local references were released.
     released: usize = 0,
 };
@@ -325,6 +351,7 @@ fn answeredFindClass(env: jni.JniEnv, _: [:0]const u8) JClass {
     const recorder = recorderOf(env) orelse return null;
     recorder.find_class_calls += 1;
     if (recorder.class_missing) return null;
+    if (recorder.throw_class) recorder.exception_pending = true;
     return @ptrFromInt(handle_base + 3);
 }
 
@@ -369,6 +396,7 @@ fn answeredCallObject(
     _: []const JValue,
 ) JObject {
     const recorder = recorderOf(env) orelse return null;
+    if (recorder.throw_object) recorder.exception_pending = true;
     return recorder.object_answer;
 }
 
@@ -431,9 +459,11 @@ fn answeredNewIntArray(env: jni.JniEnv, _: usize) JObject {
     return recorder.built_answer;
 }
 
-fn answeredDeleteLocalRef(env: jni.JniEnv, _: JObject) void {
+fn answeredDeleteLocalRef(env: jni.JniEnv, object: JObject) void {
     const recorder = recorderOf(env) orelse return;
     recorder.released += 1;
+    if (object == @as(JObject, @ptrFromInt(handle_base + 3))) recorder.released_class += 1;
+    if (object == recorder.object_answer) recorder.released_object += 1;
 }
 
 fn answeredExceptionCheck(env: jni.JniEnv) bool {
@@ -650,4 +680,30 @@ test "every failure the helpers report is named" {
     try testing.expectEqualStrings("OutOfMemory", errors[0].name);
     try testing.expectEqualStrings("JavaException", errors[1].name);
     try testing.expectEqualStrings("JavaMemberMissing", errors[2].name);
+}
+
+test "checked class acquisition releases a nonnull result beside an exception" {
+    var recorder: Recorder = .{ .throw_class = true };
+    try testing.expectError(error.JavaException, findClassChecked(recordingTable(&recorder), view_class));
+    try testing.expectEqual(@as(usize, 1), recorder.released);
+    try testing.expectEqual(@as(usize, 1), recorder.released_class);
+}
+
+test "checked instance acquisition releases a nonnull result beside an exception" {
+    var recorder: Recorder = .{ .throw_object = true };
+    try testing.expectError(
+        error.JavaException,
+        callObjectChecked(recordingTable(&recorder), fakeObject(), test_member, &.{}),
+    );
+    try testing.expectEqual(@as(usize, 2), recorder.released);
+    try testing.expectEqual(@as(usize, 1), recorder.released_class);
+    try testing.expectEqual(@as(usize, 1), recorder.released_object);
+}
+
+test "checked static acquisition releases a nonnull result beside an exception" {
+    var recorder: Recorder = .{ .throw_object = true };
+    try testing.expectError(error.JavaException, callStaticObjectChecked(recordingTable(&recorder), test_member, &.{}));
+    try testing.expectEqual(@as(usize, 2), recorder.released);
+    try testing.expectEqual(@as(usize, 1), recorder.released_class);
+    try testing.expectEqual(@as(usize, 1), recorder.released_object);
 }

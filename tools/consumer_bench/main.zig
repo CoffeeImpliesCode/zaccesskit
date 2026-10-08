@@ -23,7 +23,7 @@ const Options = struct {
 };
 const BenchError = error{ InvalidArguments, InvalidState, CallbackMismatch, AllocationLeak };
 const RunError = BenchError || consumer.tree.UpdateError;
-const MainError = RunError || std.process.Args.ToSliceError || std.Io.Writer.Error;
+pub const MainError = RunError || std.process.Args.ToSliceError || std.Io.Writer.Error;
 const Result = struct {
     input_digest: u64,
     output_digest: u64,

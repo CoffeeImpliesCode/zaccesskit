@@ -81,7 +81,12 @@ const Application = struct {
         self.command_count += 1;
     }
 
-    fn applyPending(self: *Application, gpa: std.mem.Allocator, tree: *consumer.tree.Tree, context: *context_api.NodeContext) ScenarioError!void {
+    fn applyPending(
+        self: *Application,
+        gpa: std.mem.Allocator,
+        tree: *consumer.tree.Tree,
+        context: *context_api.NodeContext,
+    ) ScenarioError!void {
         if (self.failure) |err| return err;
         const pending_count = self.command_count - self.applied_count;
         if (pending_count > action_count_max) return error.ActionQueueFull;
@@ -202,7 +207,11 @@ fn initialTreeUpdate(gpa: std.mem.Allocator, application: *const Application) Fi
     return update;
 }
 
-fn incrementalTreeUpdate(gpa: std.mem.Allocator, application: *const Application, command: Command) FixtureError!schema.TreeUpdate {
+fn incrementalTreeUpdate(
+    gpa: std.mem.Allocator,
+    application: *const Application,
+    command: Command,
+) FixtureError!schema.TreeUpdate {
     var update: schema.TreeUpdate = .{};
     errdefer update.deinit(gpa);
     update.focus = application.focus;
@@ -326,7 +335,11 @@ pub fn runScenario(gpa: std.mem.Allocator) ScenarioError!void {
     try require(application.applied_count == action_count_max);
 }
 
-fn checkGeometryAndChildren(window: atspi.PlatformNode, numeric: atspi.PlatformNode, button_present: bool) ScenarioError!void {
+fn checkGeometryAndChildren(
+    window: atspi.PlatformNode,
+    numeric: atspi.PlatformNode,
+    button_present: bool,
+) ScenarioError!void {
     const screen = try numeric.extents(.screen);
     try require(screen.x == 117 and screen.y == 228);
     try require(screen.width == 20 and screen.height == 20);

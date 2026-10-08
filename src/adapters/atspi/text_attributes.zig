@@ -102,26 +102,30 @@ pub fn nameAt(index: usize) ?[]const u8 {
 /// `text_attributes.rs:14-16`.
 fn familyName(gpa: std.mem.Allocator, node: NodeRef) AttributeError!?[]u8 {
     const found = try consumer.text.inherited.nodeFontFamily(node) orelse return null;
-    return try gpa.dupe(u8, found);
+    const value = try gpa.dupe(u8, found);
+    return value;
 }
 
 /// `text_attributes.rs:18-20`. A size of `12.0` reads back as `12`.
 fn size(gpa: std.mem.Allocator, node: NodeRef) AttributeError!?[]u8 {
     const found = try consumer.text.inherited.nodeFontSize(node) orelse return null;
-    return try std.fmt.allocPrint(gpa, "{d}", .{found});
+    const value = try std.fmt.allocPrint(gpa, "{d}", .{found});
+    return value;
 }
 
 /// `text_attributes.rs:22-24`. A weight of `400.0` reads back as `400`.
 fn weight(gpa: std.mem.Allocator, node: NodeRef) AttributeError!?[]u8 {
     const found = try consumer.text.inherited.nodeFontWeight(node) orelse return null;
-    return try std.fmt.allocPrint(gpa, "{d}", .{found});
+    const value = try std.fmt.allocPrint(gpa, "{d}", .{found});
+    return value;
 }
 
 /// `text_attributes.rs:26-28`. A node that is not italic answers `null`, which
 /// is what makes this entry absent rather than empty.
 fn style(gpa: std.mem.Allocator, node: NodeRef) AttributeError!?[]u8 {
     if (!try consumer.text.inherited.nodeIsItalic(node)) return null;
-    return try gpa.dupe(u8, "italic");
+    const value = try gpa.dupe(u8, "italic");
+    return value;
 }
 
 /// `text_attributes.rs:30-32`. A node that declares a strikethrough answers
@@ -129,17 +133,19 @@ fn style(gpa: std.mem.Allocator, node: NodeRef) AttributeError!?[]u8 {
 /// string for all of them.
 fn strikethrough(gpa: std.mem.Allocator, node: NodeRef) AttributeError!?[]u8 {
     if (try consumer.text.inherited.nodeStrikethrough(node) == null) return null;
-    return try gpa.dupe(u8, "true");
+    const value = try gpa.dupe(u8, "true");
+    return value;
 }
 
 /// `text_attributes.rs:34-42`. A double decoration reads back as `double` and
 /// every other decoration as `single`, which is the reference's wildcard arm.
 fn underline(gpa: std.mem.Allocator, node: NodeRef) AttributeError!?[]u8 {
     const found = try consumer.text.inherited.nodeUnderline(node) orelse return null;
-    return try gpa.dupe(u8, switch (found.style) {
+    const value = try gpa.dupe(u8, switch (found.style) {
         .double => "double",
         .solid, .dotted, .dashed, .wavy => "single",
     });
+    return value;
 }
 
 /// `text_attributes.rs:10-12` and `:44-46`. Three channels and no alpha, which
@@ -151,31 +157,35 @@ fn colorToString(gpa: std.mem.Allocator, color: Color) std.mem.Allocator.Error![
 /// `text_attributes.rs:44-46`.
 fn bgColor(gpa: std.mem.Allocator, node: NodeRef) AttributeError!?[]u8 {
     const found = try consumer.text.inherited.nodeBackgroundColor(node) orelse return null;
-    return try colorToString(gpa, found);
+    const value = try colorToString(gpa, found);
+    return value;
 }
 
 /// `text_attributes.rs:48-50`.
 fn fgColor(gpa: std.mem.Allocator, node: NodeRef) AttributeError!?[]u8 {
     const found = try consumer.text.inherited.nodeForegroundColor(node) orelse return null;
-    return try colorToString(gpa, found);
+    const value = try colorToString(gpa, found);
+    return value;
 }
 
 /// `text_attributes.rs:52-54`.
 fn language(gpa: std.mem.Allocator, node: NodeRef) AttributeError!?[]u8 {
     const found = try consumer.text.inherited.nodeLanguage(node) orelse return null;
-    return try gpa.dupe(u8, found);
+    const value = try gpa.dupe(u8, found);
+    return value;
 }
 
 /// `text_attributes.rs:56-66`. `justify` reads back as `fill`, which is the
 /// name the reference gives the AT-SPI value.
 fn justification(gpa: std.mem.Allocator, node: NodeRef) AttributeError!?[]u8 {
     const found = try consumer.text.inherited.nodeTextAlign(node) orelse return null;
-    return try gpa.dupe(u8, switch (found) {
+    const value = try gpa.dupe(u8, switch (found) {
         .left => "left",
         .center => "center",
         .right => "right",
         .justify => "fill",
     });
+    return value;
 }
 
 const testing = std.testing;

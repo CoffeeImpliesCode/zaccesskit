@@ -97,9 +97,7 @@ pub const com = win32.system.com;
 /// window properties and the three property helpers the adapter calls.
 pub const wm = win32.ui.windows_and_messaging;
 
-// --- The 26 named types of the census --------------------------------------
-// Upstream names 26 types. Each alias below is the zigwin32 spelling of one
-// of them, and each is used by name in the layout assertions.
+// --- Native value and identifier types -------------------------------------
 
 /// `VARIANT`, the automation value union. Upstream `util.rs:116`.
 pub const Variant = com.VARIANT;
@@ -175,7 +173,7 @@ pub const SupportedTextSelection = i32;
 /// `TextPatternRangeEndpoint`, which end of a range an endpoint names.
 pub const TextPatternRangeEndpoint = uia.TextPatternRangeEndpoint;
 
-// --- The 14 COM interfaces --------------------------------------------------
+// --- COM interfaces --------------------------------------------------------
 
 /// `IUnknown`, referenced at upstream `node.rs:1050`, `:1426` and
 /// `util.rs:356` and never implemented. It is the base of every other
@@ -204,11 +202,13 @@ pub const ISelectionItemProvider = uia.ISelectionItemProvider;
 pub const ISelectionProvider = uia.ISelectionProvider;
 /// `ITextProvider`, the text pattern.
 pub const ITextProvider = uia.ITextProvider;
+/// `ITextRangeProvider`, the text range's complete native COM contract.
+pub const ITextRangeProvider = uia.ITextRangeProvider;
 /// `IExpandCollapseProvider`, the expand collapse pattern.
 pub const IExpandCollapseProvider = uia.IExpandCollapseProvider;
-/// `IWindowProvider`, the window pattern. Upstream implements it on the range
-/// object through `text.rs:209`; the port implements it on the element object
-/// and says so in `node.zig`.
+/// `IWindowProvider`, the window pattern. Upstream implements it on the node
+/// provider in `node.rs:790-804`. The port implements it on the element in
+/// `node.zig`.
 pub const IWindowProvider = uia.IWindowProvider;
 
 /// Every interface the adapter implements, in the order
@@ -225,6 +225,7 @@ pub const implemented_interfaces = [_]type{
     ISelectionItemProvider,
     ISelectionProvider,
     ITextProvider,
+    ITextRangeProvider,
     IExpandCollapseProvider,
     IWindowProvider,
 };
@@ -505,12 +506,8 @@ pub const constants = [_]Constant{
 pub const pointer_size = @sizeOf(usize);
 
 comptime {
-    // A COM interface pointer is a vtable pointer and nothing else, on every
-    // architecture the adapter builds for. If a future binding adds a field,
-    // the `extern union` grows and every `@fieldParentPtr` in `com.zig` starts
-    // pointing at the wrong address. Measured on this host: every one of the
-    // thirteen is eight bytes with the two fields `vtable` and `IUnknown`, and
-    // both sit at offset zero because it is an `extern union`.
+    // Each interface must remain one vtable word. COM object thunks depend
+    // on this declared layout. This does not prove a native SDK or client ABI.
     for (implemented_interfaces) |Interface| {
         std.debug.assert(@sizeOf(Interface) == pointer_size);
         std.debug.assert(@alignOf(Interface) == @alignOf(usize));
@@ -633,11 +630,10 @@ test "no constant name repeats inside a class" {
     }
 }
 
-test "the fourteen implemented interfaces are all distinct and all are COM" {
+test "implemented interfaces are distinct COM interfaces" {
     // The skip is the `else` branch and the work is the body, so the body is
     // not analysed on an architecture that cannot express `.winapi`.
     if (comptime winapi_resolves) {
-        try std.testing.expectEqual(@as(usize, 13), implemented_interfaces.len);
         inline for (implemented_interfaces, 0..) |outer, outer_index| {
             std.debug.assert(@hasDecl(outer, "VTable"));
             try std.testing.expectEqual(@as(usize, 0), @offsetOf(outer.VTable, "base"));
@@ -760,6 +756,16 @@ test "every implemented vtable names its slots in the order COM dispatches" {
                 },
             },
             .{
+                .Interface = ITextRangeProvider,
+                .slots = &.{
+                    "Clone",               "Compare",     "CompareEndpoints",  "ExpandToEnclosingUnit",
+                    "FindAttribute",       "FindText",    "GetAttributeValue", "GetBoundingRectangles",
+                    "GetEnclosingElement", "GetText",     "Move",              "MoveEndpointByUnit",
+                    "MoveEndpointByRange", "Select",      "AddToSelection",    "RemoveFromSelection",
+                    "ScrollIntoView",      "GetChildren",
+                },
+            },
+            .{
                 .Interface = IExpandCollapseProvider,
                 .slots = &.{ "Expand", "Collapse", "get_ExpandCollapseState" },
             },
@@ -788,15 +794,24 @@ test "every implemented vtable names its slots in the order COM dispatches" {
     } else return error.SkipZigTest;
 }
 
-test "the thirteen interfaces hold fifty-one method slots between them" {
+test "the fourteen interfaces preserve all native method slots" {
     if (comptime winapi_resolves) {
         var total: usize = 0;
         inline for (implemented_interfaces) |Interface| {
             total += @typeInfo(Interface.VTable).@"struct".fields.len - 1;
         }
         try std.testing.expectEqual(
-            @as(usize, 4 + 6 + 2 + 2 + 1 + 3 + 7 + 1 + 5 + 3 + 6 + 3 + 9),
+            @as(usize, 4 + 6 + 2 + 2 + 1 + 3 + 7 + 1 + 5 + 3 + 6 + 18 + 3 + 9),
             total,
         );
+    } else return error.SkipZigTest;
+}
+
+test "text range provider keeps the full native COM vtable" {
+    if (comptime winapi_resolves) {
+        try std.testing.expectEqual(@sizeOf(usize), @sizeOf(ITextRangeProvider));
+        try std.testing.expectEqual(21 * @sizeOf(usize), @sizeOf(ITextRangeProvider.VTable));
+        try std.testing.expectEqual(3 * @sizeOf(usize), @offsetOf(ITextRangeProvider.VTable, "Clone"));
+        try std.testing.expectEqual(20 * @sizeOf(usize), @offsetOf(ITextRangeProvider.VTable, "GetChildren"));
     } else return error.SkipZigTest;
 }

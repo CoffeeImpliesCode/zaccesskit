@@ -16,23 +16,19 @@
 //!
 //! **It owns no object and registers nothing.** Upstream's `PlatformNode` is a
 //! cheap cloneable handle a D-Bus method body receives; the port's is a value
-//! carrying a pointer to the window's context and a node identifier. Every
-//! method below is a function of that value and the tree behind it, so a fixture
-//! tree drives all of them with no bus and no object register. What is still
-//! missing is the register itself: `docs/41` section 3.3 names `objects.zig`
-//! under milestone M5, and until it lands nothing calls these methods. That is
-//! a wiring gap, not a value gap, and the values are here.
+//! carrying a pointer to the window's context and a node identifier.
+//! `objects.zig` publishes live paths, and the counterpart interfaces call
+//! these methods through `dispatch.zig`. Fixtures use the same queries without
+//! a bus. The pump serializes those borrowed reads with tree updates.
 //!
 //! ## Three things a reader should not have to guess
 //!
-//! 1. **A method that raises an action hands the request to a sink and returns.**
+//! 1. **A method that raises an action transfers its request to a sink.**
 //!    Upstream calls `context.do_action`, which forwards one `ActionRequest` to
-//!    the application handler. The port holds the handler in
-//!    `app_context.ActionSink` and reports `error.NoActionSink` while no handler
-//!    is installed, because `root.zig:64-79` records that the C ABI cannot
-//!    install one: the request it would receive has to be allocated by
-//!    `src/capi/allocation.zig`, and an adapter cannot reach that module without
-//!    closing the cycle `src/capi/boundary.zig` exists to break.
+//!    the application handler. Native dispatch installs a bounded collector in
+//!    `app_context.ActionSink`; it delivers the captured request through the
+//!    checked owner callback after the query returns. A direct caller must
+//!    install its own sink or receives `error.NoActionSink`.
 //! 2. **`indexInParent` and `root` read the application registry.** A window no
 //!    registry lists has no index and no application object, and both report
 //!    `error.Defunct`, which is upstream's answer when the `Weak<Context>` it
@@ -531,8 +527,7 @@ pub const PlatformNode = struct {
     ///
     /// **Errors.** `error.Defunct` when no application context is installed.
     pub fn root(self: PlatformNode) NodeError!PlatformRoot {
-        const app = self.context.app orelse return error.Defunct;
-        return PlatformRoot.init(app);
+        return self.context.platformRoot();
     }
 
     /// The object path this node is exported on.
@@ -602,10 +597,15 @@ pub const PlatformNode = struct {
     ///
     /// The handler owns the request and releases it with
     /// `ActionRequest.deinit`, which is the contract at `update.zig:263-271`.
+    /// If no handler is installed, this function releases it instead.
     ///
     /// **Errors.** `error.NoActionSink` when the window has no handler.
     fn raise(self: PlatformNode, request: ActionRequest) NodeError!void {
-        const sink = self.context.sink orelse return error.NoActionSink;
+        const sink = self.context.sink orelse {
+            var owned = request;
+            owned.deinit(self.context.gpa);
+            return error.NoActionSink;
+        };
         sink.raise(sink.context, request);
     }
 
@@ -1684,6 +1684,7 @@ pub const PlatformNode = struct {
         errdefer out.attributes.deinit(self.context.gpa);
         for (text_attributes.attributes) |entry| {
             const value = (try entry.getter(self.context.gpa, inner)) orelse continue;
+            errdefer self.context.gpa.free(value);
             if (!include_defaults) {
                 if (try entry.getter(self.context.gpa, node)) |fallback| {
                     defer self.context.gpa.free(fallback);
@@ -2313,12 +2314,12 @@ fn ReturnTypeOf(comptime callable: anytype) type {
 }
 
 fn CacheMapperErrorSet(comptime cacheMapperErrorSet_callback: anytype) type {
-    const MapperError: type =
+    const mapper_error: type =
         @typeInfo(ReturnTypeOf(cacheMapperErrorSet_callback)).error_union.error_set;
-    if (@typeInfo(MapperError).error_set == null) {
+    if (@typeInfo(mapper_error).error_set == null) {
         @compileError("mapDescendantCacheNodes mapper must return a closed error set, not anyerror");
     }
-    return MapperError;
+    return mapper_error;
 }
 
 /// Reports `node`, then every descendant of it, parent before child.
@@ -2588,7 +2589,7 @@ fn notifyPropertyChanges(
             .member = member_property_change,
             .id = id,
             .detail1 = key_accessible_role,
-            .any_data = .{ .integer = @intCast(@intFromEnum(role)) },
+            .any_data = .{ .unsigned_integer = @intFromEnum(role) },
         });
     }
 
@@ -3287,11 +3288,11 @@ fn cacheWalkRejectItem(
     return item;
 }
 
-fn allocatingCacheWalk(gpa: std.mem.Allocator, comptime mode: enum {
+fn allocatingCacheWalk(comptime mode: enum {
     success,
     query_error,
     mapper_error,
-}) !void {
+}, gpa: std.mem.Allocator) !void {
     // Keep tree construction outside fail-N so each failure targets collector or mapper storage.
     const backing = std.testing.allocator;
     var tree = try cacheWalkTree(backing, .{
@@ -3338,15 +3339,15 @@ fn allocatingCacheWalk(gpa: std.mem.Allocator, comptime mode: enum {
 }
 
 fn allocatingCacheWalkSuccess(gpa: std.mem.Allocator) !void {
-    try allocatingCacheWalk(gpa, .success);
+    try allocatingCacheWalk(.success, gpa);
 }
 
 fn allocatingCacheWalkQueryError(gpa: std.mem.Allocator) !void {
-    try allocatingCacheWalk(gpa, .query_error);
+    try allocatingCacheWalk(.query_error, gpa);
 }
 
 fn allocatingCacheWalkMapperError(gpa: std.mem.Allocator) !void {
-    try allocatingCacheWalk(gpa, .mapper_error);
+    try allocatingCacheWalk(.mapper_error, gpa);
 }
 
 test "root cache releases owned inputs and mapped outputs under fail N" {
@@ -3371,4 +3372,92 @@ test "root cache mapper rejection consumes input and releases outputs under fail
         allocatingCacheWalkMapperError,
         .{},
     );
+}
+
+fn textAttributeRunAllocationFailures(gpa: std.mem.Allocator) !void {
+    const backing = std.testing.allocator;
+    var state: TreeState = .{};
+    defer state.deinit(backing);
+    const tree_index = try state.tree_index_map.getOrCreateIndex(backing, schema.tree_id_root);
+    try std.testing.expectEqual(@as(u32, 0), tree_index.value());
+    state.root_id = fixtureId(0);
+    state.focus_id = fixtureId(0);
+    state.info = schema.TreeInfo.init(.{ .value = 0 });
+    {
+        var document = schema.Node.init(backing, .text_input);
+        errdefer document.deinit();
+        try schema.ids_props.setChildren(&document.properties, &.{.{ .value = 1 }});
+        try schema.strings.setFontFamily(&document.properties, "Default Sans");
+        try fixtureInsert(backing, &state, 0, null, 0, document);
+    }
+    {
+        var run = schema.Node.init(backing, .text_run);
+        errdefer run.deinit();
+        try schema.strings.setValue(&run.properties, "abcd");
+        try schema.strings.setFontFamily(&run.properties, "Fixture Sans");
+        try schema.vectors.setCharacterLengths(&run.properties, &.{ 1, 1, 1, 1 });
+        try fixtureInsert(backing, &state, 1, 0, 0, run);
+    }
+    const context = fixtureContext(gpa, &state);
+    const platform = PlatformNode.init(&context, 7, fixtureId(0));
+    var run = try platform.textAttributeRun(0, false);
+    defer run.attributes.deinit(gpa);
+    try std.testing.expectEqualStrings("Fixture Sans", run.attributes.get("family-name").?);
+    try std.testing.expectEqual(@as(i32, 0), run.start_offset);
+    try std.testing.expectEqual(@as(i32, 4), run.end_offset);
+}
+
+test "text attribute run releases allocated value when default getter fails" {
+    // A real run and its document both allocate family-name values. Fail-N
+    // exercises the second getter while the first getter already owns a value.
+    try std.testing.checkAllAllocationFailures(
+        std.testing.allocator,
+        textAttributeRunAllocationFailures,
+        .{},
+    );
+}
+
+test "text contents releases owned UTF8 when the action sink is absent" {
+    const gpa = std.testing.allocator;
+    var state: TreeState = .{};
+    defer state.deinit(gpa);
+    try fixtureState(gpa, &state);
+    const context = fixtureContext(gpa, &state);
+    const platform = PlatformNode.init(&context, 7, fixtureId(3));
+    try std.testing.expectError(error.NoActionSink, platform.setTextContents("A😀é"));
+}
+
+test "role property notification carries the unsigned protocol variant" {
+    const gpa = std.testing.allocator;
+    var before: TreeState = .{};
+    defer before.deinit(gpa);
+    try fixtureState(gpa, &before);
+    var after: TreeState = .{};
+    defer after.deinit(gpa);
+    try fixtureState(gpa, &after);
+    after.nodes.getPtr(fixtureId(2)).?.data.role = .button;
+    const old_node = before.nodeById(fixtureId(2)).?;
+    const new_node = after.nodeById(fixtureId(2)).?;
+    try std.testing.expectEqual(wire.Role.list_box, node_role.roleOf(old_node));
+    try std.testing.expectEqual(wire.Role.button, node_role.roleOf(new_node));
+    var queue = events.EventQueue.empty();
+    defer queue.deinit(gpa);
+    try notifyPropertyChanges(
+        gpa,
+        &queue,
+        new_node,
+        old_node,
+        7,
+    );
+    try std.testing.expectEqual(@as(usize, 1), queue.items.items.len);
+    var found = false;
+    for (queue.items.items) |emitted| {
+        if (!std.mem.eql(u8, emitted.detail1, key_accessible_role)) continue;
+        found = true;
+        try std.testing.expectEqualStrings(member_property_change, emitted.member);
+        try std.testing.expectEqual(@as(u32, @intFromEnum(wire.Role.button)), emitted.any_data.unsigned_integer);
+        try std.testing.expectEqualStrings("u", emitted.any_data.signature());
+        try std.testing.expect(std.meta.eql(nodeObjectId(fixtureId(2), 7), emitted.id));
+    }
+    try std.testing.expect(found);
 }

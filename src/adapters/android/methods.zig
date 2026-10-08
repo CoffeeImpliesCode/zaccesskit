@@ -1,19 +1,10 @@
-//! The 68 Java method names the Android adapter writes, and the 27 method
-//! lookups it builds from them.
+//! The Android adapter's 68 Java method names and 38 lookup triples.
 //!
-//! `docs/42-native-adapter-build-map.md` section 1.4.2 measured 78
-//! `call_method` and `call_static_method` sites naming **68** distinct Java
-//! method names, and says the reason plainly: a Zig port passes each name to
-//! `GetMethodID` itself, so the 68 names are the set the port must reproduce.
-//! `method_names` holds all 68, in the order of the map's flat list, which is
-//! sorted without regard to case, and each spelling is asserted.
-//!
-//! `docs/29-apple-android-apis.md` section 3.2 rows 24 to 46 records a JNI
-//! descriptor for 22 of them, and map section 5.3.1 records the same five
-//! native signatures. `method_ids` holds those 27 rows. The remaining **46**
-//! names have a pinned spelling and no descriptor: no document under `docs/`
-//! gives one and the upstream files are not on this host. That is a recorded
-//! gap, not a rounding.
+//! `docs/42-native-adapter-build-map.md` section 1.4.2 records the name list.
+//! The original API map provides 27 lookup rows. This census adds eleven documented
+//! gate, package, and scroll lookups from ledger rows 476 and 520.
+//! The documented ViewParent send signature replaces its former name-only row.
+//! There are 34 signature-bearing rows, four name-only rows, and 33 covered names.
 //!
 //! **A name alone does not identify a method here.** `GetMethodID` takes three
 //! strings, and three names in this set are shared: `obtain`, which names a
@@ -38,10 +29,7 @@
 //! list is the one the map calls verified, because it is the one that adds up,
 //! so this module follows the flat list and records the grouping gap.
 //!
-//! **The loop bound.** `method_names` has 68 rows and `method_ids` has 27, so
-//! every loop over either is bounded by an array length. The sortedness check
-//! compares each name with the one before it, so it walks the 67 names after
-//! the first.
+//! Each census walk is bounded by its array length.
 
 const std = @import("std");
 
@@ -132,19 +120,15 @@ pub const MethodKind = enum {
     /// One of the five methods `AK/android/src/inject.rs:257-291` registers on
     /// the delegate class.
     registered_native,
-    /// One of the 17 members `docs/29` rows 29 to 46 records with a JNI
-    /// descriptor.
+    /// A member with a JNI descriptor from the API map or pinned source.
     called_member,
-    /// One of the 5 rows `docs/29` records by Java name and signature but not
-    /// by JNI descriptor. `signature` is `null` for these.
+    /// A named lookup whose JNI descriptor is not pinned. `signature` is null.
     reached_by_name,
 };
 
 /// One Java method lookup, as the three strings `GetMethodID` takes.
 ///
-/// `class` and `name` are pinned exactly. `signature` is `null` for the five
-/// rows of kind `.reached_by_name`, because no document under `docs/` records a
-/// JNI descriptor for them.
+/// `signature = null` identifies one of the four name-only lookup rows.
 pub const MethodId = struct {
     kind: MethodKind,
     class: classes.ClassDescriptor,
@@ -153,22 +137,17 @@ pub const MethodId = struct {
 };
 
 /// How many rows `method_ids` holds.
-pub const method_id_count = 27;
+pub const method_id_count = 38;
 
 /// How many rows of `method_ids` carry a JNI descriptor.
-pub const pinned_signature_count = 22;
+pub const pinned_signature_count = 34;
 
-/// How many of the 68 names carry no descriptor.
-///
-/// `68 - 22`. A lookup for one of these cannot be built from `docs/` alone.
-pub const unpinned_name_count = 46;
+/// Method names absent from the lookup table, not signature rows.
+pub const unpinned_name_count = 35;
 
-/// How many of the 68 names appear in `method_ids`.
-///
-/// 18 carry a JNI descriptor and 4 are reached by name only, so `68 - 22` of
-/// the set has a pinned spelling and nothing else. The name `<init>` is in
-/// `method_ids` and is not one of the 68, so it does not count here.
-pub const pinned_name_count = 22;
+/// Unique names with at least one lookup row, including name-only rows.
+/// Constructors are not in the 68-name inventory and do not count here.
+pub const pinned_name_count = 33;
 
 /// Every Java method lookup the adapter builds, grouped by kind.
 pub const method_ids = [method_id_count]MethodId{
@@ -306,13 +285,83 @@ pub const method_ids = [method_id_count]MethodId{
         .name = "<init>",
         .signature = "(IIII)V",
     },
-    // 5 rows reached by name, with no JNI descriptor in any document.
+    // Gate sources: pinned util.rs:208-250 and documented manager API, ledger row 520.
     .{
-        .kind = .reached_by_name,
+        .kind = .called_member,
+        .class = "Landroid/view/View;",
+        .name = "getContext",
+        .signature = "()Landroid/content/Context;",
+    },
+    .{
+        .kind = .called_member,
+        .class = "Landroid/content/Context;",
+        .name = "getSystemService",
+        .signature = "(Ljava/lang/String;)Ljava/lang/Object;",
+    },
+    .{
+        .kind = .called_member,
+        .class = "Landroid/view/accessibility/AccessibilityManager;",
+        .name = "isEnabled",
+        .signature = "()Z",
+    },
+    // Pinned util.rs:215-224 supplies the package-name descriptor.
+    .{
+        .kind = .called_member,
+        .class = "Landroid/content/Context;",
+        .name = "getPackageName",
+        .signature = "()Ljava/lang/String;",
+    },
+    // Scroll sources: pinned event.rs:270-287, ledger row 476.
+    .{
+        .kind = .called_member,
+        .class = "Landroid/view/accessibility/AccessibilityEvent;",
+        .name = "setScrollable",
+        .signature = "(Z)V",
+    },
+    .{
+        .kind = .called_member,
+        .class = "Landroid/view/accessibility/AccessibilityEvent;",
+        .name = "setScrollX",
+        .signature = "(I)V",
+    },
+    .{
+        .kind = .called_member,
+        .class = "Landroid/view/accessibility/AccessibilityEvent;",
+        .name = "setScrollDeltaX",
+        .signature = "(I)V",
+    },
+    .{
+        .kind = .called_member,
+        .class = "Landroid/view/accessibility/AccessibilityEvent;",
+        .name = "setMaxScrollX",
+        .signature = "(I)V",
+    },
+    .{
+        .kind = .called_member,
+        .class = "Landroid/view/accessibility/AccessibilityEvent;",
+        .name = "setScrollY",
+        .signature = "(I)V",
+    },
+    .{
+        .kind = .called_member,
+        .class = "Landroid/view/accessibility/AccessibilityEvent;",
+        .name = "setScrollDeltaY",
+        .signature = "(I)V",
+    },
+    .{
+        .kind = .called_member,
+        .class = "Landroid/view/accessibility/AccessibilityEvent;",
+        .name = "setMaxScrollY",
+        .signature = "(I)V",
+    },
+    // Pinned event.rs:52-70 and Android ViewParent API specify boolean(host, event).
+    .{
+        .kind = .called_member,
         .class = "Landroid/view/ViewParent;",
         .name = "requestSendAccessibilityEvent",
-        .signature = null,
+        .signature = "(Landroid/view/View;Landroid/view/accessibility/AccessibilityEvent;)Z",
     },
+    // Four name-only rows remain.
     .{
         .kind = .reached_by_name,
         .class = "Landroid/view/accessibility/AccessibilityNodeInfo;",
@@ -389,7 +438,7 @@ comptime {
             @compileError("a pinned row must carry a signature");
         }
     }
-    if (pinned != pinned_signature_count) @compileError("the map gives 22 pinned descriptors");
+    if (pinned != pinned_signature_count) @compileError("signature census count differs");
     var covered: usize = 0;
     for (method_names) |name| {
         var seen: usize = 0;
@@ -398,9 +447,9 @@ comptime {
         }
         if (seen != 0) covered += 1;
     }
-    if (covered != pinned_name_count) @compileError("22 of the 68 names have a lookup row");
+    if (covered != pinned_name_count) @compileError("covered-name census count differs");
     if (method_name_count - covered != unpinned_name_count) {
-        @compileError("68 names minus 22 covered must be 46 uncovered");
+        @compileError("uncovered-name census count differs");
     }
 }
 
@@ -450,9 +499,9 @@ pub fn hasName(name: []const u8) bool {
 
 test "the table holds exactly the 68 method names of map section 1.4.2" {
     try testing.expectEqual(@as(usize, 68), method_names.len);
-    try testing.expectEqual(@as(usize, 27), method_ids.len);
-    try testing.expectEqual(@as(usize, 22), pinned_signature_count);
-    try testing.expectEqual(@as(usize, 46), unpinned_name_count);
+    try testing.expectEqual(@as(usize, 38), method_ids.len);
+    try testing.expectEqual(@as(usize, 34), pinned_signature_count);
+    try testing.expectEqual(@as(usize, 35), unpinned_name_count);
 }
 
 test "the first 34 method names are the a to l half of the map's list" {
@@ -601,9 +650,8 @@ test "obtain is three unrelated factories and setParent is two overloads" {
     ) != null);
 }
 
-test "each of the five reached-by-name rows has no signature" {
+test "each of the four reached-by-name rows has no signature" {
     const expected = [_]struct { class: []const u8, name: []const u8 }{
-        .{ .class = "Landroid/view/ViewParent;", .name = "requestSendAccessibilityEvent" },
         .{ .class = "Landroid/view/accessibility/AccessibilityNodeInfo;", .name = "invalidate" },
         .{ .class = "Ljava/util/List;", .name = "add" },
         .{ .class = "Ldev/accesskit/android/Delegate;", .name = "newCallback" },
@@ -640,4 +688,27 @@ fn expectNames(start: usize, len: usize, expected: []const []const u8) !void {
     for (method_names[start .. start + len], expected) |actual, want| {
         try testing.expectEqualStrings(want, actual);
     }
+}
+
+test "gate and scroll lookups carry documented JNI descriptors" {
+    const event_class = "Landroid/view/accessibility/AccessibilityEvent;";
+    try testing.expect(findById("Landroid/view/View;", "getContext", "()Landroid/content/Context;") != null);
+    try testing.expect(findById(
+        "Landroid/content/Context;",
+        "getSystemService",
+        "(Ljava/lang/String;)Ljava/lang/Object;",
+    ) != null);
+    try testing.expect(findById("Landroid/view/accessibility/AccessibilityManager;", "isEnabled", "()Z") != null);
+    try testing.expect(findById(event_class, "setScrollable", "(Z)V") != null);
+    for ([_][]const u8{
+        "setScrollX", "setScrollDeltaX", "setMaxScrollX",
+        "setScrollY", "setScrollDeltaY", "setMaxScrollY",
+    }) |name| {
+        try testing.expect(findById(event_class, name, "(I)V") != null);
+    }
+    try testing.expect(findById(
+        "Landroid/view/ViewParent;",
+        "requestSendAccessibilityEvent",
+        "(Landroid/view/View;Landroid/view/accessibility/AccessibilityEvent;)Z",
+    ) != null);
 }

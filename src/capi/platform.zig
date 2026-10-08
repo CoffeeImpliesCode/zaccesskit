@@ -63,14 +63,11 @@
 //! the platform region of the header carries. `sample_targets.len` is 15,
 //! derived in that constant's own doc comment. Nothing else in the file loops.
 //!
-//! **Where the bodies go.** Each export is a C declaration plus one call into
-//! the adapter that owns the platform. The seam is a Zig import, not an
-//! `extern` symbol: upstream's `accesskit_unix_adapter_new` is the FFI wrapper
-//! that builds a `FfiActivationHandler` and hands it to `Adapter::new`, and
-//! this file is that wrapper. The adapter module owns the handle type and the
-//! protocol; this file owns the symbol name, the calling convention and the
-//! guard. Every value on the boundary is already in its C form, so this file
-//! defines no conversion and imports none.
+//! **Where the bodies go.** Each export owns its C symbol, convention and guard.
+//! It clears the shared error slot and forwards to the owning adapter, which
+//! preserves typed failures without treating ordinary absence as allocation
+//! failure. Windows construction selects real native authority and transfers
+//! its owned I/O runtime to the adapter's final weak-control release.
 //!
 //! **The header lines below are the current ones.** `docs/40-capi-build-map.md`
 //! section 2 records the line of each declaration in
@@ -83,6 +80,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 
 const boundary = @import("boundary.zig");
+const allocation = @import("allocation.zig");
 
 /// The Android adapter, which is the adapter behind the `accesskit_unix_*`
 /// family. `docs/40-capi-build-map.md` section 2.13.4 names `src/adapters/unix`
@@ -811,6 +809,7 @@ fn accesskit_android_platform_action_from_java(
     action: JInt,
     arguments: JObject,
 ) callconv(.c) ?*android.AndroidPlatformAction {
+    allocation.clearError();
     return android.androidPlatformActionFromJava(env, action, arguments);
 }
 
@@ -826,6 +825,7 @@ fn accesskit_android_platform_action_from_java(
 fn accesskit_android_platform_action_free(
     platform_action: *android.AndroidPlatformAction,
 ) callconv(.c) void {
+    allocation.clearError();
     android.androidPlatformActionFree(platform_action);
 }
 
@@ -842,6 +842,7 @@ fn accesskit_android_queued_events_raise(
     env: JniEnv,
     host: JObject,
 ) callconv(.c) void {
+    allocation.clearError();
     android.androidQueuedEventsRaise(events, env, host);
 }
 
@@ -856,6 +857,7 @@ fn accesskit_android_queued_events_raise(
 // `accesskit_android_adapter_free`, and calls `accesskit_last_error`
 // after a `null` return.
 fn accesskit_android_adapter_new() callconv(.c) ?*android.AndroidAdapter {
+    allocation.clearError();
     return android.androidAdapterNew();
 }
 
@@ -869,6 +871,7 @@ fn accesskit_android_adapter_new() callconv(.c) ?*android.AndroidAdapter {
 fn accesskit_android_adapter_free(
     adapter: *android.AndroidAdapter,
 ) callconv(.c) void {
+    allocation.clearError();
     android.androidAdapterFree(adapter);
 }
 
@@ -885,6 +888,7 @@ fn accesskit_android_adapter_update_if_active(
     update_factory: TreeUpdateFactory,
     update_factory_userdata: ?*anyopaque,
 ) callconv(.c) ?*android.AndroidQueuedEvents {
+    allocation.clearError();
     return android.androidAdapterUpdateIfActive(
         adapter,
         update_factory,
@@ -909,6 +913,7 @@ fn accesskit_android_adapter_create_accessibility_node_info(
     host: JObject,
     virtual_view_id: JInt,
 ) callconv(.c) JObject {
+    allocation.clearError();
     return android.androidAdapterCreateAccessibilityNodeInfo(
         adapter,
         activation_handler,
@@ -936,6 +941,7 @@ fn accesskit_android_adapter_find_focus(
     host: JObject,
     focus_type: JInt,
 ) callconv(.c) JObject {
+    allocation.clearError();
     return android.androidAdapterFindFocus(
         adapter,
         activation_handler,
@@ -962,6 +968,7 @@ fn accesskit_android_adapter_perform_action(
     virtual_view_id: JInt,
     action: *const android.AndroidPlatformAction,
 ) callconv(.c) ?*android.AndroidQueuedEvents {
+    allocation.clearError();
     return android.androidAdapterPerformAction(
         adapter,
         action_handler,
@@ -986,6 +993,7 @@ fn accesskit_android_adapter_on_hover_event(
     x: JFloat,
     y: JFloat,
 ) callconv(.c) ?*android.AndroidQueuedEvents {
+    allocation.clearError();
     return android.androidAdapterOnHoverEvent(
         adapter,
         activation_handler,
@@ -1013,6 +1021,7 @@ fn accesskit_android_injecting_adapter_new(
     action_handler: ActionHandler,
     action_handler_userdata: ?*anyopaque,
 ) callconv(.c) ?*android.AndroidInjectingAdapter {
+    allocation.clearError();
     return android.androidInjectingAdapterNew(
         env,
         host,
@@ -1032,6 +1041,7 @@ fn accesskit_android_injecting_adapter_new(
 fn accesskit_android_injecting_adapter_free(
     adapter: *android.AndroidInjectingAdapter,
 ) callconv(.c) void {
+    allocation.clearError();
     android.androidInjectingAdapterFree(adapter);
 }
 
@@ -1047,6 +1057,7 @@ fn accesskit_android_injecting_adapter_update_if_active(
     update_factory: TreeUpdateFactory,
     update_factory_userdata: ?*anyopaque,
 ) callconv(.c) void {
+    allocation.clearError();
     android.androidInjectingAdapterUpdateIfActive(
         adapter,
         update_factory,
@@ -1054,10 +1065,9 @@ fn accesskit_android_injecting_adapter_update_if_active(
     );
 }
 
-// The android exports. A declaration above is emitted as a symbol only
-// where its guard is true; this block is the whole of that decision.
+// Tests emit Android wrappers to exercise the public C error boundary.
 comptime {
-    if (Guard.android.declaresOn(this_platform)) {
+    if (Guard.android.declaresOn(this_platform) or builtin.is_test) {
         @export(
             &accesskit_android_platform_action_from_java,
             .{ .name = "accesskit_android_platform_action_from_java", .linkage = .strong },
@@ -1131,6 +1141,7 @@ comptime {
 fn accesskit_ios_queued_events_raise(
     events: *ios.IosQueuedEvents,
 ) callconv(.c) void {
+    allocation.clearError();
     ios.iosQueuedEventsRaise(events);
 }
 
@@ -1153,6 +1164,7 @@ fn accesskit_ios_adapter_new(
     deactivation_handler: DeactivationHandler,
     deactivation_handler_userdata: ?*anyopaque,
 ) callconv(.c) ?*ios.IosAdapter {
+    allocation.clearError();
     return ios.iosAdapterNew(
         view,
         activation_handler,
@@ -1171,6 +1183,7 @@ fn accesskit_ios_adapter_new(
 //
 // Passing `null` terminates the process.
 fn accesskit_ios_adapter_free(adapter: *ios.IosAdapter) callconv(.c) void {
+    allocation.clearError();
     ios.iosAdapterFree(adapter);
 }
 
@@ -1187,6 +1200,7 @@ fn accesskit_ios_adapter_update_if_active(
     update_factory: TreeUpdateFactory,
     update_factory_userdata: ?*anyopaque,
 ) callconv(.c) ?*ios.IosQueuedEvents {
+    allocation.clearError();
     return ios.iosAdapterUpdateIfActive(
         adapter,
         update_factory,
@@ -1205,6 +1219,7 @@ fn accesskit_ios_adapter_update_if_active(
 fn accesskit_ios_adapter_view_did_appear(
     adapter: *ios.IosAdapter,
 ) callconv(.c) ?*ios.IosQueuedEvents {
+    allocation.clearError();
     return ios.iosAdapterViewDidAppear(adapter);
 }
 
@@ -1216,6 +1231,7 @@ fn accesskit_ios_adapter_view_did_appear(
 fn accesskit_ios_adapter_is_accessibility_element(
     adapter: *ios.IosAdapter,
 ) callconv(.c) bool {
+    allocation.clearError();
     return ios.iosAdapterIsAccessibilityElement(adapter);
 }
 
@@ -1230,6 +1246,7 @@ fn accesskit_ios_adapter_is_accessibility_element(
 fn accesskit_ios_adapter_accessibility_elements(
     adapter: *ios.IosAdapter,
 ) callconv(.c) ?*anyopaque {
+    allocation.clearError();
     return ios.iosAdapterAccessibilityElements(adapter);
 }
 
@@ -1245,6 +1262,7 @@ fn accesskit_ios_adapter_hit_test(
     x: f64,
     y: f64,
 ) callconv(.c) ?*anyopaque {
+    allocation.clearError();
     return ios.iosAdapterHitTest(adapter, x, y);
 }
 
@@ -1260,6 +1278,7 @@ fn accesskit_ios_adapter_hit_test(
 fn accesskit_ios_adapter_debug(
     adapter: *const ios.IosAdapter,
 ) callconv(.c) ?[*:0]u8 {
+    allocation.clearError();
     return ios.iosAdapterDebug(adapter);
 }
 
@@ -1281,6 +1300,7 @@ fn accesskit_ios_subclassing_adapter_new(
     deactivation_handler: DeactivationHandler,
     deactivation_handler_userdata: ?*anyopaque,
 ) callconv(.c) ?*ios.IosSubclassingAdapter {
+    allocation.clearError();
     return ios.iosSubclassingAdapterNew(
         view,
         activation_handler,
@@ -1309,6 +1329,7 @@ fn accesskit_ios_subclassing_adapter_for_window(
     deactivation_handler: DeactivationHandler,
     deactivation_handler_userdata: ?*anyopaque,
 ) callconv(.c) ?*ios.IosSubclassingAdapter {
+    allocation.clearError();
     return ios.iosSubclassingAdapterForWindow(
         window,
         activation_handler,
@@ -1329,6 +1350,7 @@ fn accesskit_ios_subclassing_adapter_for_window(
 fn accesskit_ios_subclassing_adapter_free(
     adapter: *ios.IosSubclassingAdapter,
 ) callconv(.c) void {
+    allocation.clearError();
     ios.iosSubclassingAdapterFree(adapter);
 }
 
@@ -1345,6 +1367,7 @@ fn accesskit_ios_subclassing_adapter_update_if_active(
     update_factory: TreeUpdateFactory,
     update_factory_userdata: ?*anyopaque,
 ) callconv(.c) ?*ios.IosQueuedEvents {
+    allocation.clearError();
     return ios.iosSubclassingAdapterUpdateIfActive(
         adapter,
         update_factory,
@@ -1425,6 +1448,7 @@ comptime {
 fn accesskit_macos_queued_events_raise(
     events: *macos.MacosQueuedEvents,
 ) callconv(.c) void {
+    allocation.clearError();
     macos.macosQueuedEventsRaise(events);
 }
 
@@ -1445,6 +1469,7 @@ fn accesskit_macos_adapter_new(
     action_handler: ActionHandler,
     action_handler_userdata: ?*anyopaque,
 ) callconv(.c) ?*macos.MacosAdapter {
+    allocation.clearError();
     return macos.macosAdapterNew(view, is_view_focused, action_handler, action_handler_userdata);
 }
 
@@ -1455,6 +1480,7 @@ fn accesskit_macos_adapter_new(
 //
 // Passing `null` terminates the process.
 fn accesskit_macos_adapter_free(adapter: *macos.MacosAdapter) callconv(.c) void {
+    allocation.clearError();
     macos.macosAdapterFree(adapter);
 }
 
@@ -1471,6 +1497,7 @@ fn accesskit_macos_adapter_update_if_active(
     update_factory: TreeUpdateFactory,
     update_factory_userdata: ?*anyopaque,
 ) callconv(.c) ?*macos.MacosQueuedEvents {
+    allocation.clearError();
     return macos.macosAdapterUpdateIfActive(
         adapter,
         update_factory,
@@ -1490,6 +1517,7 @@ fn accesskit_macos_adapter_update_view_focus_state(
     adapter: *macos.MacosAdapter,
     is_focused: bool,
 ) callconv(.c) ?*macos.MacosQueuedEvents {
+    allocation.clearError();
     return macos.macosAdapterUpdateViewFocusState(adapter, is_focused);
 }
 
@@ -1506,6 +1534,7 @@ fn accesskit_macos_adapter_view_children(
     activation_handler: ActivationHandler,
     activation_handler_userdata: ?*anyopaque,
 ) callconv(.c) ?*anyopaque {
+    allocation.clearError();
     return macos.macosAdapterViewChildren(
         adapter,
         activation_handler,
@@ -1526,6 +1555,7 @@ fn accesskit_macos_adapter_focus(
     activation_handler: ActivationHandler,
     activation_handler_userdata: ?*anyopaque,
 ) callconv(.c) ?*anyopaque {
+    allocation.clearError();
     return macos.macosAdapterFocus(adapter, activation_handler, activation_handler_userdata);
 }
 
@@ -1544,6 +1574,7 @@ fn accesskit_macos_adapter_hit_test(
     activation_handler: ActivationHandler,
     activation_handler_userdata: ?*anyopaque,
 ) callconv(.c) ?*anyopaque {
+    allocation.clearError();
     return macos.macosAdapterHitTest(
         adapter,
         x,
@@ -1564,6 +1595,7 @@ fn accesskit_macos_adapter_hit_test(
 fn accesskit_macos_adapter_debug(
     adapter: *const macos.MacosAdapter,
 ) callconv(.c) ?[*:0]u8 {
+    allocation.clearError();
     return macos.macosAdapterDebug(adapter);
 }
 
@@ -1583,6 +1615,7 @@ fn accesskit_macos_subclassing_adapter_new(
     action_handler: ActionHandler,
     action_handler_userdata: ?*anyopaque,
 ) callconv(.c) ?*macos.MacosSubclassingAdapter {
+    allocation.clearError();
     return macos.macosSubclassingAdapterNew(
         view,
         activation_handler,
@@ -1607,6 +1640,7 @@ fn accesskit_macos_subclassing_adapter_for_window(
     action_handler: ActionHandler,
     action_handler_userdata: ?*anyopaque,
 ) callconv(.c) ?*macos.MacosSubclassingAdapter {
+    allocation.clearError();
     return macos.macosSubclassingAdapterForWindow(
         window,
         activation_handler,
@@ -1625,6 +1659,7 @@ fn accesskit_macos_subclassing_adapter_for_window(
 fn accesskit_macos_subclassing_adapter_free(
     adapter: *macos.MacosSubclassingAdapter,
 ) callconv(.c) void {
+    allocation.clearError();
     macos.macosSubclassingAdapterFree(adapter);
 }
 
@@ -1640,6 +1675,7 @@ fn accesskit_macos_subclassing_adapter_update_if_active(
     update_factory: TreeUpdateFactory,
     update_factory_userdata: ?*anyopaque,
 ) callconv(.c) ?*macos.MacosQueuedEvents {
+    allocation.clearError();
     return macos.macosSubclassingAdapterUpdateIfActive(
         adapter,
         update_factory,
@@ -1659,6 +1695,7 @@ fn accesskit_macos_subclassing_adapter_update_view_focus_state(
     adapter: *macos.MacosSubclassingAdapter,
     is_focused: bool,
 ) callconv(.c) ?*macos.MacosQueuedEvents {
+    allocation.clearError();
     return macos.macosSubclassingAdapterUpdateViewFocusState(adapter, is_focused);
 }
 
@@ -1677,6 +1714,7 @@ fn accesskit_macos_subclassing_adapter_update_view_focus_state(
 fn accesskit_macos_add_focus_forwarder_to_window_class(
     class_name: [*:0]const u8,
 ) callconv(.c) void {
+    allocation.clearError();
     macos.macosAddFocusForwarderToWindowClass(class_name);
 }
 
@@ -1694,6 +1732,7 @@ fn accesskit_macos_add_focus_forwarder_to_window_class_with_length(
     class_name: [*]const u8,
     length: usize,
 ) callconv(.c) void {
+    allocation.clearError();
     macos.macosAddFocusForwarderToWindowClassWithLength(class_name, length);
 }
 
@@ -1797,14 +1836,18 @@ fn accesskit_unix_adapter_new(
     deactivation_handler: DeactivationHandler,
     deactivation_handler_userdata: ?*anyopaque,
 ) callconv(.c) ?*atspi.UnixAdapter {
-    return atspi.unixAdapterNew(
-        activation_handler,
-        activation_handler_userdata,
-        action_handler,
-        action_handler_userdata,
-        deactivation_handler,
-        deactivation_handler_userdata,
-    );
+    allocation.clearError();
+    return atspi.unixAdapterNewChecked(.{
+        .activation_handler = activation_handler,
+        .activation_handler_userdata = activation_handler_userdata,
+        .action_handler = action_handler,
+        .action_handler_userdata = action_handler_userdata,
+        .deactivation_handler = deactivation_handler,
+        .deactivation_handler_userdata = deactivation_handler_userdata,
+    }) catch |err| {
+        allocation.failWithError(err);
+        return null;
+    };
 }
 
 // Releases the adapter and every tree it holds, exactly once.
@@ -1814,6 +1857,7 @@ fn accesskit_unix_adapter_new(
 //
 // Passing `null` terminates the process.
 fn accesskit_unix_adapter_free(adapter: *atspi.UnixAdapter) callconv(.c) void {
+    allocation.clearError();
     atspi.unixAdapterFree(adapter);
 }
 
@@ -1825,12 +1869,13 @@ fn accesskit_unix_adapter_free(adapter: *atspi.UnixAdapter) callconv(.c) void {
 //
 // Both boxes are `accesskit_rect` by value, and both are already the
 // `extern struct` the header describes, so the conversion is the
-// identity. Returns nothing and cannot fail.
+// identity. Typed operational failures remain in the shared C error slot.
 fn accesskit_unix_adapter_set_root_window_bounds(
     adapter: *atspi.UnixAdapter,
     outer: CRect,
     inner: CRect,
 ) callconv(.c) void {
+    allocation.clearError();
     atspi.unixAdapterSetRootWindowBounds(adapter, outer, inner);
 }
 
@@ -1849,6 +1894,7 @@ fn accesskit_unix_adapter_update_if_active(
     update_factory: TreeUpdateFactory,
     update_factory_userdata: ?*anyopaque,
 ) callconv(.c) void {
+    allocation.clearError();
     atspi.unixAdapterUpdateIfActive(adapter, update_factory, update_factory_userdata);
 }
 
@@ -1857,11 +1903,12 @@ fn accesskit_unix_adapter_update_if_active(
 // `accesskit_unix_adapter_update_window_focus_state`,
 // `include/zaccesskit.h:6308`, upstream `src/lib.rs:3040`.
 //
-// Returns nothing and cannot fail.
+// Typed operational failures remain in the shared C error slot.
 fn accesskit_unix_adapter_update_window_focus_state(
     adapter: *atspi.UnixAdapter,
     is_focused: bool,
 ) callconv(.c) void {
+    allocation.clearError();
     atspi.unixAdapterUpdateWindowFocusState(adapter, is_focused);
 }
 
@@ -1877,6 +1924,7 @@ fn accesskit_unix_adapter_update_window_focus_state(
 fn accesskit_unix_adapter_debug(
     adapter: *const atspi.UnixAdapter,
 ) callconv(.c) ?[*:0]u8 {
+    allocation.clearError();
     return atspi.unixAdapterDebug(adapter);
 }
 
@@ -1915,21 +1963,60 @@ comptime {
 // Windows, 10 declarations, guard `_WIN32`.
 // =============================================================================
 
+const WindowsRuntime = struct {
+    gpa: std.mem.Allocator,
+    threaded: std.Io.Threaded,
+
+    fn release(userdata: ?*anyopaque) void {
+        const self: *WindowsRuntime = @ptrCast(@alignCast(userdata.?));
+        const gpa = self.gpa;
+        self.threaded.deinit();
+        gpa.destroy(self);
+    }
+};
+
+/// The caller owns this authority until a constructor succeeds. Retained providers
+/// and queued events then keep it alive through final weak-control release.
+/// The configured allocator itself must outlive every retained COM object.
+fn foundationOptions(
+    hwnd: Hwnd,
+    focused: bool,
+    action_handler: ActionHandler,
+    action_userdata: ?*anyopaque,
+) error{ OutOfMemory, NotImplemented }!windows.WindowsAdapter.Options {
+    const automation = windows.syscalls.nativeAutomationApi() orelse return error.NotImplemented;
+    const gpa = allocation.allocator();
+    const runtime = try gpa.create(WindowsRuntime);
+    runtime.* = .{ .gpa = gpa, .threaded = std.Io.Threaded.init(gpa, .{}) };
+    return .{
+        .io = runtime.threaded.io(),
+        .platform = windows.syscalls.platformForCurrentTarget(),
+        .factory = windows.nativeFactory(),
+        .automation = automation,
+        .hwnd = hwnd,
+        .is_window_focused = focused,
+        .action_sink = .{ .c = .{ .callback = action_handler, .userdata = action_userdata } },
+        .runtime_release = .{ .userdata = runtime, .release = WindowsRuntime.release },
+    };
+}
+
 // Raises the queued events on the platform and releases the handle.
 //
 // `accesskit_windows_queued_events_raise`,
 // `include/zaccesskit.h:6335`, upstream `src/lib.rs:3057`.
 //
-// This call is the only way to release the handle. A second call is a
-// use-after-free, and passing `null` terminates the process.
+// Successful cleanup releases the handle. Failed cleanup reports its exact
+// error and retains the handle for retry without redelivering events.
+// Passing null terminates the process.
 fn accesskit_windows_queued_events_raise(
     events: *windows.WindowsQueuedEvents,
 ) callconv(.c) void {
-    windows.windowsQueuedEventsRaise(events);
+    allocation.clearError();
+    const report = windows.windowsQueuedEventsRaise(events);
+    if (report.cleanup.first_error) |err| allocation.failWithError(err);
 }
 
-// Returns a Windows adapter for `hwnd`, or `null` when the allocation
-// failed.
+// Returns a real Windows adapter, or null with its exact constructor failure.
 //
 // `accesskit_windows_adapter_new`, `include/zaccesskit.h:6346`,
 // upstream `src/lib.rs:3062`.
@@ -1944,12 +2031,23 @@ fn accesskit_windows_adapter_new(
     action_handler: ActionHandler,
     action_handler_userdata: ?*anyopaque,
 ) callconv(.c) ?*windows.WindowsAdapter {
-    return windows.windowsAdapterNew(
+    allocation.clearError();
+    const options = foundationOptions(
         hwnd,
         is_window_focused,
         action_handler,
         action_handler_userdata,
-    );
+    ) catch |err| {
+        allocation.failWithError(err);
+        return null;
+    };
+    // Failed construction retains the authority here, not in a partial context.
+    return windows.WindowsAdapter.create(allocation.allocator(), options) catch |err| {
+        const authority = options.runtime_release.?;
+        authority.release(authority.userdata);
+        allocation.failWithError(err);
+        return null;
+    };
 }
 
 // Releases the adapter and every tree it holds, exactly once.
@@ -1961,6 +2059,7 @@ fn accesskit_windows_adapter_new(
 fn accesskit_windows_adapter_free(
     adapter: *windows.WindowsAdapter,
 ) callconv(.c) void {
+    allocation.clearError();
     windows.windowsAdapterFree(adapter);
 }
 
@@ -1977,6 +2076,7 @@ fn accesskit_windows_adapter_update_if_active(
     update_factory: TreeUpdateFactory,
     update_factory_userdata: ?*anyopaque,
 ) callconv(.c) ?*windows.WindowsQueuedEvents {
+    allocation.clearError();
     return windows.windowsAdapterUpdateIfActive(
         adapter,
         update_factory,
@@ -1996,6 +2096,7 @@ fn accesskit_windows_adapter_update_window_focus_state(
     adapter: *windows.WindowsAdapter,
     is_focused: bool,
 ) callconv(.c) ?*windows.WindowsQueuedEvents {
+    allocation.clearError();
     return windows.windowsAdapterUpdateWindowFocusState(adapter, is_focused);
 }
 
@@ -2017,13 +2118,14 @@ fn accesskit_windows_adapter_handle_wm_getobject(
     activation_handler: ActivationHandler,
     activation_handler_userdata: ?*anyopaque,
 ) callconv(.c) COptLResult {
-    return windows.windowsAdapterHandleWmGetobject(
-        adapter,
-        wparam,
-        lparam,
-        activation_handler,
-        activation_handler_userdata,
-    );
+    allocation.clearError();
+    return adapter.handleWmGetobject(wparam, lparam, .{ .c = .{
+        .callback = activation_handler,
+        .userdata = activation_handler_userdata,
+    } }) catch |err| {
+        allocation.failWithError(err);
+        return std.mem.zeroes(COptLResult);
+    };
 }
 
 // Returns a text rendering of the adapter, or `null` when the text
@@ -2037,11 +2139,11 @@ fn accesskit_windows_adapter_handle_wm_getobject(
 fn accesskit_windows_adapter_debug(
     adapter: *const windows.WindowsAdapter,
 ) callconv(.c) ?[*:0]u8 {
+    allocation.clearError();
     return windows.windowsAdapterDebug(adapter);
 }
 
-/// Returns a Windows subclassing adapter for `hwnd`, or `null` when the
-/// allocation failed.
+/// Returns a native subclassing adapter, or null on refusal or typed failure.
 ///
 /// `accesskit_windows_subclassing_adapter_new`,
 /// `include/zaccesskit.h:6424`, upstream `src/lib.rs:3126`.
@@ -2049,6 +2151,7 @@ fn accesskit_windows_adapter_debug(
 /// Every handler pointer must stay valid until the adapter is released.
 /// The caller owns the adapter and releases it with
 /// `accesskit_windows_subclassing_adapter_free`.
+/// Install on the owning window thread before showing the window.
 fn accesskit_windows_subclassing_adapter_new(
     hwnd: Hwnd,
     activation_handler: ActivationHandler,
@@ -2056,13 +2159,32 @@ fn accesskit_windows_subclassing_adapter_new(
     action_handler: ActionHandler,
     action_handler_userdata: ?*anyopaque,
 ) callconv(.c) ?*windows.WindowsSubclassingAdapter {
-    return windows.windowsSubclassingAdapterNew(
+    allocation.clearError();
+    const options = foundationOptions(
         hwnd,
-        activation_handler,
-        activation_handler_userdata,
+        false,
         action_handler,
         action_handler_userdata,
-    );
+    ) catch |err| {
+        allocation.failWithError(err);
+        return null;
+    };
+    const created = windows.WindowsSubclassingAdapter.create(
+        allocation.allocator(),
+        options,
+        windows.syscalls.windowApiForCurrentTarget(),
+        .{ .c = .{ .callback = activation_handler, .userdata = activation_handler_userdata } },
+    ) catch |err| {
+        const authority = options.runtime_release.?;
+        authority.release(authority.userdata);
+        allocation.failWithError(err);
+        return null;
+    };
+    if (created == null) {
+        const authority = options.runtime_release.?;
+        authority.release(authority.userdata);
+    }
+    return created;
 }
 
 /// Releases the adapter and every tree it holds, exactly once.
@@ -2071,9 +2193,12 @@ fn accesskit_windows_subclassing_adapter_new(
 /// `include/zaccesskit.h:6436`, upstream `src/lib.rs:3134`.
 ///
 /// Passing `null` terminates the process.
+/// Free on the owning window thread, serialized with its procedure.
+/// Do not free from a callback or while holding a context lease.
 fn accesskit_windows_subclassing_adapter_free(
     adapter: *windows.WindowsSubclassingAdapter,
 ) callconv(.c) void {
+    allocation.clearError();
     windows.windowsSubclassingAdapterFree(adapter);
 }
 
@@ -2090,6 +2215,7 @@ fn accesskit_windows_subclassing_adapter_update_if_active(
     update_factory: TreeUpdateFactory,
     update_factory_userdata: ?*anyopaque,
 ) callconv(.c) ?*windows.WindowsQueuedEvents {
+    allocation.clearError();
     return windows.windowsSubclassingAdapterUpdateIfActive(
         adapter,
         update_factory,
@@ -2470,5 +2596,65 @@ test "every re-export above names a declaration that exists" {
     // A declaration nothing in this module's own tests reaches is analysed only
     // as far as a reached path refers to it, so the census tests above would
     // otherwise report green about a type that never compiled.
-    std.testing.refAllDecls(@This());
+    // Reflection reaches COM declarations even off Windows, so `.winapi` must resolve.
+    if (comptime builtin.cpu.arch == .x86_64) {
+        std.testing.refAllDecls(@This());
+    } else {
+        return error.SkipZigTest;
+    }
+}
+
+test "Windows C construction off Windows reports NotImplemented rather than fake success" {
+    // Constructor bodies reach COM declarations even off Windows.
+    if (comptime builtin.cpu.arch == .x86_64) {
+        if (builtin.os.tag == .windows) return error.SkipZigTest;
+        const Callbacks = struct {
+            fn action(request: *CActionRequest, userdata: ?*anyopaque) callconv(.c) void {
+                _ = request;
+                _ = userdata;
+                @panic("off-platform constructor dispatched an action");
+            }
+        };
+        allocation.clearError();
+        const created = accesskit_windows_adapter_new(null, false, Callbacks.action, null);
+        defer if (created) |owner| accesskit_windows_adapter_free(owner);
+        try testing.expectEqual(@as(?*windows.WindowsAdapter, null), created);
+        try testing.expectEqual(allocation.Tag.operation_failed, allocation.lastError());
+        try testing.expectEqualStrings("NotImplemented", std.mem.span(allocation.lastErrorName().?));
+    } else {
+        return error.SkipZigTest;
+    }
+}
+
+test "Windows subclass C construction off Windows preserves its exact failure" {
+    // Constructor bodies reach COM declarations even off Windows.
+    if (comptime builtin.cpu.arch == .x86_64) {
+        if (builtin.os.tag == .windows) return error.SkipZigTest;
+        const Callbacks = struct {
+            fn activate(userdata: ?*anyopaque) callconv(.c) ?*CTreeUpdate {
+                _ = userdata;
+                @panic("off-platform constructor activated a tree");
+            }
+
+            fn action(request: *CActionRequest, userdata: ?*anyopaque) callconv(.c) void {
+                _ = request;
+                _ = userdata;
+                @panic("off-platform constructor dispatched an action");
+            }
+        };
+        allocation.clearError();
+        const created = accesskit_windows_subclassing_adapter_new(
+            null,
+            Callbacks.activate,
+            null,
+            Callbacks.action,
+            null,
+        );
+        defer if (created) |owner| accesskit_windows_subclassing_adapter_free(owner);
+        try testing.expectEqual(@as(?*windows.WindowsSubclassingAdapter, null), created);
+        try testing.expectEqual(allocation.Tag.operation_failed, allocation.lastError());
+        try testing.expectEqualStrings("NotImplemented", std.mem.span(allocation.lastErrorName().?));
+    } else {
+        return error.SkipZigTest;
+    }
 }

@@ -75,7 +75,7 @@ pub const Action = struct {
         gpa: std.mem.Allocator,
         out: *std.ArrayList(u8),
     ) std.mem.Allocator.Error!void {
-        try padTo(gpa, 8, out);
+        try padTo(8, gpa, out);
         try writeString(gpa, out, self.localized_name);
         try writeString(gpa, out, self.description);
         try writeString(gpa, out, self.key_binding);
@@ -114,8 +114,8 @@ comptime {
 ///
 /// **Errors.** `error.OutOfMemory` from `out`.
 fn padTo(
-    gpa: std.mem.Allocator,
     comptime alignment: usize,
+    gpa: std.mem.Allocator,
     out: *std.ArrayList(u8),
 ) std.mem.Allocator.Error!void {
     if (alignment != 4 and alignment != 8) {
@@ -143,7 +143,7 @@ fn writeString(
     out: *std.ArrayList(u8),
     bytes: []const u8,
 ) std.mem.Allocator.Error!void {
-    try padTo(gpa, 4, out);
+    try padTo(4, gpa, out);
     var header: [4]u8 = undefined;
     // A D-Bus string length is a `u32`. No action name, description or key
     // binding comes near four gigabytes, and truncating instead would put a

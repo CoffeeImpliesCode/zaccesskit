@@ -411,7 +411,10 @@ pub fn documentAttributeValue(
 
     for (held.items[0..held.count]) |entry| {
         const one = entry.?;
-        if (std.ascii.eqlIgnoreCase(one.key, name)) return try gpa.dupe(u8, one.value);
+        if (std.ascii.eqlIgnoreCase(one.key, name)) {
+            const value = try gpa.dupe(u8, one.value);
+            return value;
+        }
     }
     return null;
 }

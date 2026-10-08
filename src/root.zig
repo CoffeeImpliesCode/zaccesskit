@@ -7,10 +7,10 @@
 //! adapters implement. This package re-implements all of that in Zig and
 //! links the platform half as C.
 //!
-//! **What this file is.** The module root. It declares three namespaces — the
-//! schema, the consumer half and the C ABI — and mirrors two values from
-//! `build.zig.zon`. `docs/30-port-design.md` record R2 gives the reasoning for
-//! keeping the three namespaces one level down rather than flattening them.
+//! **What this file is.** The module root. It publishes the schema, consumer,
+//! C ABI, and native adapter namespaces, plus the pinned runtime type needed by
+//! native adapter constructors. Package values come from `build.zig.zon`.
+//! `docs/30-port-design.md` record R2 explains the nested namespaces.
 //!
 //! **Why each namespace carries a `refAllDecls` test.** A `pub const` nothing
 //! references is a re-export the compiler may skip entirely, so `zig build test`
@@ -52,9 +52,16 @@ pub const consumer = @import("consumer/root.zig");
 ///
 /// `include/zaccesskit.h` is the contract and this namespace implements it. It
 /// sits one level below the package root with `schema` and `consumer` because a
-/// C consumer never sees a Zig name: the seam is the 498 declarations in the
-/// header, and the modules behind them are an implementation detail of it.
+/// C consumer never sees a Zig name: the seam is the installed header's
+/// declarations, and the modules behind them are its implementation detail.
 pub const capi = @import("capi/root.zig");
+
+/// Native platform adapters with explicit allocator and runtime ownership.
+pub const adapters = @import("adapters/root.zig");
+
+/// The same pinned runtime type used by native adapters, reachable without a
+/// second dependency import. Retain it through each adapter's resource lifetime.
+pub const Runtime = @import("zio").Runtime;
 
 /// Package version, mirrored from `.version` in `build.zig.zon` through the
 /// `build_options` module.
@@ -123,5 +130,31 @@ test "the C ABI namespace is reachable and analysed" {
     // The third instance of the same defect. A re-export nothing references
     // analyses no module, and this namespace is the one where an unanalysed
     // export is a missing C symbol rather than a missing query.
-    std.testing.refAllDecls(capi);
+    // Full reflection reaches Windows COM; Zig 0.16 resolves `.winapi` only on x86_64.
+    if (comptime builtin.cpu.arch == .x86_64) {
+        std.testing.refAllDecls(capi);
+    } else {
+        std.testing.refAllDecls(capi.handles);
+        std.testing.refAllDecls(capi.allocation);
+        std.testing.refAllDecls(capi.marshal);
+        std.testing.refAllDecls(capi.node);
+        std.testing.refAllDecls(capi.node_properties);
+        std.testing.refAllDecls(capi.geometry);
+        std.testing.refAllDecls(capi.tree_info);
+        std.testing.refAllDecls(capi.action_request);
+        std.testing.refAllDecls(capi.tree_update);
+        std.testing.refAllDecls(capi.property_value);
+        std.testing.refAllDecls(capi.optionals);
+    }
+}
+
+test "the adapter namespace is reachable and analysed" {
+    if (comptime builtin.cpu.arch == .x86_64) {
+        std.testing.refAllDecls(adapters);
+    } else {
+        std.testing.refAllDecls(adapters.atspi);
+        std.testing.refAllDecls(adapters.macos);
+        std.testing.refAllDecls(adapters.android);
+        std.testing.refAllDecls(adapters.ios);
+    }
 }

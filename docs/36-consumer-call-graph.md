@@ -124,13 +124,13 @@ Declares the raw and inherited property reads and the graft test.
 | Symbol | Declared in |
 |---|---|
 | `FilterFn`, `FilterResult` | `filter.zig` |
-| `ChildIdsIterator`, `ChildrenIterator`, `FilteredChildrenIterator`, `child_ids`, `children`, `filtered_children`, `firstFilteredChild`, `lastFilteredChild` | `iterators/children.zig` |
-| `FilteredSiblingsIterator`, `FollowingSiblingIdsIterator`, `FollowingSiblingsIterator`, `followingSiblings`, `following_filtered_siblings`, `following_sibling_ids` | `iterators/following.zig` |
-| `PrecedingSiblingIdsIterator`, `PrecedingSiblingsIterator`, `precedingSiblings`, `preceding_filtered_siblings`, `preceding_sibling_ids` | `iterators/preceding.zig` |
+| `ChildIdsIterator`, `ChildrenIterator`, `FilteredChildrenIterator`, `childIds`, `children`, `filteredChildren`, `firstFilteredChild`, `lastFilteredChild` | `iterators/children.zig` |
+| `FilteredSiblingsIterator`, `FollowingSiblingIdsIterator`, `FollowingSiblingsIterator`, `followingFilteredSiblings`, `followingSiblingIds`, `followingSiblings` | `iterators/following.zig` |
+| `PrecedingSiblingIdsIterator`, `PrecedingSiblingsIterator`, `precedingFilteredSiblings`, `precedingSiblingIds`, `precedingSiblings` | `iterators/preceding.zig` |
 | `NodeRef` | `node_id.zig` |
 | `isGraft` | `node_ref/properties.zig` |
 | `FullNodeId` | `tree_index.zig` |
-| `QueryError`, `TreeState`, `treeWalkStepBound` | `tree_state.zig` |
+| `NodeState`, `QueryError`, `TreeState`, `treeWalkStepBound` | `tree_state.zig` |
 <!-- docs-tables:end node_ref/hierarchy.zig -->
 
 **Two things this wave changed.** `followingFilteredSiblings` and `precedingFilteredSiblings`
@@ -180,7 +180,7 @@ below `node_ref/containers.zig` and cannot import it. `node_ref/containers.zig` 
 | `NodeRef` | `node_id.zig` |
 | `children`, `parent` | `node_ref/hierarchy.zig` |
 | `FullNodeId` | `tree_index.zig` |
-| `QueryError`, `TreeState`, `treeWalkStepBound` | `tree_state.zig` |
+| `NodeState`, `QueryError`, `TreeState`, `treeWalkStepBound` | `tree_state.zig` |
 | `inverse`, `mul`, `mulPoint`, `transformRectBbox` | `../../schema/geometry/affine.zig` |
 <!-- docs-tables:end node_ref/geometry.zig -->
 
@@ -245,7 +245,7 @@ Declares `LabelledBy` (upstream `iterators.rs:537-585`), which sits with `labell
 | `nextFilteredSibling`, `previousFilteredSibling` | `iterators/sibling_scan.zig` |
 | `NodeRef` | `node_id.zig` |
 | `FullNodeId` | `tree_index.zig` |
-| `QueryError`, `TreeState`, `treeWalkStepBound` | `tree_state.zig` |
+| `NodeState`, `QueryError`, `TreeState`, `treeWalkStepBound` | `tree_state.zig` |
 <!-- docs-tables:end iterators/children.zig -->
 
 Declares `ChildIdsIterator`, `ChildrenIterator`, `FilteredChildrenIterator`, the three
@@ -261,7 +261,7 @@ constructors, and the three shared filtered steps.
 | `nextFilteredSibling`, `previousFilteredSibling` | `iterators/sibling_scan.zig` |
 | `NodeRef` | `node_id.zig` |
 | `FullNodeId` | `tree_index.zig` |
-| `QueryError`, `TreeState`, `treeWalkStepBound` | `tree_state.zig` |
+| `NodeState`, `QueryError`, `TreeState`, `treeWalkStepBound` | `tree_state.zig` |
 <!-- docs-tables:end iterators/following.zig -->
 
 ### `iterators/preceding.zig`
@@ -275,7 +275,7 @@ constructors, and the three shared filtered steps.
 | `previousFilteredSibling` | `iterators/sibling_scan.zig` |
 | `NodeRef` | `node_id.zig` |
 | `FullNodeId` | `tree_index.zig` |
-| `QueryError`, `TreeState`, `treeWalkStepBound` | `tree_state.zig` |
+| `NodeState`, `QueryError`, `TreeState`, `treeWalkStepBound` | `tree_state.zig` |
 <!-- docs-tables:end iterators/preceding.zig -->
 
 ### `iterators/sibling_scan.zig`
@@ -284,12 +284,12 @@ constructors, and the three shared filtered steps.
 | Symbol | Declared in |
 |---|---|
 | `FilterFn`, `FilterResult` | `filter.zig` |
-| `child_ids`, `children` | `iterators/children.zig` |
-| `following_sibling_ids` | `iterators/following.zig` |
-| `preceding_sibling_ids` | `iterators/preceding.zig` |
+| `ChildrenIterator`, `childIds`, `children` | `iterators/children.zig` |
+| `FollowingSiblingIdsIterator`, `followingSiblingIds` | `iterators/following.zig` |
+| `PrecedingSiblingIdsIterator`, `precedingSiblingIds` | `iterators/preceding.zig` |
 | `NodeRef` | `node_id.zig` |
 | `FullNodeId` | `tree_index.zig` |
-| `QueryError`, `TreeState`, `treeWalkStepBound` | `tree_state.zig` |
+| `NodeState`, `QueryError`, `TreeState`, `treeWalkStepBound` | `tree_state.zig` |
 <!-- docs-tables:end iterators/sibling_scan.zig -->
 
 ### `tree_apply.zig`
@@ -326,9 +326,9 @@ constructors, and the three shared filtered steps.
 | Symbol | Declared in |
 |---|---|
 | `NodeRef` | `node_id.zig` |
-| `applyUpdate` | `tree_apply.zig` |
-| `FullNodeId` | `tree_index.zig` |
-| `InternalChanges`, `NodeState`, `QueryError`, `TreeState`, `UpdateError` | `tree_state.zig` |
+| `applyUpdateBorrowed` | `tree_apply.zig` |
+| `FullNodeId`, `ParentAndIndex`, `TreeIdByIndexMap`, `TreeIdIndexMap`, `TreeIndex`, `TreeIndexMap` | `tree_index.zig` |
+| `InternalChanges`, `NodeMap`, `NodeState`, `QueryError`, `SubtreeState`, `TreeIdMap`, `TreeIdNodeMap`, `TreeState`, `UpdateError` | `tree_state.zig` |
 | `computeEffectiveFocus`, `validateGlobal` | `tree_validate.zig` |
 <!-- docs-tables:end tree.zig -->
 
@@ -382,13 +382,17 @@ constructors, and the three shared filtered steps.
 <!-- docs-tables:begin text/position_inner.zig -->
 | Symbol | Declared in |
 |---|---|
+| `FilterFn` | `filter.zig` |
+| `FilteredChildrenIterator`, `firstFilteredChild`, `lastFilteredChild` | `iterators/children.zig` |
+| `FilteredSiblingsIterator`, `ScanDirection` | `iterators/following.zig` |
+| `nextFilteredSibling`, `previousFilteredSibling` | `iterators/sibling_scan.zig` |
 | `NodeRef` | `node_id.zig` |
 | `relativeIndexPath` | `node_ref/containers.zig` |
-| `filteredChildren`, `followingFilteredSiblings`, `precedingFilteredSiblings` | `node_ref/hierarchy.zig` |
+| `filteredChildren` | `node_ref/hierarchy.zig` |
 | `role` | `node_ref/properties.zig` |
-| `text_run_filter` | `text/hit_test.zig` |
+| `textNodeFilter`, `text_run_filter` | `text/hit_test.zig` |
 | `FullNodeId`, `ParentAndIndex` | `tree_index.zig` |
-| `QueryError`, `TreeState`, `treeWalkStepBound` | `tree_state.zig` |
+| `QueryError`, `TreeState` | `tree_state.zig` |
 <!-- docs-tables:end text/position_inner.zig -->
 
 ### `text/position_motion.zig`
@@ -428,11 +432,9 @@ constructors, and the three shared filtered steps.
 |---|---|
 | `NodeRef` | `node_id.zig` |
 | `transform` | `node_ref/geometry.zig` |
-| `followingFilteredSiblings` | `node_ref/hierarchy.zig` |
 | `fetchInheritedProperty` | `node_ref/properties.zig` |
-| `text_run_filter` | `text/hit_test.zig` |
 | `Position` | `text/position.zig` |
-| `ComparablePath`, `InnerPosition`, `biasedToEnd`, `biasedToStart`, `comparable`, `downgrade` | `text/position_inner.zig` |
+| `ComparablePath`, `InnerPosition`, `biasedToEnd`, `biasedToStart`, `comparable`, `downgrade`, `followingTextRuns` | `text/position_inner.zig` |
 | `FullNodeId`, `ParentAndIndex` | `tree_index.zig` |
 | `QueryError`, `TreeState` | `tree_state.zig` |
 | `transformRectBbox` | `../../schema/geometry/affine.zig` |

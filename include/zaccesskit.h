@@ -33,9 +33,9 @@
  * not take ownership of its class name, the twelve getters that return a
  * `{ length, values }` pair borrow `values` from the node, and
  * `accesskit_tree_update_set_tree_info` consumes its argument. The port also
- * adds `accesskit_set_allocator`, `accesskit_last_error` and the
- * `accesskit_error` enum, and it states the null-pointer result of every
- * geometry function that takes a pointer.
+ * adds `accesskit_set_allocator`, `accesskit_last_error`,
+ * `accesskit_last_error_name`, and the `accesskit_error` enum. It also states
+ * the null-pointer result of every geometry function that takes a pointer.
  *
  * Nothing here uses the name Google Inc. or Google LLC, or the name of any
  * contributor, to endorse or promote this software.
@@ -118,11 +118,11 @@
  * same Zig toolchain version has a matching convention by construction. A
  * consumer that hand-writes the prototypes does not.
  *
- * `accesskit_last_error()` reports the failure tag from the most recent call
- * on the calling thread. Every function clears the tag on entry and sets it on
- * the failing path, so read it immediately after the call that failed. A
- * `null` or `false` return with `ACCESSKIT_ERROR_NONE` means the property was
- * absent, not that an allocation failed.
+ * `accesskit_last_error()` reports the failure category from the most recent
+ * call on the calling thread. `accesskit_last_error_name()` reports its exact
+ * error name. Other functions clear both diagnostics on entry. Read both after
+ * the call that failed, before another non-diagnostic call on this thread.
+ * A `null` or `false` return with `ACCESSKIT_ERROR_NONE` is an ordinary answer.
  */
 
 /**
@@ -1684,6 +1684,10 @@ typedef struct accesskit_opt_action_data {
 /**
  * One action the platform asks an application to perform, with the node it
  * applies to and, for some actions, a payload.
+ *
+ * A callback owns this request and its independent payload copy. The request
+ * does not borrow native input storage. Release it with
+ * `accesskit_action_request_free`, not with the host's `free`.
  */
 typedef struct accesskit_action_request {
   /**
@@ -1741,6 +1745,8 @@ typedef struct accesskit_tree_update *
  * callback. Forgetting it leaks the request and, when
  * `request->data.has_value` is true and `request->data.value.tag` is
  * `ACCESSKIT_ACTION_DATA_VALUE`, the string it holds.
+ * The request and its string use the installed C allocator domain. Neither
+ * borrows the native action input, which the library can release independently.
  *
  * The library calls this on the platform's own thread. It says so for Linux,
  * iOS, tvOS and the Windows subclassing adapter, and says nothing for macOS,
@@ -1766,18 +1772,19 @@ typedef void (*accesskit_deactivation_handler_callback)(void *userdata);
  * The tag `accesskit_last_error` reports. `ACCESSKIT_ERROR_NONE` means the
  * call that just returned did not fail.
  *
- * The only failure a C caller can observe is an allocation failure, so the
- * tag has one failing member. A `null` or `false` return carrying
- * `ACCESSKIT_ERROR_NONE` is an ordinary answer: the property was unset, or
- * the predicate said no.
+ * `ACCESSKIT_ERROR_OUT_OF_MEMORY` means allocation failed.
+ * `ACCESSKIT_ERROR_OPERATION_FAILED` means another operation failed. Use
+ * `accesskit_last_error_name()` to read the exact cause. A `null` or `false`
+ * return carrying `ACCESSKIT_ERROR_NONE` is an ordinary answer.
  */
 typedef enum accesskit_error {
-  ACCESSKIT_ERROR_NONE,
-  ACCESSKIT_ERROR_OUT_OF_MEMORY,
+  ACCESSKIT_ERROR_NONE = 0,
+  ACCESSKIT_ERROR_OUT_OF_MEMORY = 1,
+  ACCESSKIT_ERROR_OPERATION_FAILED = 2,
 } accesskit_error;
 
-/* Functions. 496 of them, plus two this port adds. The declarations
-   behind a platform guard are absent on every other target. */
+/* There are 496 upstream functions and three functions added by this port.
+   Declarations behind platform guards are absent on every other target. */
 
 #ifdef __cplusplus
 extern "C" {
@@ -5381,6 +5388,7 @@ accesskit_tree_update_debug(const struct accesskit_tree_update *tree_update);
  * When `request->data.has_value` is true and `request->data.value.tag` is
  * `ACCESSKIT_ACTION_DATA_VALUE`, this releases the `char *` at
  * `request->data.value.value` as well. Do not release that string separately.
+ * The request and its string return to the installed C allocator domain.
  * Passing `null` terminates the process, and a second call on the same
  * pointer is a double free.
  */
@@ -6468,8 +6476,7 @@ accesskit_windows_subclassing_adapter_update_if_active(
 
 #endif /* _WIN32 */
 
-/* The two functions this port adds. Both are optional: a consumer that
-   calls neither sees upstream's behaviour exactly. */
+/* These three port functions configure allocation and report errors. */
 
 /**
  * Installs the allocator every exported function in this library uses. Call
@@ -6491,12 +6498,21 @@ void accesskit_set_allocator(
 /**
  * Returns the failure tag of the most recent call on the calling thread.
  *
- * Every function clears the tag on entry and sets it on the failing path, so
- * the tag is valid only until the next call on this thread. Read it
- * immediately after the call that failed and before making another call.
- * `ACCESSKIT_ERROR_NONE` means that call did not fail.
+ * Other functions clear both diagnostics on entry and set them on failure.
+ * Read both immediately after the failed call, before another non-diagnostic
+ * call on this thread. `ACCESSKIT_ERROR_NONE` means that call did not fail.
  */
 accesskit_error accesskit_last_error(void);
+
+/**
+ * Returns the exact error name from the most recent call on this thread.
+ *
+ * Returns `NULL` when that call did not fail. Otherwise, the result is a static
+ * NUL-terminated string. Do not modify it or release it with any free function.
+ * The getter does not clear either diagnostic. A later call can replace the
+ * diagnostic slot but does not invalidate a previously returned name.
+ */
+const char *accesskit_last_error_name(void);
 
 #ifdef __cplusplus
 }  // extern "C"
