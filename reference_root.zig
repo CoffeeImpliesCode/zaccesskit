@@ -8,6 +8,7 @@ extern fn accesskit_affine_inverse(schema.Affine) callconv(.c) schema.Affine;
 extern fn accesskit_affine_transform_point(schema.Affine, schema.Point) callconv(.c) schema.Point;
 extern fn accesskit_affine_transform_rect_bbox(schema.Affine, schema.Rect) callconv(.c) schema.Rect;
 extern fn accesskit_rect_abs(?*const schema.Rect) callconv(.c) schema.Rect;
+extern fn accesskit_rect_contains(?*const schema.Rect, schema.Point) callconv(.c) bool;
 
 comptime {
     _ = cgeometry;
@@ -21,6 +22,7 @@ const manifest_body = @embedFile("test/fixtures/manifest.json");
 const source_commit = "466e24e252103f4d82bd6fbab98141b551e46e0c";
 const max_fixture_cases = 16;
 const max_text_runs = 8;
+const max_contains_points = 8;
 const max_character_indices = 16;
 const max_case_name_bytes = 96;
 
@@ -49,7 +51,14 @@ const GeometryCase = struct {
     source: []const u8,
     oracle_kind: []const u8,
     claim: []const u8,
-    operation: enum { compose, inverse, @"rect-envelope", @"rect-abs" },
+    operation: enum {
+        compose,
+        inverse,
+        @"inverse-nan",
+        @"rect-envelope",
+        @"rect-abs",
+        @"rect-contains",
+    },
     left: [6]f64 = .{ 1, 0, 0, 1, 0, 0 },
     right: [6]f64 = .{ 1, 0, 0, 1, 0, 0 },
     expected: [6]f64 = .{ 1, 0, 0, 1, 0, 0 },
@@ -59,6 +68,9 @@ const GeometryCase = struct {
     return_expected: [2]f64 = .{ 0, 0 },
     rect: [4]f64 = .{ 0, 0, 0, 0 },
     rect_expected: [4]f64 = .{ 0, 0, 0, 0 },
+    points: []const [2]f64 = &.{},
+    contains_expected: []const bool = &.{},
+    nan_expected: [6]bool = .{ false } ** 6,
 };
 const GeometryFixture = struct { cases: []const GeometryCase };
 const Run = struct { id: u64, value: []const u8, character_lengths: []const u8 };
@@ -179,6 +191,48 @@ fn checkCoefficients(expected: [6]f64, actual: schema.Affine) VerificationError!
     for (expected, actual.coeffs) |want, got| try require(want == got);
 }
 
+fn checkNanCoefficients(
+    case: GeometryCase,
+    actual: schema.Affine,
+    api: []const u8,
+) VerificationError!void {
+    for (case.nan_expected, actual.coeffs, 0..) |want, got, index| {
+        if (want != std.math.isNan(got)) {
+            std.debug.print(
+                "FAIL fixture=test/fixtures/geometry.json case={s} api={s} " ++
+                    "coefficient-index={d} expected-nan={} actual={d}\n",
+                .{ case.name, api, index, want, got },
+            );
+            return error.OutputMismatch;
+        }
+    }
+}
+
+fn checkContains(
+    case: GeometryCase,
+    index: usize,
+    actual: bool,
+    api: []const u8,
+) VerificationError!void {
+    const expected = case.contains_expected[index];
+    if (expected != actual) {
+        std.debug.print(
+            "FAIL fixture=test/fixtures/geometry.json case={s} api={s} " ++
+                "point-index={d} point=({d},{d}) expected={} actual={}\n",
+            .{
+                case.name,
+                api,
+                index,
+                case.points[index][0],
+                case.points[index][1],
+                expected,
+                actual,
+            },
+        );
+        return error.OutputMismatch;
+    }
+}
+
 fn verifyGeometry(case: GeometryCase) VerificationError!void {
     const left: schema.Affine = .{ .coeffs = case.left };
     const right: schema.Affine = .{ .coeffs = case.right };
@@ -203,6 +257,10 @@ fn verifyGeometry(case: GeometryCase) VerificationError!void {
             try checkPoint(case.point_expected, c_point);
             try checkPoint(case.return_expected, accesskit_affine_transform_point(c_inverse, c_point));
         },
+        .@"inverse-nan" => {
+            try checkNanCoefficients(case, affine.inverse(left), "schema");
+            try checkNanCoefficients(case, accesskit_affine_inverse(left), "c");
+        },
         .@"rect-envelope" => {
             try checkRect(case.rect_expected, affine.transformRectBbox(left, rect));
             try checkRect(case.rect_expected, accesskit_affine_transform_rect_bbox(left, rect));
@@ -210,6 +268,16 @@ fn verifyGeometry(case: GeometryCase) VerificationError!void {
         .@"rect-abs" => {
             try checkRect(case.rect_expected, rect.abs());
             try checkRect(case.rect_expected, accesskit_rect_abs(&rect));
+        },
+        .@"rect-contains" => {
+            if (case.points.len > max_contains_points) return error.CaseBoundExhausted;
+            if (case.points.len == 0 or
+                case.points.len != case.contains_expected.len) return error.InvalidFixture;
+            for (case.points, 0..) |coordinates, index| {
+                const probe: schema.Point = .{ .x = coordinates[0], .y = coordinates[1] };
+                try checkContains(case, index, rect.contains(probe), "schema");
+                try checkContains(case, index, accesskit_rect_contains(&rect, probe), "c");
+            }
         },
     }
 }
@@ -220,6 +288,35 @@ pub fn testWrongOutput(gpa: std.mem.Allocator) VerificationError!void {
     var altered = parsed.value.cases[0];
     altered.expected[0] += 1;
     try verifyGeometry(altered);
+}
+
+pub fn testWrongContainmentOutput(gpa: std.mem.Allocator) VerificationError!void {
+    const parsed = try parseFixture(GeometryFixture, gpa, geometry_body);
+    defer parsed.deinit();
+    for (parsed.value.cases) |case| {
+        if (case.operation != .@"rect-contains") continue;
+        if (case.contains_expected.len == 0 or
+            case.contains_expected.len > max_contains_points) return error.InvalidFixture;
+        var expected: [max_contains_points]bool = undefined;
+        @memcpy(expected[0..case.contains_expected.len], case.contains_expected);
+        expected[case.contains_expected.len - 1] = !expected[case.contains_expected.len - 1];
+        var altered = case;
+        altered.contains_expected = expected[0..case.contains_expected.len];
+        return verifyGeometry(altered);
+    }
+    return error.InvalidFixture;
+}
+
+pub fn testWrongNanOutput(gpa: std.mem.Allocator) VerificationError!void {
+    const parsed = try parseFixture(GeometryFixture, gpa, geometry_body);
+    defer parsed.deinit();
+    for (parsed.value.cases) |case| {
+        if (case.operation != .@"inverse-nan") continue;
+        var altered = case;
+        altered.nan_expected[5] = !altered.nan_expected[5];
+        return verifyGeometry(altered);
+    }
+    return error.InvalidFixture;
 }
 
 const query = consumer.text.query;
