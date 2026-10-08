@@ -2,29 +2,25 @@
 //!
 //! **What this module is for.** It owns the only two pieces of mutable state
 //! the C surface needs: the allocator every exported function allocates
-//! through, and the failure tag a call that cannot report a failure through its
-//! return value writes for `accesskit_last_error`. Nothing else in the C ABI
-//! holds state.
+//! through, and the failure category and exact name that a call writes for
+//! `accesskit_last_error` and `accesskit_last_error_name`. Both diagnostics belong
+//! to the calling thread.
 //!
-//! **The allocator contract, in two sentences.** Every allocation the library
-//! hands to C comes from the one declared allocator, which is the C allocator
-//! until `accesskit_set_allocator` installs a pair, and every such allocation
-//! goes back through `release` and never through `free`. A `release` of
-//! `null`, of a pointer this library never returned, or of a pointer this
-//! library already released is refused, and a refused `release` terminates the
-//! process rather than corrupting the heap.
+//! **The allocator contract.** Every allocation the library hands to C comes
+//! from the declared allocator. The matching public free releases it through
+//! that allocator, never through the host's `free`. Head-tracked blocks from
+//! `create` use `release`. Raw allocator blocks, including action requests and
+//! their strings, use the allocator's teardown. A refused `release` terminates
+//! the process rather than corrupting the heap.
 //!
-//! **The error-slot lifetime, in two sentences.** The tag belongs to one
-//! thread, because `include/zaccesskit.h:121` fixes it that way: it is the tag
-//! of the most recent call on the calling thread. It is valid only until the
-//! next call on that thread, so a C consumer reads it immediately after the
-//! call that failed and before it makes another call.
+//! **The error-slot lifetime.** The category and name describe the most recent
+//! call on the calling thread. Read both before the next non-diagnostic call.
+//! The two diagnostic getters do not clear the slot. Names use static,
+//! NUL-terminated storage and must not be released.
 //!
-//! **Which exports this module contributes.** It has no `export fn`. The three
-//! C symbols that reach it, `accesskit_set_allocator` at
-//! `include/zaccesskit.h:6472`, `accesskit_last_error` at `:6484`, and each of
-//! the 17 `*_free` functions, are thin forwarders declared in `capi/root.zig`,
-//! which owns every other `export fn` in this library.
+//! **Which exports this module contributes.** It has no `export fn`.
+//! `capi/root.zig` owns `accesskit_set_allocator`, `accesskit_last_error`, and
+//! `accesskit_last_error_name`. Each owning module declares its public frees.
 //!
 //! **What this module deliberately does not do.** It does not declare the C
 //! types a `*_free` owns, and it does not decide which nested blocks one of
@@ -79,6 +75,9 @@ pub const Tag = enum(c_int) {
     /// The call that just returned failed to allocate. Nothing it would have
     /// produced survives.
     out_of_memory = 1,
+
+    /// A non-allocation operation failed. The exact cause is in `lastErrorName`.
+    operation_failed = 2,
 };
 
 /// Why `release` refused a pointer.
@@ -212,12 +211,13 @@ const Head = struct {
     bytes: usize,
 };
 
-/// The tag of the most recent call on the calling thread.
-///
-/// One thread-local variable, not a plain global: `include/zaccesskit.h:121`
-/// scopes the tag to the calling thread, and a plain global is wrong the moment
-/// the library is called from two threads.
-threadlocal var slot: Tag = .none;
+/// One complete diagnostic for the most recent call on this thread.
+const ErrorSlot = struct {
+    tag: Tag = .none,
+    name: ?[*:0]const u8 = null,
+};
+
+threadlocal var slot: ErrorSlot = .{};
 
 /// The installed pair, or `null` while the C allocator is declared.
 ///
@@ -235,23 +235,56 @@ const Pair = struct {
 
 /// The tag of the most recent call on this thread.
 ///
-/// The value belongs to the call that just returned and nothing older, because
-/// every entry point clears the slot on entry.
+/// Diagnostic getters do not clear the slot. Other entry points clear it on entry.
 pub fn lastError() Tag {
-    return slot;
+    return slot.tag;
 }
 
-/// Clears the tag for this thread. Every exported function calls it on entry.
-pub fn clearError() void {
-    slot = .none;
-}
-
-/// Records `value` as the failure of the call in progress.
+/// Returns the exact error name, or `null` when the latest call did not fail.
 ///
-/// Only a failing path calls it. A `null` from a string getter because the
-/// property was unset is an ordinary answer and leaves the tag at `Tag.none`.
+/// The pointer names static NUL-terminated storage. Do not release or modify it.
+/// Later calls can replace the slot but do not invalidate a previously returned name.
+pub fn lastErrorName() ?[*:0]const u8 {
+    return slot.name;
+}
+
+/// Clears both the failure category and name on this thread.
+pub fn clearError() void {
+    slot = .{};
+}
+
+/// Records absence of failure or the exact `error.OutOfMemory` cause.
+///
+/// `Tag.operation_failed` requires an original error value. Pass it to
+/// `failWithError` instead. A category-only failure is a programmer error.
 pub fn failWith(value: Tag) void {
-    slot = value;
+    slot = switch (value) {
+        .none => .{},
+        .out_of_memory => .{ .tag = .out_of_memory, .name = "OutOfMemory" },
+        .operation_failed => @panic("Use failWithError to preserve the original failure"),
+    };
+}
+
+/// Records a value from a finite named error set without allocation.
+///
+/// Only `error.OutOfMemory` maps to `Tag.out_of_memory`. Every other error maps
+/// to `Tag.operation_failed`, preserving its exact static `@errorName`.
+/// Error unions, non-error values, and `anyerror` are not accepted.
+pub fn failWithError(err: anytype) void {
+    comptime {
+        switch (@typeInfo(@TypeOf(err))) {
+            .error_set => |members| {
+                if (members == null) {
+                    @compileError("failWithError requires a finite named error set, not anyerror");
+                }
+            },
+            else => @compileError("failWithError requires a value from a named error set"),
+        }
+    }
+    slot = .{
+        .tag = if (err == error.OutOfMemory) .out_of_memory else .operation_failed,
+        .name = @errorName(err).ptr,
+    };
 }
 
 /// Installs the pair every allocation and every release goes through.
@@ -282,15 +315,17 @@ pub fn installAllocator(alloc: ?AllocFn, free: ?FreeFn, context: ?*anyopaque) vo
     installed = .{ .alloc = a, .free = f, .context = context };
 }
 
-/// The declared allocator, for a Zig lifetime no C caller ever sees.
+/// The declared allocator for raw owned blocks, including C action requests.
 ///
-/// A block from this allocator is released with `std.mem.Allocator.free` and
-/// not with `release`, because `release` reads the head `create` writes and this
-/// path does not write one. Every pointer that crosses the C boundary comes
-/// from `create`, `createBytes` or `createCString` instead.
+/// Raw blocks use this allocator's `free` or `destroy`, not `release`.
+/// `release` reads the head written only by `create`, `createBytes`, and
+/// `createCString`. An action request and its nested string are raw blocks.
 ///
 /// The result is `std.heap.c_allocator` while no pair is installed, so this
 /// module requires a libc link on every target.
+/// Installed callbacks need only eight-byte alignment. This adapter provides
+/// larger alignments with one raw-pointer word and at most `alignment - 1` padding bytes.
+/// Overflow and callback allocation failure return `error.OutOfMemory`.
 pub fn allocator() std.mem.Allocator {
     // The pointer capture keeps the address of the module's own field, which is
     // what `installAllocator`'s doc says a store built before a second install
@@ -323,9 +358,9 @@ pub fn sameDomain(options: struct {
 
 /// Allocates one `T` and returns it zeroed.
 ///
-/// The caller owns the result and releases it with `release`. `error.OutOfMemory`
-/// leaves nothing allocated. This is the only route to a pointer that crosses
-/// the C boundary, so every `*_free` in the catalogue ends in `release`.
+/// The caller owns the result and releases it with `release`.
+/// `error.OutOfMemory` leaves nothing allocated. This route adds a tracking head.
+/// Raw blocks from `allocator()` instead require their matching allocator teardown.
 pub fn create(comptime T: type) Error!*T {
     const head = try carve(@sizeOf(T), @alignOf(T));
     const payload: *T = @ptrCast(@alignCast(payloadOf(head, @alignOf(T))));
@@ -402,12 +437,33 @@ const pair_vtable: std.mem.Allocator.VTable = .{
     .free = pairFree,
 };
 
+// The C callback contract guarantees this alignment, without extra metadata.
+const pair_alignment_bytes: usize = 8;
+
 fn pairAlloc(ctx: *anyopaque, len: usize, alignment: std.mem.Alignment, ret_addr: usize) ?[*]u8 {
     _ = ret_addr;
-    _ = alignment;
     const pair: *Pair = @ptrCast(@alignCast(ctx));
-    const block = pair.alloc(len, pair.context) orelse return null;
-    return @ptrCast(block);
+    const alignment_bytes = alignment.toByteUnits();
+    if (alignment_bytes <= pair_alignment_bytes) {
+        const ordinary = pair.alloc(len, pair.context) orelse return null;
+        return @ptrCast(ordinary);
+    }
+
+    const pointer_bytes = @sizeOf([*]u8);
+    const prefixed = @addWithOverflow(len, pointer_bytes);
+    if (prefixed[1] != 0) return null;
+    const padded = @addWithOverflow(prefixed[0], alignment_bytes - 1);
+    if (padded[1] != 0) return null;
+    const block = pair.alloc(padded[0], pair.context) orelse return null;
+    const raw: [*]u8 = @ptrCast(block);
+    const payload_address = std.mem.alignForward(
+        usize,
+        @intFromPtr(raw) + pointer_bytes,
+        alignment_bytes,
+    );
+    const original: *[*]u8 = @ptrFromInt(payload_address - pointer_bytes);
+    original.* = raw;
+    return @ptrFromInt(payload_address);
 }
 
 fn pairResize(
@@ -441,10 +497,16 @@ fn pairRemap(
 }
 
 fn pairFree(ctx: *anyopaque, memory: []u8, alignment: std.mem.Alignment, ret_addr: usize) void {
-    _ = alignment;
     _ = ret_addr;
     const pair: *Pair = @ptrCast(@alignCast(ctx));
-    pair.free(@constCast(memory.ptr), pair.context);
+    const raw = if (alignment.toByteUnits() <= pair_alignment_bytes)
+        memory.ptr
+    else blk: {
+        const original: *const [*]u8 =
+            @ptrFromInt(@intFromPtr(memory.ptr) - @sizeOf([*]u8));
+        break :blk original.*;
+    };
+    pair.free(@ptrCast(raw), pair.context);
 }
 
 fn carve(payload_bytes: usize, payload_align: usize) Error!*Head {
@@ -707,6 +769,7 @@ test "the error slot is per thread, not one global" {
 test "the tag values are the ones the C enum names" {
     try testing.expectEqual(@as(c_int, 0), @intFromEnum(Tag.none));
     try testing.expectEqual(@as(c_int, 1), @intFromEnum(Tag.out_of_memory));
+    try testing.expectEqual(@as(c_int, 2), @intFromEnum(Tag.operation_failed));
 }
 
 test "the enumerable domains are swept at compile time" {
@@ -797,4 +860,230 @@ test "registered allocator domains compare only defined pair contexts" {
     };
     const other: std.mem.Allocator = .{ .ptr = &other_pair, .vtable = &pair_vtable };
     try testing.expect(!sameDomain(.{ .source = registered, .destination = other }));
+}
+
+test "failure names distinguish allocation transport query and conversion errors" {
+    // Each named cause must remain distinct even when the C category is shared.
+    const Failures = error{ OutOfMemory, TransportClosed, UnknownNode, InteriorNul };
+    defer clearError();
+    clearError();
+    try testing.expect(lastErrorName() == null);
+    const failures = [_]Failures{
+        error.OutOfMemory, error.TransportClosed, error.UnknownNode, error.InteriorNul,
+    };
+    for (failures) |failure| {
+        failWithError(failure);
+        const expected: Tag = if (failure == error.OutOfMemory)
+            .out_of_memory
+        else
+            .operation_failed;
+        try testing.expectEqual(expected, lastError());
+        const name = lastErrorName() orelse return error.MissingFailureName;
+        try testing.expectEqualStrings(@errorName(failure), std.mem.span(name));
+        try testing.expectEqual(@as(u8, 0), name[std.mem.span(name).len]);
+        // Both diagnostics can be read repeatedly without changing the failure.
+        try testing.expectEqual(name, lastErrorName().?);
+        try testing.expectEqual(expected, lastError());
+    }
+    const prior_name = lastErrorName().?;
+    failWithError(@as(Failures, error.TransportClosed));
+    try testing.expectEqualStrings("TransportClosed", std.mem.span(lastErrorName().?));
+    try testing.expectEqualStrings("InteriorNul", std.mem.span(prior_name));
+    failWith(.out_of_memory);
+    try testing.expectEqualStrings("OutOfMemory", std.mem.span(lastErrorName().?));
+    // Error names have static storage, not a shared buffer overwritten by later calls.
+    try testing.expectEqualStrings("InteriorNul", std.mem.span(prior_name));
+    clearError();
+    try testing.expectEqual(Tag.none, lastError());
+    try testing.expect(lastErrorName() == null);
+    failWithError(@as(Failures, error.InteriorNul));
+    failWith(.none);
+    try testing.expectEqual(Tag.none, lastError());
+    try testing.expect(lastErrorName() == null);
+}
+
+test "exact failure name and category are isolated between threads" {
+    const Seen = struct {
+        tag: Tag = .none,
+        name: ?[*:0]const u8 = null,
+
+        fn body(self: *@This()) void {
+            self.tag = lastError();
+            self.name = lastErrorName();
+            if (self.tag != .none or self.name != null) return;
+            const Failure = error{TransportClosed};
+            failWithError(@as(Failure, error.TransportClosed));
+            self.tag = lastError();
+            self.name = lastErrorName();
+            clearError();
+        }
+    };
+    defer clearError();
+    const Failure = error{InteriorNul};
+    failWithError(@as(Failure, error.InteriorNul));
+    var seen: Seen = .{};
+    const thread = try std.Thread.spawn(.{}, Seen.body, .{&seen});
+    thread.join();
+    try testing.expectEqual(Tag.operation_failed, seen.tag);
+    try testing.expectEqualStrings("TransportClosed", std.mem.span(seen.name.?));
+    try testing.expectEqual(Tag.operation_failed, lastError());
+    try testing.expectEqualStrings("InteriorNul", std.mem.span(lastErrorName().?));
+}
+
+// The C callback guarantees eight-byte alignment, deliberately not sixteen.
+const EightAlignedPair = struct {
+    backing: std.mem.Allocator,
+    blocks: [2]Block = .{ .{}, .{} },
+    calls: usize = 0,
+
+    const backing_byte_limit = 4096;
+    const Block = struct {
+        backing: ?[]align(64) u8 = null,
+        returned: ?[*]u8 = null,
+        requested_bytes: usize = 0,
+    };
+
+    fn alloc(bytes: usize, context: ?*anyopaque) callconv(.c) ?*anyopaque {
+        const self: *@This() = @ptrCast(@alignCast(context.?));
+        self.calls += 1;
+        if (bytes > backing_byte_limit) return null;
+        for (&self.blocks) |*block| {
+            if (block.backing == null) {
+                const memory = self.backing.alignedAlloc(u8, .@"64", bytes + 8) catch
+                    return null;
+                const returned = memory.ptr + 8;
+                block.* = .{
+                    .backing = memory,
+                    .returned = returned,
+                    .requested_bytes = bytes,
+                };
+                return returned;
+            }
+        }
+        return null;
+    }
+
+    fn free(pointer: ?*anyopaque, context: ?*anyopaque) callconv(.c) void {
+        const self: *@This() = @ptrCast(@alignCast(context.?));
+        for (&self.blocks) |*block| {
+            if (block.backing) |memory| {
+                if (@intFromPtr(pointer.?) == @intFromPtr(block.returned.?)) {
+                    self.backing.free(memory);
+                    block.* = .{};
+                    return;
+                }
+            }
+        }
+        @panic("Overaligned allocation did not release its original C pointer");
+    }
+
+    fn expectEmpty(self: *const @This()) !void {
+        for (self.blocks) |block| try testing.expect(block.backing == null);
+    }
+};
+
+test "the installed allocator preserves raw ordinary blocks and C strings" {
+    var pair: EightAlignedPair = .{ .backing = testing.allocator };
+    installAllocator(EightAlignedPair.alloc, EightAlignedPair.free, &pair);
+    defer installAllocator(null, null, null);
+    const gpa = allocator();
+    const bytes = try gpa.alignedAlloc(u8, .@"8", 17);
+    try testing.expectEqual(@intFromPtr(pair.blocks[0].returned.?), @intFromPtr(bytes.ptr));
+    try testing.expectEqual(@as(usize, 17), pair.blocks[0].requested_bytes);
+    @memset(bytes, 0x37);
+    try testing.expectEqualSlices(u8, &([_]u8{0x37} ** 17), bytes);
+    gpa.free(bytes);
+    try pair.expectEmpty();
+
+    const text = try gpa.dupeZ(u8, "raw string");
+    try testing.expectEqual(@intFromPtr(pair.blocks[0].returned.?), @intFromPtr(text.ptr));
+    try testing.expectEqual(@as(usize, 11), pair.blocks[0].requested_bytes);
+    try testing.expectEqualStrings("raw string", text);
+    try testing.expectEqual(@as(u8, 0), text[text.len]);
+    gpa.free(text);
+    try pair.expectEmpty();
+}
+
+test "the installed allocator aligns native blocks and frees the original C pointer" {
+    // Distinct bytes cover the entire consumer-visible allocation, including its edges.
+    var pair: EightAlignedPair = .{ .backing = testing.allocator };
+    installAllocator(EightAlignedPair.alloc, EightAlignedPair.free, &pair);
+    defer installAllocator(null, null, null);
+    const gpa = allocator();
+    const alignments = comptime [_]std.mem.Alignment{
+        .@"16",
+        .@"64",
+        std.mem.Alignment.fromByteUnits(256),
+    };
+    inline for (alignments) |requested| {
+        const bytes = try gpa.alignedAlloc(u8, requested, 95);
+        try testing.expectEqual(@as(usize, 0), @intFromPtr(bytes.ptr) % requested.toByteUnits());
+        try testing.expect(@intFromPtr(bytes.ptr) != @intFromPtr(pair.blocks[0].returned.?));
+        try testing.expectEqual(
+            @as(usize, 95) + requested.toByteUnits() - 1 + @sizeOf([*]u8),
+            pair.blocks[0].requested_bytes,
+        );
+        for (bytes, 0..) |*byte, index| byte.* = @intCast(index);
+        for (bytes, 0..) |byte, index| try testing.expectEqual(@as(u8, @intCast(index)), byte);
+        gpa.free(bytes);
+        try pair.expectEmpty();
+    }
+}
+
+test "the installed allocator cannot resize or remap a live aligned block in place" {
+    var pair: EightAlignedPair = .{ .backing = testing.allocator };
+    installAllocator(EightAlignedPair.alloc, EightAlignedPair.free, &pair);
+    defer installAllocator(null, null, null);
+    const gpa = allocator();
+    const bytes = try gpa.alignedAlloc(u8, .@"64", 65);
+    defer gpa.free(bytes);
+    @memset(bytes, 0x5a);
+    const raw_pointer = pair.blocks[0].returned.?;
+    const calls = pair.calls;
+    try testing.expect(!gpa.resize(bytes, 129));
+    try testing.expect(gpa.remap(bytes, 129) == null);
+    try testing.expectEqual(calls, pair.calls);
+    try testing.expectEqual(raw_pointer, pair.blocks[0].returned.?);
+    try testing.expectEqualSlices(u8, &([_]u8{0x5a} ** 65), bytes);
+}
+
+test "the installed allocator frees aligned partial work at every allocation failure" {
+    try testing.checkAllAllocationFailures(testing.allocator, alignedAllocationFailures, .{});
+}
+
+fn alignedAllocationFailures(backing: std.mem.Allocator) !void {
+    var pair: EightAlignedPair = .{ .backing = backing };
+    installAllocator(EightAlignedPair.alloc, EightAlignedPair.free, &pair);
+    defer installAllocator(null, null, null);
+    const gpa = allocator();
+    var bytes = try gpa.alignedAlloc(u8, .@"64", 65);
+    defer gpa.free(bytes);
+    @memset(bytes, 0x6c);
+    bytes = gpa.realloc(bytes, 257) catch |err| {
+        try testing.expectEqualSlices(u8, &([_]u8{0x6c} ** 65), bytes);
+        try testing.expect(pair.blocks[0].backing != null);
+        try testing.expect(pair.blocks[1].backing == null);
+        return err;
+    };
+    try testing.expectEqual(@as(usize, 0), @intFromPtr(bytes.ptr) % 64);
+    try testing.expectEqualSlices(u8, &([_]u8{0x6c} ** 65), bytes[0..65]);
+    @memset(bytes[65..], 0x73);
+    try testing.expectEqualSlices(u8, &([_]u8{0x73} ** 192), bytes[65..]);
+}
+
+test "the installed allocator rejects aligned size overflow before calling C" {
+    var pair: EightAlignedPair = .{ .backing = testing.allocator };
+    installAllocator(EightAlignedPair.alloc, EightAlignedPair.free, &pair);
+    defer installAllocator(null, null, null);
+    const gpa = allocator();
+    const lengths = [_]usize{
+        std.math.maxInt(usize),
+        std.math.maxInt(usize) - @sizeOf(usize) + 1,
+        std.math.maxInt(usize) - 64,
+    };
+    for (lengths) |length| {
+        try testing.expect(gpa.rawAlloc(length, .@"64", @returnAddress()) == null);
+        try testing.expectEqual(@as(usize, 0), pair.calls);
+        try pair.expectEmpty();
+    }
 }

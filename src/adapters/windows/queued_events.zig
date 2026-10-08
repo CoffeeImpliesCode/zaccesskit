@@ -1,261 +1,238 @@
-//! The events one tree update produced, and the walk that raises them.
+//! Owned UI Automation events for one tree update.
 //!
-//! **What this file ports.** `QueuedEvent` from
-//! `adapters/windows/src/util.rs:76-92` and `QueuedEvents` from
-//! `adapters/windows/src/adapter.rs:628-668` in the pinned upstream tree.
-//! Upstream's queue is a `Vec<QueuedEvent>` and `raise` walks it calling
-//! `UiaRaiseAutomationEvent` or `UiaRaiseAutomationPropertyChangedEvent`.
-//!
-//! **What the port adds, and why.** `raise` returns a `RaiseReport` instead of
-//! nothing. The C ABI's `accesskit_windows_queued_events_raise` returns nothing
-//! and releases the handle, so a refusal has nowhere else to go: an adapter
-//! that drops a failed raise reports nothing and an application cannot tell a
-//! delivered event from a lost one. The report carries the three counts back
-//! to `WindowsAdapter`, which keeps the last one and prints it in
-//! `accesskit_windows_adapter_debug`.
-//!
-//! **What a queued event holds.** A `*const syscalls.ProviderSlot`, never a
-//! node identifier and never a `FullNodeId`. A node identifier is meaningless
-//! once the tree has moved on, and a queued event outlives the update that
-//! produced it: the slots live in `elements.Registry` and keep their addresses
-//! until the registry is released.
-//!
-//! **Loop bounds.** The one loop outside a test is `raise`, and its bound is
-//! `events.items.len`, the queue's own length at the moment the walk starts.
-//! Nothing in the walk changes the queue, so the bound holds for the whole of
-//! it.
+//! This ports `util.rs:76-92` and `adapter.rs:628-668` from the pinned Windows adapter.
+//! Each event retains its provider slot and owns its old/new automation values.
+//! No tree, NodeRef, or borrowed property buffer survives in the queue.
+//! Failed cleanup keeps the queue and its providers alive for a later retry.
 
 const std = @import("std");
-
 const consumer = @import("../../consumer/root.zig");
-const schema = @import("../../schema/root.zig");
+const elements = @import("elements.zig");
 const syscalls = @import("syscalls.zig");
+const util = @import("util.zig");
 
-/// The tree-and-node pair a provider slot is filed under.
 pub const consumer_node_id = consumer.tree_index.FullNodeId;
-
 const EventId = syscalls.EventId;
 const Platform = syscalls.Platform;
 const PropertyId = syscalls.PropertyId;
-const PropertyValue = schema.PropertyValue;
 const ProviderSlot = syscalls.ProviderSlot;
 const RaiseStatus = syscalls.RaiseStatus;
-
-/// The type a plain raise slot has, named once so a test seam and the port
-/// agree on the spelling.
 pub const RaiseSlot = syscalls.RaiseEventSlot;
-/// The type a property-change raise slot has, named for the reason `RaiseSlot`
-/// is named.
 pub const RaisePropertySlot = syscalls.RaisePropertyChangedSlot;
 
-/// An event that names one provider and one UI Automation event identifier.
-///
-/// Upstream `QueuedEvent::Simple` at `util.rs:78-83`.
+/// One event reference, retained by the queue after successful insertion.
 pub const SimpleEvent = struct {
-    /// The provider the event is raised on. The slot stays alive until the
-    /// registry is released, so a queued event never names a freed address.
     slot: *const ProviderSlot,
-
-    /// Which event. Nine values reach this adapter; the domain is
-    /// `syscalls.EventId` and `EventId.count` is its length.
     event_id: EventId,
 };
 
-/// A change of one property on one provider.
-///
-/// Upstream `QueuedEvent::PropertyChanged` at `util.rs:84-92`. The two values
-/// are platform-neutral property values; converting them to the `VARIANT` UI
-/// Automation takes happens inside the platform call, on the Windows side of
-/// the seam.
+/// Owns both VARIANTs. Their allocation authorities must outlive cleanup, including retries.
 pub const PropertyChangedEvent = struct {
-    /// The provider the event is raised on.
     slot: *const ProviderSlot,
-
-    /// Which property changed.
     property_id: PropertyId,
-
-    /// The value the property held before the update.
-    old: PropertyValue,
-
-    /// The value the property holds after the update.
-    new: PropertyValue,
+    old: util.VariantOwner,
+    new: util.VariantOwner,
 };
 
-/// One event the queue carries.
+/// Insertion consumes property owners only on success. Copying does not create another owner.
 pub const QueuedEvent = union(enum) {
-    /// A plain event, raised with `UiaRaiseAutomationEvent`.
     simple: SimpleEvent,
-    /// A property change, raised with `UiaRaiseAutomationPropertyChangedEvent`.
     property_changed: PropertyChangedEvent,
+
+    fn provider(self: *const QueuedEvent) *const ProviderSlot {
+        return switch (self.*) {
+            .simple => |*event| event.slot,
+            .property_changed => |*event| event.slot,
+        };
+    }
 };
 
-/// What one `raise` did to every event in the queue.
-///
-/// The three counts add up to the length of the queue, which is the check a
-/// caller can make without knowing what the events were.
-pub const RaiseReport = struct {
-    /// Events UI Automation took.
-    raised: usize = 0,
-    /// Events UI Automation was reached for and refused.
-    refused: usize = 0,
-    /// Events no UI Automation was reached for, because the target cannot link
-    /// `uiautomationcore.dll`.
-    unavailable: usize = 0,
+/// Cleanup attempts every value. A failure keeps all storage and slot references for retry.
+pub const CleanupReport = struct {
+    first_error: ?util.AutomationError = null,
+    error_count: usize = 0,
 
-    /// How many events the report accounts for in total.
+    fn record(self: *CleanupReport, err: util.AutomationError) void {
+        if (self.first_error == null) self.first_error = err;
+        self.error_count += 1;
+    }
+};
+
+/// Delivery counts cover this call only. Cleanup failures do not change a delivered event's status.
+pub const RaiseReport = struct {
+    raised: usize = 0,
+    refused: usize = 0,
+    unavailable: usize = 0,
+    cleanup: CleanupReport = .{},
+
     pub fn total(self: RaiseReport) usize {
         return self.raised + self.refused + self.unavailable;
     }
 };
 
-/// The events one tree update produced.
-///
-/// The value owns the array that holds them and releases it with `gpa`. There
-/// is no copy operation, so the only way to hand a queue to a callee is a
-/// pointer.
+pub const QueueError = std.mem.Allocator.Error || error{ ProviderLimitExceeded, InvalidOperation };
+
+/// Leaves room for one non-event slot reference in the u32 provider reference count.
+pub const event_count_max: usize = std.math.maxInt(u32) - 1;
+
+/// Single-owner queue. Keep its allocator and automation authority alive until cleanup succeeds.
+/// Provider slots must use the same allocator. Copies must not raise or release the shared storage.
+/// Do not mutate this receiver from delivery callbacks or share it between threads.
 pub const QueuedEvents = struct {
-    /// The allocator that grew the array. It must be the allocator `init` was
-    /// given, and it must stay valid until the queue is raised or released.
     gpa: std.mem.Allocator,
-
-    /// The events, in the order they must be raised. The order is the
-    /// contract: upstream inserts a text change at the front of the queue at
-    /// `adapter.rs:67-73` so a text change comes before a selection change.
+    automation: *const util.AutomationApi,
     events: std.ArrayList(QueuedEvent) = .empty,
-
-    /// The providers this queue owns rather than the registry.
-    ///
-    /// Upstream's queue holds an `Arc<PlatformNode>` per event, so an event
-    /// about a node the tree has dropped keeps that node alive until the event
-    /// is raised. The port holds the slot the same way and releases it here
-    /// rather than in the registry.
+    /// Detached baseline references, independent of the reference each event retains.
     owned_slots: std.ArrayList(*ProviderSlot) = .empty,
+    /// Failed cleanup leaves records here, but they must never be delivered again.
+    delivery_complete: bool = false,
 
-    /// An empty queue. Nothing is allocated, so this call cannot fail.
-    pub fn init(gpa: std.mem.Allocator) QueuedEvents {
-        return .{ .gpa = gpa };
+    /// Creates an empty queue without allocating. Borrows both authorities through cleanup retries.
+    pub fn init(gpa: std.mem.Allocator, automation: *const util.AutomationApi) QueuedEvents {
+        return .{ .gpa = gpa, .automation = automation };
     }
 
-    /// Releases the array and every provider the queue owns, without raising
-    /// anything.
-    ///
-    /// A caller that decides not to raise releases here. A second call reaches
-    /// an empty array rather than a freed one, because `deinit` leaves the
-    /// value in its reset form.
-    ///
-    /// `platform` releases the owned providers, because a provider belongs to
-    /// the node layer and only the node layer may release one.
-    ///
-    /// The last line is the reset, and it is the whole of the Z030 contract:
-    /// every field is back to its empty value, so this value is as good as one
-    /// `init` just made. The rule reads the release calls above it and misses
-    /// the assignment, so the assignment is what it wants to see and this
-    /// comment says so.
-    pub fn deinit(self: *QueuedEvents, platform: Platform) void {
-        const gpa = self.gpa;
-        for (self.owned_slots.items) |slot| {
-            platform.destroy_provider(gpa, detached_id, slot);
-            gpa.destroy(slot);
+    /// Cancels delivery and attempts every owner. Success releases every slot reference and resets.
+    /// Failure preserves failed owners, storage, and providers. The caller must retain and retry it.
+    pub fn deinit(self: *QueuedEvents, platform: Platform) CleanupReport {
+        self.delivery_complete = true;
+        var report: CleanupReport = .{};
+        // Both walks are bounded by their stored lengths, each at most event_count_max.
+        for (self.events.items) |*event| {
+            switch (event.*) {
+                .simple => {},
+                .property_changed => |*change| {
+                    change.old.deinit() catch |err| report.record(err);
+                    change.new.deinit() catch |err| report.record(err);
+                },
+            }
         }
-        self.owned_slots.deinit(gpa);
-        self.events.deinit(gpa);
-        self.* = .{ .gpa = gpa };
+        if (report.first_error != null) return report;
+        for (self.events.items) |*event| {
+            elements.Registry.releaseSlot(platform, self.gpa, event.provider());
+        }
+        for (self.owned_slots.items) |slot| {
+            elements.Registry.releaseSlot(platform, self.gpa, slot);
+        }
+        self.events.deinit(self.gpa);
+        self.owned_slots.deinit(self.gpa);
+        self.* = init(self.gpa, self.automation);
+        return report;
     }
 
-    /// Takes ownership of a slot from `Registry.detachedSlotFor`.
-    ///
-    /// The queue releases it in `raise` or in `deinit`, whichever runs first,
-    /// and never twice. A caller that hands a slot over must not release it.
-    ///
-    /// `error.OutOfMemory` when the ownership list cannot grow. The slot is
-    /// still the caller's on that path and the queue is unchanged.
-    pub fn takeOwnership(self: *QueuedEvents, slot: *ProviderSlot) std.mem.Allocator.Error!void {
+    /// Consumes one detached baseline reference on success. On failure it remains the caller's.
+    /// Passing the same baseline reference twice violates ownership.
+    pub fn takeOwnership(self: *QueuedEvents, slot: *ProviderSlot) QueueError!void {
+        try self.requireOpen();
+        if (self.owned_slots.items.len >= event_count_max) return error.ProviderLimitExceeded;
         try self.owned_slots.append(self.gpa, slot);
     }
 
-    /// The node identifier every owned slot is released under.
-    ///
-    /// A detached slot names a node the tree has dropped, so the map has no key
-    /// for it. The release still needs a node identifier to hand the platform,
-    /// and `NodeId(0)` is the one upstream uses for the only provider that
-    /// names no node: `PLACEHOLDER_ROOT_ID` at `adapter.rs:374`.
-    pub const detached_id: consumer_node_id = consumer_node_id.init(.{ .value = 0 }, .init(0));
-
-    /// Adds one event at the end of the queue.
-    ///
-    /// `error.OutOfMemory` when the array cannot grow. The queue is unchanged
-    /// on that path, so a caller that cannot append has lost exactly the one
-    /// event and nothing else.
-    pub fn append(self: *QueuedEvents, event: QueuedEvent) std.mem.Allocator.Error!void {
-        try self.events.append(self.gpa, event);
+    /// Appends an event and retains its slot only after allocation succeeds.
+    /// A property event transfers both owners on success, never on failure.
+    pub fn append(self: *QueuedEvents, event: QueuedEvent) QueueError!void {
+        try self.reserveEvent();
+        self.events.appendAssumeCapacity(event);
+        elements.Registry.retainSlot(event.provider());
     }
 
-    /// Adds one event at the front of the queue.
-    ///
-    /// This is the port of the `insert(0, …)` at `adapter.rs:67-73`, which
-    /// exists because a text change must be raised before a selection change.
-    /// Inserting at the front is what makes that true whatever order the
-    /// selection events arrive in.
-    pub fn prepend(self: *QueuedEvents, event: QueuedEvent) std.mem.Allocator.Error!void {
-        try self.events.insert(self.gpa, 0, event);
+    /// Prepends a text event before selection events, as upstream `adapter.rs:67-73` does.
+    /// Ownership and failure behavior are the same as append.
+    pub fn prepend(self: *QueuedEvents, event: QueuedEvent) QueueError!void {
+        try self.reserveEvent();
+        self.events.insertAssumeCapacity(0, event);
+        elements.Registry.retainSlot(event.provider());
     }
 
-    /// How many events the queue carries.
+    /// Reserves and owns the event before either value is constructed.
+    /// Fill old then new directly here. A later constructor failure leaves earlier values owned.
+    /// The result borrows the array and is invalidated by insertion, growth, raise, or cleanup.
+    pub fn beginProperty(
+        self: *QueuedEvents,
+        slot: *const ProviderSlot,
+        property_id: PropertyId,
+    ) QueueError!*PropertyChangedEvent {
+        try self.reserveEvent();
+        self.events.appendAssumeCapacity(.{ .property_changed = .{
+            .slot = slot,
+            .property_id = property_id,
+            .old = util.VariantOwner.init(self.automation),
+            .new = util.VariantOwner.init(self.automation),
+        } });
+        elements.Registry.retainSlot(slot);
+        return &self.events.items[self.events.items.len - 1].property_changed;
+    }
+
+    /// Transfers two independent owners on success, resetting both inputs. Failure changes neither.
+    pub fn appendProperty(
+        self: *QueuedEvents,
+        slot: *const ProviderSlot,
+        property_id: PropertyId,
+        old: *util.VariantOwner,
+        new: *util.VariantOwner,
+    ) QueueError!void {
+        std.debug.assert(old != new);
+        const change = try self.beginProperty(slot, property_id);
+        change.old = .{ .api = old.api, .raw = old.take() };
+        change.new = .{ .api = new.api, .raw = new.take() };
+    }
+
+    /// Reserves before constructing scalars, so an allocation failure cannot strand local owners.
+    pub fn appendBoolProperty(
+        self: *QueuedEvents,
+        slot: *const ProviderSlot,
+        property_id: PropertyId,
+        values: struct { old: bool, new: bool },
+    ) QueueError!void {
+        const change = try self.beginProperty(slot, property_id);
+        change.old = util.VariantOwner.fromBool(self.automation, values.old);
+        change.new = util.VariantOwner.fromBool(self.automation, values.new);
+    }
+
+    /// Includes records retained for cleanup after delivery or cancellation.
     pub fn len(self: *const QueuedEvents) usize {
         return self.events.items.len;
     }
 
-    /// The event at `index`, or `null` when `index` is past the end.
-    ///
-    /// The bound is `len`. A test reads the queue through this rather than
-    /// through the array, so a change to the storage does not reach every test.
-    pub fn at(self: *const QueuedEvents, index: usize) ?QueuedEvent {
+    /// Borrowed event, invalidated by insertion, growth, raise, or cleanup. Null means out of bounds.
+    pub fn at(self: *const QueuedEvents, index: usize) ?*const QueuedEvent {
         if (index >= self.events.items.len) return null;
-        return self.events.items[index];
+        return &self.events.items[index];
     }
 
-    /// Raises every event in order, releases the queue, and reports what
-    /// happened.
-    ///
-    /// The value is taken by value and the queue is released inside, because
-    /// upstream's `raise` takes `self` and the C ABI's
-    /// `accesskit_windows_queued_events_raise` releases the handle. A caller
-    /// that wants to keep the queue must therefore not call this.
-    ///
-    /// **The window may receive a `WM_GETOBJECT` message during this walk**, so
-    /// no lock the caller holds over the adapter may be held here. That is why
-    /// the adapter releases its own state before it calls this.
-    ///
-    /// A refusal is counted, not thrown: the walk continues so that one refusal
-    /// does not swallow the events behind it, and the report says what
-    /// happened.
-    pub fn raise(self: QueuedEvents, platform: Platform) RaiseReport {
-        const gpa = self.gpa;
+    /// Delivers each event once, then attempts cleanup. Refusals never stop later events.
+    /// Release tree guards first: UIA can synchronously reenter WM_GETOBJECT.
+    /// After failed cleanup, this method retries cleanup only. The queue must stay owned.
+    pub fn raise(self: *QueuedEvents, platform: Platform) RaiseReport {
         var report: RaiseReport = .{};
-        for (self.events.items) |event| {
-            const status: RaiseStatus = switch (event) {
-                .simple => |simple| platform.raise_event(simple.slot, simple.event_id),
-                .property_changed => |change| platform.raise_property_changed(
-                    change.slot,
-                    change.property_id,
-                    change.old,
-                    change.new,
-                ),
-            };
-            switch (status) {
-                .raised => report.raised += 1,
-                .refused => report.refused += 1,
-                .unavailable => report.unavailable += 1,
+        if (!self.delivery_complete) {
+            self.delivery_complete = true;
+            for (self.events.items) |*event| {
+                const status: RaiseStatus = switch (event.*) {
+                    .simple => |*simple| platform.raise_event(simple.slot, simple.event_id),
+                    .property_changed => |*change| platform.raise_property_changed(
+                        change.slot, change.property_id, change.old.raw, change.new.raw,
+                    ),
+                };
+                switch (status) {
+                    .raised => report.raised += 1,
+                    .refused => report.refused += 1,
+                    .unavailable => report.unavailable += 1,
+                }
             }
         }
-        var owned = self;
-        for (owned.owned_slots.items) |slot| {
-            platform.destroy_provider(gpa, detached_id, slot);
-            gpa.destroy(slot);
-        }
-        owned.owned_slots.deinit(gpa);
-        owned.events.deinit(gpa);
+        report.cleanup = self.deinit(platform);
         return report;
+    }
+
+    fn requireOpen(self: *const QueuedEvents) QueueError!void {
+        if (self.delivery_complete) return error.InvalidOperation;
+    }
+
+    fn reserveEvent(self: *QueuedEvents) QueueError!void {
+        try self.requireOpen();
+        if (self.events.items.len >= event_count_max) return error.ProviderLimitExceeded;
+        try self.events.ensureUnusedCapacity(self.gpa, 1);
     }
 };
 
@@ -263,227 +240,557 @@ pub const QueuedEvents = struct {
 
 const testing = std.testing;
 
-/// A stand-in for a provider slot.
-///
-/// The address is rounded down to the slot's alignment, because a Debug build
-/// traps on an unaligned pointer even when nothing dereferences it. No test
-/// reads through it.
-fn slotFor(identifier: usize) *const ProviderSlot {
-    return @ptrFromInt(identifier & ~@as(usize, @alignOf(ProviderSlot) - 1));
+fn expectCleanup(report: CleanupReport) void {
+    if (report.first_error) |err| @panic(@errorName(err));
+    std.debug.assert(report.error_count == 0);
+}
+
+fn testSlot(queue: *QueuedEvents) QueueError!*ProviderSlot {
+    const slot = try queue.gpa.create(ProviderSlot);
+    errdefer queue.gpa.destroy(slot);
+    slot.* = .{ .interface = null };
+    try queue.takeOwnership(slot);
+    return slot;
 }
 
 test "a new queue carries nothing and a report accounts for nothing" {
-    var queue = QueuedEvents.init(testing.allocator);
-    defer queue.deinit(syscalls.unavailablePlatform());
-
+    var queue = QueuedEvents.init(testing.allocator, testAutomationApi());
+    defer expectCleanup(queue.deinit(syscalls.unavailablePlatform()));
     try testing.expectEqual(@as(usize, 0), queue.len());
-    try testing.expectEqual(@as(?QueuedEvent, null), queue.at(0));
-
+    try testing.expect(queue.at(0) == null);
     const report = queue.raise(syscalls.unavailablePlatform());
     try testing.expectEqual(@as(usize, 0), report.total());
+    try testing.expect(report.cleanup.first_error == null);
 }
 
 test "append and prepend put the events where the two calls say" {
-    var queue = QueuedEvents.init(testing.allocator);
-    defer queue.deinit(syscalls.unavailablePlatform());
-
-    try queue.append(.{ .simple = .{ .slot = slotFor(0x10), .event_id = .window_window_opened } });
-    try queue.prepend(.{ .simple = .{ .slot = slotFor(0x20), .event_id = .text_text_changed } });
-    try queue.append(.{
-        .property_changed = .{
-            .slot = slotFor(0x30),
-            .property_id = .selection_item_is_selected,
-            .old = .{ .bool_ = false },
-            .new = .{ .bool_ = true },
-        },
-    });
-
-    // The text change is first because upstream inserts it at the front, and
-    // the property change is last because it was appended last.
+    var queue = QueuedEvents.init(testing.allocator, testAutomationApi());
+    defer expectCleanup(queue.deinit(syscalls.unavailablePlatform()));
+    const opened = try testSlot(&queue);
+    const text = try testSlot(&queue);
+    const selected = try testSlot(&queue);
+    try queue.append(.{ .simple = .{ .slot = opened, .event_id = .window_window_opened } });
+    try queue.prepend(.{ .simple = .{ .slot = text, .event_id = .text_text_changed } });
+    try queue.appendBoolProperty(selected, .selection_item_is_selected,
+        .{ .old = false, .new = true });
     try testing.expectEqual(@as(usize, 3), queue.len());
-    try testing.expectEqual(syscalls.EventId.text_text_changed, queue.at(0).?.simple.event_id);
-    try testing.expectEqual(syscalls.EventId.window_window_opened, queue.at(1).?.simple.event_id);
-    try testing.expectEqual(
-        syscalls.PropertyId.selection_item_is_selected,
-        queue.at(2).?.property_changed.property_id,
-    );
-    try testing.expectEqual(@as(?QueuedEvent, null), queue.at(3));
+    try testing.expectEqual(EventId.text_text_changed, queue.at(0).?.simple.event_id);
+    try testing.expectEqual(EventId.window_window_opened, queue.at(1).?.simple.event_id);
+    try testing.expectEqual(PropertyId.selection_item_is_selected,
+        queue.at(2).?.property_changed.property_id);
+    try testing.expect(queue.at(3) == null);
 }
 
 test "the queue hands each event the slot it was given" {
-    var queue = QueuedEvents.init(testing.allocator);
-    defer queue.deinit(syscalls.unavailablePlatform());
-
-    try queue.append(.{
-        .simple = .{ .slot = slotFor(0x1111), .event_id = .automation_focus_changed },
-    });
-    try queue.append(.{
-        .simple = .{ .slot = slotFor(0x2222), .event_id = .automation_focus_changed },
-    });
-
-    // Two events for two nodes must name two providers, or a focus change on
-    // one node is raised on the other.
-    try testing.expectEqual(@as(usize, 0x1110), @intFromPtr(queue.at(0).?.simple.slot));
-    try testing.expectEqual(@as(usize, 0x2220), @intFromPtr(queue.at(1).?.simple.slot));
+    var queue = QueuedEvents.init(testing.allocator, testAutomationApi());
+    defer expectCleanup(queue.deinit(syscalls.unavailablePlatform()));
+    const first = try testSlot(&queue);
+    const second = try testSlot(&queue);
+    try queue.append(.{ .simple = .{ .slot = first, .event_id = .automation_focus_changed } });
+    try queue.append(.{ .simple = .{ .slot = second, .event_id = .automation_focus_changed } });
+    try testing.expect(first != second);
+    try testing.expect(queue.at(0).?.simple.slot == first);
+    try testing.expect(queue.at(1).?.simple.slot == second);
 }
 
 test "raise counts every refusal and reaches every event" {
-    var queue = QueuedEvents.init(testing.allocator);
+    var queue = QueuedEvents.init(testing.allocator, testAutomationApi());
+    defer expectCleanup(queue.deinit(syscalls.unavailablePlatform()));
+    const slot = try testSlot(&queue);
     const event_count = 3;
-    var index: usize = 0;
-    while (index < event_count) : (index += 1) {
-        try queue.append(.{
-            .simple = .{ .slot = slotFor(0x100 + index), .event_id = .automation_focus_changed },
-        });
+    for (0..event_count) |_| {
+        try queue.append(.{ .simple = .{ .slot = slot, .event_id = .automation_focus_changed } });
     }
-
-    // `testing.allocator` traps on a leak, so this also checks that `raise`
-    // released the array it walked.
     const report = queue.raise(syscalls.unavailablePlatform());
     try testing.expectEqual(@as(usize, 0), report.raised);
     try testing.expectEqual(@as(usize, 0), report.refused);
-    try testing.expectEqual(event_count, report.unavailable);
-    try testing.expectEqual(event_count, report.total());
+    try testing.expectEqual(@as(usize, event_count), report.unavailable);
+    try testing.expectEqual(@as(usize, event_count), report.total());
+    try testing.expectEqual(@as(usize, 0), queue.len());
+}
+
+fn platformAnswering(comptime status: RaiseStatus) Platform {
+    const Callbacks = struct {
+        fn simple(_: *const ProviderSlot, _: EventId) RaiseStatus {
+            return status;
+        }
+        fn property(_: *const ProviderSlot, _: PropertyId, _: @import("bindings.zig").Variant,
+            _: @import("bindings.zig").Variant) RaiseStatus
+        {
+            return status;
+        }
+    };
+    var platform = syscalls.unavailablePlatform();
+    platform.raise_event = Callbacks.simple;
+    platform.raise_property_changed = Callbacks.property;
+    return platform;
 }
 
 test "raise reports a raised event as raised and a refused one as refused" {
-    // The three statuses have to stay distinguishable, because the adapter
-    // prints the report and an application reads it to decide whether to
-    // re-send. The sweep is `inline`, so each case is its own type and the
-    // seam is built at compile time for it.
-    const cases = [_]struct { status: RaiseStatus, name: []const u8 }{
-        .{ .status = .raised, .name = "raised" },
-        .{ .status = .refused, .name = "refused" },
-        .{ .status = .unavailable, .name = "unavailable" },
-    };
-    // The bound is the length of the table, which `RaiseStatus.count` is.
-    try testing.expectEqual(cases.len, RaiseStatus.count);
-    inline for (cases) |entry| {
-        var queue = QueuedEvents.init(testing.allocator);
-        try queue.append(.{
-            .simple = .{ .slot = slotFor(0x10), .event_id = .automation_focus_changed },
-        });
-
-        const report = queue.raise(platformAnswering(entry.status));
+    inline for (.{ RaiseStatus.raised, RaiseStatus.refused, RaiseStatus.unavailable }) |status| {
+        var queue = QueuedEvents.init(testing.allocator, testAutomationApi());
+        defer expectCleanup(queue.deinit(syscalls.unavailablePlatform()));
+        const slot = try testSlot(&queue);
+        try queue.append(.{ .simple = .{ .slot = slot, .event_id = .automation_focus_changed } });
+        const report = queue.raise(platformAnswering(status));
         try testing.expectEqual(@as(usize, 1), report.total());
-        var raised: usize = 0;
-        var refused: usize = 0;
-        var unavailable: usize = 0;
-        switch (entry.status) {
-            .raised => raised = 1,
-            .refused => refused = 1,
-            .unavailable => unavailable = 1,
-        }
-        try testing.expectEqual(raised, report.raised);
-        try testing.expectEqual(refused, report.refused);
-        try testing.expectEqual(unavailable, report.unavailable);
-        try testing.expectEqualStrings(entry.name, @tagName(entry.status));
+        try testing.expectEqual(@as(usize, if (status == .raised) 1 else 0), report.raised);
+        try testing.expectEqual(@as(usize, if (status == .refused) 1 else 0), report.refused);
+        try testing.expectEqual(@as(usize, if (status == .unavailable) 1 else 0),
+            report.unavailable);
     }
-}
-
-/// A raise slot that answers `status` every time it is called.
-///
-/// `status` is a comptime parameter because a struct declared inside a
-/// function body is a namespace and cannot close over a run-time value. Naming
-/// the answer at the type level is what makes the three cases three values.
-fn answeringRaise(comptime status: RaiseStatus) RaiseSlot {
-    return struct {
-        fn call(slot: *const ProviderSlot, event_id: EventId) RaiseStatus {
-            _ = slot;
-            _ = event_id;
-            return status;
-        }
-    }.call;
-}
-
-/// The property-change half of `answeringRaise`, for the same reason.
-fn answeringRaiseProperty(comptime status: RaiseStatus) RaisePropertySlot {
-    return struct {
-        fn call(
-            slot: *const ProviderSlot,
-            property_id: PropertyId,
-            old: PropertyValue,
-            new: PropertyValue,
-        ) RaiseStatus {
-            _ = slot;
-            _ = property_id;
-            _ = old;
-            _ = new;
-            return status;
-        }
-    }.call;
-}
-
-/// A seam whose two raise slots answer `status` every time.
-fn platformAnswering(comptime status: RaiseStatus) Platform {
-    const refusal = syscalls.unavailablePlatform();
-    return .{
-        .present = true,
-        .init_uia = refusal.init_uia,
-        .create_provider = refusal.create_provider,
-        .destroy_provider = refusal.destroy_provider,
-        .return_raw_element_provider = refusal.return_raw_element_provider,
-        .raise_event = answeringRaise(status),
-        .raise_property_changed = answeringRaiseProperty(status),
-    };
 }
 
 test "the two event arms reach the two platform slots" {
-    // A walk that sent both arms to one slot would raise a property change as
-    // a plain event, and the two calls take different arguments.
-    var plain = QueuedEvents.init(testing.allocator);
-    try plain.append(.{
-        .simple = .{ .slot = slotFor(0x10), .event_id = .automation_focus_changed },
-    });
-    const plain_report = plain.raise(platformAnswering(.raised));
-    try testing.expectEqual(@as(usize, 1), plain_report.raised);
-
-    var changed = QueuedEvents.init(testing.allocator);
-    try changed.append(.{
-        .property_changed = .{
-            .slot = slotFor(0x10),
-            .property_id = .selection_item_is_selected,
-            .old = .{ .bool_ = true },
-            .new = .{ .bool_ = false },
-        },
-    });
-    const changed_report = changed.raise(platformAnswering(.raised));
-    try testing.expectEqual(@as(usize, 1), changed_report.raised);
+    const State = struct {
+        simple_calls: usize = 0,
+        property_calls: usize = 0,
+        fn simple(slot: *const ProviderSlot, event: EventId) RaiseStatus {
+            const state: *@This() = @ptrCast(@alignCast(slot.interface.?));
+            std.debug.assert(event == .automation_focus_changed);
+            state.simple_calls += 1;
+            return .raised;
+        }
+        fn property(slot: *const ProviderSlot, id: PropertyId, old: @import("bindings.zig").Variant,
+            new: @import("bindings.zig").Variant) RaiseStatus
+        {
+            const state: *@This() = @ptrCast(@alignCast(slot.interface.?));
+            std.debug.assert(id == .selection_item_is_selected);
+            std.debug.assert(old.Anonymous.Anonymous.Anonymous.boolVal == -1);
+            std.debug.assert(new.Anonymous.Anonymous.Anonymous.boolVal == 0);
+            state.property_calls += 1;
+            return .raised;
+        }
+    };
+    var state: State = .{};
+    var platform = syscalls.unavailablePlatform();
+    platform.raise_event = State.simple;
+    platform.raise_property_changed = State.property;
+    var queue = QueuedEvents.init(testing.allocator, testAutomationApi());
+    defer expectCleanup(queue.deinit(platform));
+    const slot = try testSlot(&queue);
+    slot.interface = &state;
+    try queue.append(.{ .simple = .{ .slot = slot, .event_id = .automation_focus_changed } });
+    try queue.appendBoolProperty(slot, .selection_item_is_selected, .{ .old = true, .new = false });
+    const report = queue.raise(platform);
+    try testing.expectEqual(@as(usize, 2), report.raised);
+    try testing.expectEqual(@as(usize, 1), state.simple_calls);
+    try testing.expectEqual(@as(usize, 1), state.property_calls);
 }
 
 test "deinit releases the array and a second release reaches an empty one" {
-    var queue = QueuedEvents.init(testing.allocator);
-    try queue.append(.{
-        .simple = .{ .slot = slotFor(0x10), .event_id = .automation_focus_changed },
-    });
-    try testing.expectEqual(@as(usize, 1), queue.len());
-
-    queue.deinit(syscalls.unavailablePlatform());
+    var queue = QueuedEvents.init(testing.allocator, testAutomationApi());
+    const slot = try testSlot(&queue);
+    try queue.append(.{ .simple = .{ .slot = slot, .event_id = .automation_focus_changed } });
+    expectCleanup(queue.deinit(syscalls.unavailablePlatform()));
     try testing.expectEqual(@as(usize, 0), queue.len());
-    queue.deinit(syscalls.unavailablePlatform());
+    expectCleanup(queue.deinit(syscalls.unavailablePlatform()));
     try testing.expectEqual(@as(usize, 0), queue.len());
 }
 
-test "every allocation failure while growing the queue leaves it unchanged" {
-    // Fail-N from the first allocation up to the one that succeeds, so every
-    // `error.OutOfMemory` path in `append` and `prepend` runs at least once.
-    const failing_allocations = 2;
-    var fail_index: usize = 0;
-    while (fail_index < failing_allocations) : (fail_index += 1) {
-        var failing: std.testing.FailingAllocator = .init(testing.allocator, .{
-            .fail_index = fail_index,
-        });
-        var queue = QueuedEvents.init(failing.allocator());
-        defer queue.deinit(syscalls.unavailablePlatform());
+test "property ownership survives cancellation failures without clearing successful values twice" {
+    const values = @import("util.zig");
+    var clear_state = TestClearState{ .fail_value = 7 };
+    var api = testingAutomationApi();
+    api.context = &clear_state;
+    const slot = try testing.allocator.create(ProviderSlot);
+    slot.* = .{ .interface = null };
+    var queue = QueuedEvents.init(testing.allocator, &api);
+    try queue.takeOwnership(slot);
+    var old = values.VariantOwner.fromI32(&api, 7);
+    var new = values.VariantOwner.fromI32(&api, 9);
+    try queue.appendProperty(slot, .selection_item_is_selected, &old, &new);
+    try testing.expect(old.isEmpty());
+    try testing.expect(new.isEmpty());
+    const first = queue.deinit(syscalls.unavailablePlatform());
+    try testing.expectEqual(error.ArrayLocked, first.first_error.?);
+    try testing.expectEqual(@as(usize, 1), first.error_count);
+    try testing.expectEqual(@as(usize, 1), clear_state.cleared);
+    clear_state.fail_value = null;
+    const second = queue.deinit(syscalls.unavailablePlatform());
+    try testing.expect(second.first_error == null);
+    try testing.expectEqual(@as(usize, 2), clear_state.cleared);
+    try testing.expectEqual(@as(usize, 0), queue.len());
+    const third = queue.deinit(syscalls.unavailablePlatform());
+    try testing.expect(third.first_error == null);
+    try testing.expectEqual(@as(usize, 2), clear_state.cleared);
+}
 
-        const appended = queue.append(.{
-            .simple = .{ .slot = slotFor(0x10), .event_id = .automation_focus_changed },
-        });
-        if (appended) |_| {
-            try testing.expectEqual(@as(usize, 1), queue.len());
-        } else |err| {
-            try testing.expectEqual(error.OutOfMemory, err);
-            try testing.expectEqual(@as(usize, 0), queue.len());
+test "property enqueue allocation failure keeps both values with the caller" {
+    const values = @import("util.zig");
+    var clear_state: TestClearState = .{};
+    var api = testingAutomationApi();
+    api.context = &clear_state;
+    const slot = try testing.allocator.create(ProviderSlot);
+    defer testing.allocator.destroy(slot);
+    slot.* = .{ .interface = null };
+    var failing: std.testing.FailingAllocator = .init(testing.allocator, .{ .fail_index = 0 });
+    var queue = QueuedEvents.init(failing.allocator(), &api);
+    var old = values.VariantOwner.fromI32(&api, 7);
+    var new = values.VariantOwner.fromI32(&api, 9);
+    try testing.expectError(error.OutOfMemory,
+        queue.appendProperty(slot, .selection_item_is_selected, &old, &new));
+    try testing.expect(!old.isEmpty());
+    try testing.expect(!new.isEmpty());
+    try testing.expectEqual(@as(usize, 0), queue.len());
+    try testing.expectEqual(@as(usize, 0), clear_state.cleared);
+    try old.deinit();
+    try new.deinit();
+    const cleanup = queue.deinit(syscalls.unavailablePlatform());
+    try testing.expect(cleanup.first_error == null);
+}
+
+const TestClearState = struct {
+    fail_value: ?i32 = null,
+    other_fail_value: ?i32 = null,
+    cleared: usize = 0,
+
+    fn clear(raw_context: ?*anyopaque, value: *@import("bindings.zig").Variant)
+        @import("bindings.zig").Hresult
+    {
+        if (raw_context) |raw| {
+            const state: *TestClearState = @ptrCast(@alignCast(raw));
+            if (@intFromEnum(value.Anonymous.Anonymous.vt) == 3) {
+                if (state.fail_value) |fail_value| {
+                    if (value.Anonymous.Anonymous.Anonymous.lVal == fail_value)
+                        return @bitCast(@as(u32, 0x8002000d));
+                }
+                if (state.other_fail_value) |fail_value| {
+                    if (value.Anonymous.Anonymous.Anonymous.lVal == fail_value)
+                        return @bitCast(@as(u32, 0x80020008));
+                }
+            }
+            state.cleared += 1;
         }
+        value.* = std.mem.zeroes(@import("bindings.zig").Variant);
+        return @bitCast(@as(u32, 0));
     }
+};
+
+/// Scalar-only injected authority for the queue and handler tests.
+/// Other callbacks panic so tests cannot silently use a missing native operation.
+pub fn testingAutomationApi() @import("util.zig").AutomationApi {
+    if (!@import("builtin").is_test) @compileError("Test-only automation authority");
+    const abi = @import("bindings.zig");
+    const Unsupported = struct {
+        fn alloc(_: ?*anyopaque, _: ?[*]const u16, _: u32) ?abi.Bstr {
+            @panic("Unexpected string allocation");
+        }
+        fn stringLen(_: ?*anyopaque, _: abi.Bstr) u32 {
+            @panic("Unexpected string length");
+        }
+        fn freeString(_: ?*anyopaque, _: abi.Bstr) void {
+            @panic("Unexpected string cleanup");
+        }
+        fn arrayCreate(_: ?*anyopaque, _: u16, _: i32, _: u32) ?*abi.SafeArray {
+            @panic("Unexpected array allocation");
+        }
+        fn arrayPut(_: ?*anyopaque, _: *abi.SafeArray, _: *const i32,
+            _: *const anyopaque) abi.Hresult
+        {
+            @panic("Unexpected array insertion");
+        }
+        fn arrayDestroy(_: ?*anyopaque, _: *abi.SafeArray) abi.Hresult {
+            @panic("Unexpected array cleanup");
+        }
+        fn reserved(_: ?*anyopaque, _: *?*abi.IUnknown) abi.Hresult {
+            @panic("Unexpected reserved value");
+        }
+        fn locale(_: ?*anyopaque, _: [*:0]const u16, _: u32) u32 {
+            @panic("Unexpected locale conversion");
+        }
+        fn screen(_: ?*anyopaque, _: abi.Hwnd, _: *abi.Point) abi.Bool {
+            @panic("Unexpected window conversion");
+        }
+        fn window(_: ?*anyopaque, _: abi.Hwnd, _: u32, _: abi.Wparam,
+            _: abi.Lparam) abi.Lresult
+        {
+            @panic("Unexpected window query");
+        }
+        fn hostProvider(_: ?*anyopaque, _: abi.Hwnd,
+            _: *?*abi.IRawElementProviderSimple) abi.Hresult
+        {
+            @panic("Unexpected host provider query");
+        }
+    };
+    return .{
+        .alloc_string_len = Unsupported.alloc,
+        .string_len = Unsupported.stringLen,
+        .free_string = Unsupported.freeString,
+        .variant_clear = TestClearState.clear,
+        .array_create_vector = Unsupported.arrayCreate,
+        .array_put_element = Unsupported.arrayPut,
+        .array_destroy = Unsupported.arrayDestroy,
+        .reserved_mixed_value = Unsupported.reserved,
+        .reserved_not_supported_value = Unsupported.reserved,
+        .locale_name_to_lcid = Unsupported.locale,
+        .client_to_screen = Unsupported.screen,
+        .def_window_proc = Unsupported.window,
+        .host_provider_from_hwnd = Unsupported.hostProvider,
+    };
+}
+
+const test_automation_api = testingAutomationApi();
+
+/// Borrowed authority for scalar-only injected tests, never the native provider.
+pub fn testAutomationApi() *const @import("util.zig").AutomationApi {
+    if (!@import("builtin").is_test) @compileError("Test-only automation authority");
+    return &test_automation_api;
+}
+
+test "a refused property raise retains failed cleanup without delivering twice" {
+    const values = @import("util.zig");
+    const abi = @import("bindings.zig");
+    var delivered: usize = 0;
+    const Counting = struct {
+        fn raise(slot: *const ProviderSlot, property: PropertyId, old: abi.Variant,
+            new: abi.Variant) RaiseStatus
+        {
+            std.debug.assert(property == .selection_item_is_selected);
+            std.debug.assert(old.Anonymous.Anonymous.Anonymous.lVal == 7);
+            std.debug.assert(new.Anonymous.Anonymous.Anonymous.lVal == 9);
+            const count: *usize = @ptrCast(@alignCast(slot.interface.?));
+            count.* += 1;
+            return .refused;
+        }
+    };
+    var platform = syscalls.unavailablePlatform();
+    platform.raise_property_changed = Counting.raise;
+    var clear_state = TestClearState{ .fail_value = 7 };
+    var api = testingAutomationApi();
+    api.context = &clear_state;
+    const slot = try testing.allocator.create(ProviderSlot);
+    slot.* = .{ .interface = &delivered };
+    var queue = QueuedEvents.init(testing.allocator, &api);
+    try queue.takeOwnership(slot);
+    var old = values.VariantOwner.fromI32(&api, 7);
+    var new = values.VariantOwner.fromI32(&api, 9);
+    try queue.appendProperty(slot, .selection_item_is_selected, &old, &new);
+    const first = queue.raise(platform);
+    try testing.expectEqual(@as(usize, 1), first.refused);
+    try testing.expectEqual(error.ArrayLocked, first.cleanup.first_error.?);
+    try testing.expectEqual(@as(usize, 1), clear_state.cleared);
+    try testing.expectEqual(@as(usize, 1), delivered);
+    clear_state.fail_value = null;
+    const second = queue.raise(platform);
+    try testing.expectEqual(@as(usize, 0), second.total());
+    try testing.expect(second.cleanup.first_error == null);
+    try testing.expectEqual(@as(usize, 2), clear_state.cleared);
+    try testing.expectEqual(@as(usize, 0), queue.len());
+    try testing.expectEqual(@as(usize, 1), delivered);
+}
+
+test "queued provider survives removal and final cancellation releases once" {
+    var destroyed: usize = 0;
+    const Counting = struct {
+        fn destroy(gpa: std.mem.Allocator, node_id: consumer_node_id,
+            slot: *ProviderSlot) void
+        {
+            _ = gpa;
+            _ = node_id;
+            const counter: *usize = @ptrCast(@alignCast(slot.interface.?));
+            counter.* += 1;
+            slot.interface = null;
+        }
+    };
+    var platform = syscalls.unavailablePlatform();
+    platform.destroy_provider = Counting.destroy;
+    const slot = try testing.allocator.create(ProviderSlot);
+    slot.* = .{ .interface = &destroyed };
+    var queue = QueuedEvents.init(testing.allocator, testAutomationApi());
+    try queue.append(.{ .simple = .{
+        .slot = slot, .event_id = .automation_focus_changed,
+    } });
+    @import("elements.zig").Registry.releaseSlot(platform, testing.allocator, slot);
+    try testing.expectEqual(@as(usize, 0), destroyed);
+    try testing.expectEqual(@as(usize, 1), slot.ref_count.load(.monotonic));
+    const cleanup = queue.deinit(platform);
+    try testing.expect(cleanup.first_error == null);
+    try testing.expectEqual(@as(usize, 1), destroyed);
+    const again = queue.deinit(platform);
+    try testing.expect(again.first_error == null);
+    try testing.expectEqual(@as(usize, 1), destroyed);
+}
+
+test "append and prepend allocation failures do not retain the provider" {
+    const slot = try testing.allocator.create(ProviderSlot);
+    defer testing.allocator.destroy(slot);
+    slot.* = .{ .interface = null };
+    inline for (.{ false, true }) |prepend_event| {
+        var failing: std.testing.FailingAllocator = .init(testing.allocator,
+            .{ .fail_index = 0 });
+        var queue = QueuedEvents.init(failing.allocator(), testAutomationApi());
+        const event: QueuedEvent = .{ .simple = .{
+            .slot = slot, .event_id = .automation_focus_changed,
+        } };
+        const result = if (prepend_event) queue.prepend(event) else queue.append(event);
+        try testing.expectError(error.OutOfMemory, result);
+        try testing.expectEqual(@as(usize, 0), queue.len());
+        try testing.expectEqual(@as(u32, 1), slot.ref_count.load(.monotonic));
+        const cleanup = queue.deinit(syscalls.unavailablePlatform());
+        try testing.expect(cleanup.first_error == null);
+    }
+}
+
+test "in place property construction keeps its first value owned on later failure" {
+    const Construction = struct {
+        fn fill(queue: *QueuedEvents, slot: *const ProviderSlot)
+            (QueueError || @import("util.zig").AutomationError)!void
+        {
+            const property = try queue.beginProperty(slot, .selection_item_is_selected);
+            property.old = @import("util.zig").VariantOwner.fromI32(queue.automation, 7);
+            property.new = try @import("util.zig").VariantOwner.fromUtf8(
+                queue.automation, "\xff",
+            );
+        }
+    };
+    var clear_state = TestClearState{ .fail_value = 7 };
+    var api = testingAutomationApi();
+    api.context = &clear_state;
+    const slot = try testing.allocator.create(ProviderSlot);
+    slot.* = .{ .interface = null };
+    var queue = QueuedEvents.init(testing.allocator, &api);
+    try queue.takeOwnership(slot);
+    try testing.expectError(error.InvalidUtf8, Construction.fill(&queue, slot));
+    try testing.expect(!queue.at(0).?.property_changed.old.isEmpty());
+    const first = queue.deinit(syscalls.unavailablePlatform());
+    try testing.expectEqual(error.ArrayLocked, first.first_error.?);
+    try testing.expectEqual(@as(usize, 0), clear_state.cleared);
+    clear_state.fail_value = null;
+    const second = queue.deinit(syscalls.unavailablePlatform());
+    try testing.expect(second.first_error == null);
+    try testing.expectEqual(@as(usize, 1), clear_state.cleared);
+}
+
+test "cancellation reports both cleanup failures and retains both owners" {
+    const values = @import("util.zig");
+    var clear_state = TestClearState{ .fail_value = 7 };
+    var api = testingAutomationApi();
+    api.context = &clear_state;
+    const slot = try testing.allocator.create(ProviderSlot);
+    slot.* = .{ .interface = null };
+    var queue = QueuedEvents.init(testing.allocator, &api);
+    try queue.takeOwnership(slot);
+    var old = values.VariantOwner.fromI32(&api, 7);
+    var new = values.VariantOwner.fromI32(&api, 7);
+    try queue.appendProperty(slot, .selection_item_is_selected, &old, &new);
+    const first = queue.deinit(syscalls.unavailablePlatform());
+    try testing.expectEqual(error.ArrayLocked, first.first_error.?);
+    try testing.expectEqual(@as(usize, 2), first.error_count);
+    try testing.expectEqual(@as(usize, 0), clear_state.cleared);
+    try testing.expect(!queue.at(0).?.property_changed.old.isEmpty());
+    try testing.expect(!queue.at(0).?.property_changed.new.isEmpty());
+    clear_state.fail_value = null;
+    const second = queue.deinit(syscalls.unavailablePlatform());
+    try testing.expect(second.first_error == null);
+    try testing.expectEqual(@as(usize, 2), clear_state.cleared);
+    try testing.expectEqual(@as(usize, 0), queue.len());
+}
+
+test "failed cancellation followed by raise never delivers partly cleared values" {
+    const values = @import("util.zig");
+    const abi = @import("bindings.zig");
+    var delivered: usize = 0;
+    const Counting = struct {
+        fn raise(slot: *const ProviderSlot, _: PropertyId, _: abi.Variant,
+            _: abi.Variant) RaiseStatus
+        {
+            const count: *usize = @ptrCast(@alignCast(slot.interface.?));
+            count.* += 1;
+            return .raised;
+        }
+    };
+    var platform = syscalls.unavailablePlatform();
+    platform.raise_property_changed = Counting.raise;
+    var clear_state = TestClearState{ .fail_value = 7 };
+    var api = testingAutomationApi();
+    api.context = &clear_state;
+    const slot = try testing.allocator.create(ProviderSlot);
+    slot.* = .{ .interface = &delivered };
+    var queue = QueuedEvents.init(testing.allocator, &api);
+    try queue.takeOwnership(slot);
+    var old = values.VariantOwner.fromI32(&api, 7);
+    var new = values.VariantOwner.fromI32(&api, 9);
+    try queue.appendProperty(slot, .selection_item_is_selected, &old, &new);
+    const first = queue.deinit(platform);
+    try testing.expectEqual(error.ArrayLocked, first.first_error.?);
+    clear_state.fail_value = null;
+    const retry = queue.raise(platform);
+    try testing.expect(retry.cleanup.first_error == null);
+    try testing.expectEqual(@as(usize, 0), retry.total());
+    try testing.expectEqual(@as(usize, 0), delivered);
+    try testing.expectEqual(@as(usize, 2), clear_state.cleared);
+}
+
+test "whole queue providers stay alive through heterogeneous cleanup failures" {
+    const values = @import("util.zig");
+    var destroyed: usize = 0;
+    const Counting = struct {
+        fn destroy(_: std.mem.Allocator, _: consumer_node_id, slot: *ProviderSlot) void {
+            const count: *usize = @ptrCast(@alignCast(slot.interface.?));
+            count.* += 1;
+            slot.interface = null;
+        }
+    };
+    var platform = syscalls.unavailablePlatform();
+    platform.destroy_provider = Counting.destroy;
+    var clear_state = TestClearState{ .fail_value = 7, .other_fail_value = 8 };
+    var api = testingAutomationApi();
+    api.context = &clear_state;
+    var queue = QueuedEvents.init(testing.allocator, &api);
+    var slots: [2]*ProviderSlot = undefined;
+    for (&slots, 0..) |*held, index| {
+        const slot = try testing.allocator.create(ProviderSlot);
+        slot.* = .{ .interface = &destroyed };
+        held.* = slot;
+        try queue.takeOwnership(slot);
+        var old = values.VariantOwner.fromI32(&api, @intCast(7 + index));
+        var new = values.VariantOwner.fromI32(&api, @intCast(9 + index));
+        try queue.appendProperty(slot, .selection_item_is_selected, &old, &new);
+    }
+    const first = queue.deinit(platform);
+    try testing.expectEqual(error.ArrayLocked, first.first_error.?);
+    try testing.expectEqual(@as(usize, 2), first.error_count);
+    try testing.expectEqual(@as(usize, 2), clear_state.cleared);
+    try testing.expectEqual(@as(usize, 2), queue.len());
+    try testing.expectEqual(@as(usize, 0), destroyed);
+    for (slots) |slot| try testing.expectEqual(@as(u32, 2), slot.ref_count.load(.monotonic));
+    clear_state.fail_value = null;
+    clear_state.other_fail_value = null;
+    const retry = queue.deinit(platform);
+    try testing.expect(retry.first_error == null);
+    try testing.expectEqual(@as(usize, 4), clear_state.cleared);
+    try testing.expectEqual(@as(usize, 2), destroyed);
+    const again = queue.deinit(platform);
+    try testing.expect(again.first_error == null);
+    try testing.expectEqual(@as(usize, 2), destroyed);
+}
+
+fn queueGrowth(gpa: std.mem.Allocator) !void {
+    const platform = syscalls.unavailablePlatform();
+    const slot = try gpa.create(ProviderSlot);
+    slot.* = .{ .interface = null };
+    defer @import("elements.zig").Registry.releaseSlot(platform, gpa, slot);
+    var queue = QueuedEvents.init(gpa, testAutomationApi());
+    defer {
+        const report = queue.deinit(platform);
+        std.debug.assert(report.first_error == null);
+    }
+    const event_count = 32;
+    for (0..event_count) |index| {
+        const event: QueuedEvent = .{ .simple = .{
+            .slot = slot, .event_id = .automation_focus_changed,
+        } };
+        if (index % 2 == 0) {
+            try queue.append(event);
+        } else {
+            try queue.prepend(event);
+        }
+        try testing.expectEqual(@as(u32, @intCast(queue.len() + 1)),
+            slot.ref_count.load(.monotonic));
+    }
+}
+
+test "every append and prepend growth allocation failure balances provider ownership" {
+    try testing.checkAllAllocationFailures(testing.allocator, queueGrowth, .{});
 }

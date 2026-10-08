@@ -1,53 +1,25 @@
-//! The UI Automation boundary, as a callable seam.
+//! Callable Windows UI Automation, window-procedure, and automation-value boundaries.
 //!
-//! **What this file is.** `docs/42-native-adapter-build-map.md` section 2.1
-//! settles the binding route for this adapter: types come from
-//! `marlersoft/zigwin32` through `bindings.zig`, and the free functions come
-//! from `uiautomationcore.dll`. `bindings.zig` holds the type half. This file
-//! holds the function half, and it holds it as a **seam**: four entry points
-//! and six window-procedure entry points, each behind a function pointer, so
-//! that `adapter.zig` and `subclass.zig` can be written, compiled and tested
-//! without a Windows host.
+//! Native wrappers use the pinned zigwin32 declarations. Injectable function
+//! tables let portable tests exercise event delivery without a Windows host.
+//! Property events borrow raw VARIANT values. Their queue owns cleanup.
+//! Provider construction uses the context factory and propagates its failures.
 //!
-//! **Why a seam and not an `extern` at each call site.** An `extern` declaration
-//! of `UiaRaiseAutomationEvent` is analysable on any host, but the *call* to it
-//! is not, and an adapter whose every event path goes through an unanalysable
-//! call is an adapter with no tested event path. Putting the calls behind a
-//! function pointer moves the unanalysable part to this file, leaves the
-//! protocol — which event, on which node, in which order — in ordinary Zig, and
-//! leaves a test that can drive the whole protocol with a recording platform.
-//!
-//! **What is compiled and tested on this host.** Every value below: the object
-//! identifier arithmetic, the event and property identifiers, the window
-//! message identifiers, `normalizeObjId`, the whole `Platform` and `WindowApi`
-//! protocol, and the refusal behaviour of `unavailablePlatform` and
-//! `unavailableWindowApi`. Those are the parts a Windows host cannot check,
-//! because a Windows host never checks them either.
-//!
-//! **What needs the real platform.** The bodies behind `windowsPlatform` and
-//! `windowsWindowApi`. They sit inside `if (builtin.os.tag == .windows)`, so on
-//! this host the `extern` declarations are comptime-dead and **the compiler
-//! here never checks a single parameter of them**. Their spellings come from
-//! `docs/16-native-platform-apis.md` section W7 and W10, which read the MinGW
-//! headers, and the identifiers come from the pinned `zigwin32` tree at
-//! `win32/ui/accessibility.zig` and `win32/ui/windows_and_messaging.zig`.
-//! **The four `Uia*` declarations are unverified**: no Windows target and no
-//! Windows SDK exists on this host, so nothing has checked them against a
-//! header. They must be checked on a Windows host before the adapter is shipped.
-//!
-//! **Loop bounds.** This file has no loop outside a test. The tests walk the
-//! event and property identifier domains, and each walk is bounded by
-//! `comptime`-derived lengths declared beside the test.
+//! Off Windows, platform calls report unavailable and the native automation
+//! table is absent. Injected tests are not proof of native Windows behavior.
+//! Native linking, COM clients, and resource ownership need Windows verification.
+//! This module adds no production loop.
 
 const std = @import("std");
 const builtin = @import("builtin");
 
 const boundary = @import("../../capi/boundary.zig");
 const consumer = @import("../../consumer/root.zig");
-const schema = @import("../../schema/root.zig");
+const bindings = @import("bindings.zig");
+const context = @import("context.zig");
+const util = @import("util.zig");
 
 const FullNodeId = consumer.tree_index.FullNodeId;
-const PropertyValue = schema.PropertyValue;
 
 /// The window handle the adapter is bound to. One declaration, in
 /// `src/capi/boundary.zig`, which is the leaf both sides import.
@@ -59,11 +31,17 @@ pub const LParam = boundary.LParam;
 /// `LRESULT`, the signed result of a window procedure.
 pub const LResult = isize;
 
-/// The window procedure a subclass installs. One named type, because the
-/// install call, the saved previous procedure and the chain call must all take
-/// the same pointer type or the value is cast by hand at three sites.
-pub const WindowProc =
-    *const fn (hwnd: Hwnd, message: u32, wparam: WParam, lparam: LParam) callconv(.c) LResult;
+/// Windows callbacks use the native convention. Portable injected callbacks
+/// use the host C convention.
+pub const window_proc_callconv: std.builtin.CallingConvention =
+    if (builtin.os.tag == .windows) .winapi else .c;
+/// The callback installed by the subclass and passed to CallWindowProcW.
+pub const WindowProc = *const fn (
+    hwnd: Hwnd,
+    message: u32,
+    wparam: WParam,
+    lparam: LParam,
+) callconv(window_proc_callconv) LResult;
 
 // =============================================================================
 // The identifiers.
@@ -101,6 +79,8 @@ pub const EventId = enum(u32) {
     selection_invalidated = 20013,
     /// `UIA_Text_TextChangedEventId`. `adapter.rs:70`.
     text_text_changed = 20015,
+    /// `UIA_Text_TextSelectionChangedEventId`, raised by the text provider.
+    text_text_selection_changed = 20014,
     /// `UIA_Window_WindowClosedEventId`. `adapter.rs:361`.
     window_window_closed = 20017,
     /// `UIA_Window_WindowOpenedEventId`. `adapter.rs:253`.
@@ -119,8 +99,48 @@ pub const EventId = enum(u32) {
 /// `NodeWrapper::enqueue_property_changes` at `node.rs`, which is the node
 /// layer's file. `zigwin32/win32/ui/accessibility.zig:9459`.
 pub const PropertyId = enum(u32) {
-    /// `UIA_SelectionItemIsSelectedPropertyId`. `adapter.rs:157`.
-    selection_item_is_selected = 30079,
+    aria_properties = @intFromEnum(bindings.uia.UIA_AriaPropertiesPropertyId),
+    aria_role = @intFromEnum(bindings.uia.UIA_AriaRolePropertyId),
+    automation_id = @intFromEnum(bindings.uia.UIA_AutomationIdPropertyId),
+    class_name = @intFromEnum(bindings.uia.UIA_ClassNamePropertyId),
+    control_type = @intFromEnum(bindings.uia.UIA_ControlTypePropertyId),
+    controller_for = @intFromEnum(bindings.uia.UIA_ControllerForPropertyId),
+    culture = @intFromEnum(bindings.uia.UIA_CulturePropertyId),
+    expand_collapse_expand_collapse_state =
+        @intFromEnum(bindings.uia.UIA_ExpandCollapseExpandCollapseStatePropertyId),
+    framework_id = @intFromEnum(bindings.uia.UIA_FrameworkIdPropertyId),
+    full_description = @intFromEnum(bindings.uia.UIA_FullDescriptionPropertyId),
+    has_keyboard_focus = @intFromEnum(bindings.uia.UIA_HasKeyboardFocusPropertyId),
+    help_text = @intFromEnum(bindings.uia.UIA_HelpTextPropertyId),
+    is_content_element = @intFromEnum(bindings.uia.UIA_IsContentElementPropertyId),
+    is_control_element = @intFromEnum(bindings.uia.UIA_IsControlElementPropertyId),
+    is_dialog = @intFromEnum(bindings.uia.UIA_IsDialogPropertyId),
+    is_enabled = @intFromEnum(bindings.uia.UIA_IsEnabledPropertyId),
+    is_keyboard_focusable = @intFromEnum(bindings.uia.UIA_IsKeyboardFocusablePropertyId),
+    is_password = @intFromEnum(bindings.uia.UIA_IsPasswordPropertyId),
+    is_required_for_form = @intFromEnum(bindings.uia.UIA_IsRequiredForFormPropertyId),
+    level = @intFromEnum(bindings.uia.UIA_LevelPropertyId),
+    live_setting = @intFromEnum(bindings.uia.UIA_LiveSettingPropertyId),
+    localized_control_type = @intFromEnum(bindings.uia.UIA_LocalizedControlTypePropertyId),
+    name = @intFromEnum(bindings.uia.UIA_NamePropertyId),
+    native_window_handle = @intFromEnum(bindings.uia.UIA_NativeWindowHandlePropertyId),
+    orientation = @intFromEnum(bindings.uia.UIA_OrientationPropertyId),
+    position_in_set = @intFromEnum(bindings.uia.UIA_PositionInSetPropertyId),
+    provider_description = @intFromEnum(bindings.uia.UIA_ProviderDescriptionPropertyId),
+    range_value_is_read_only = @intFromEnum(bindings.uia.UIA_RangeValueIsReadOnlyPropertyId),
+    range_value_large_change = @intFromEnum(bindings.uia.UIA_RangeValueLargeChangePropertyId),
+    range_value_maximum = @intFromEnum(bindings.uia.UIA_RangeValueMaximumPropertyId),
+    range_value_minimum = @intFromEnum(bindings.uia.UIA_RangeValueMinimumPropertyId),
+    range_value_small_change = @intFromEnum(bindings.uia.UIA_RangeValueSmallChangePropertyId),
+    range_value_value = @intFromEnum(bindings.uia.UIA_RangeValueValuePropertyId),
+    selection_can_select_multiple = @intFromEnum(bindings.uia.UIA_SelectionCanSelectMultiplePropertyId),
+    selection_is_selection_required = @intFromEnum(bindings.uia.UIA_SelectionIsSelectionRequiredPropertyId),
+    selection_item_is_selected = @intFromEnum(bindings.uia.UIA_SelectionItemIsSelectedPropertyId),
+    size_of_set = @intFromEnum(bindings.uia.UIA_SizeOfSetPropertyId),
+    toggle_toggle_state = @intFromEnum(bindings.uia.UIA_ToggleToggleStatePropertyId),
+    value_is_read_only = @intFromEnum(bindings.uia.UIA_ValueIsReadOnlyPropertyId),
+    value_value = @intFromEnum(bindings.uia.UIA_ValueValuePropertyId),
+    window_is_modal = @intFromEnum(bindings.uia.UIA_WindowIsModalPropertyId),
 
     /// The number of members. Every loop over this domain uses it.
     pub const count: usize = @typeInfo(PropertyId).@"enum".fields.len;
@@ -221,18 +241,12 @@ pub const RaiseStatus = enum(u8) {
     pub const count: usize = @typeInfo(RaiseStatus).@"enum".fields.len;
 };
 
-/// One UI Automation provider the adapter owns.
-///
-/// **What the pointer means.** `elements.zig` allocates one slot per node and
-/// keeps it at a stable address for as long as the node is in the tree, because
-/// a queued event holds the slot and must not dangle when the map grows. The
-/// node layer fills `interface` with the `IRawElementProviderSimple` it built
-/// and the platform calls read it. On a target with no node layer `interface`
-/// is `null`, nothing reads it, and the slot is still a stable address, so the
-/// adapter's own protocol is unchanged.
+/// A stable registry slot. Registry and queued events own references to this
+/// slot; the slot owns one COM reference until its final release.
 pub const ProviderSlot = struct {
-    /// The `IRawElementProviderSimple` the node layer built for this node, or
-    /// `null` when no node layer is installed.
+    ref_count: std.atomic.Value(u32) = .init(1),
+    /// Null identifies the unspecified placeholder root.
+    node_id: ?FullNodeId = null,
     interface: ?*anyopaque,
 };
 
@@ -249,8 +263,8 @@ pub const RaiseEventSlot =
 pub const RaisePropertyChangedSlot = *const fn (
     slot: *const ProviderSlot,
     property_id: PropertyId,
-    old: PropertyValue,
-    new: PropertyValue,
+    old: bindings.Variant,
+    new: bindings.Variant,
 ) RaiseStatus;
 
 /// The UI Automation entry points the adapter calls.
@@ -278,14 +292,15 @@ pub const Platform = struct {
     /// UI Automation natively.
     init_uia: *const fn () ?i32,
 
-    /// Fills `slot` with the provider for `node_id`.
-    ///
-    /// The node layer writes `slot.interface`. A refusal leaves it `null`.
+    /// Builds a provider from the borrowed context. The slot must be empty.
+    /// Failure leaves it unchanged. The factory consumes its cloned weak
+    /// reference only on success. slot.node_id selects a node or placeholder root.
     create_provider: *const fn (
         gpa: std.mem.Allocator,
+        weak: context.WeakContext,
         node_id: FullNodeId,
         slot: *ProviderSlot,
-    ) void,
+    ) context.ProviderError!void,
 
     /// Releases what `create_provider` wrote into `slot`.
     destroy_provider: *const fn (
@@ -310,11 +325,8 @@ pub const Platform = struct {
     /// Raises `event_id` on the provider in `slot`.
     raise_event: RaiseEventSlot,
 
-    /// Raises a change of `property_id` on the provider in `slot`.
-    ///
-    /// `old` and `new` are platform-neutral property values. Converting them
-    /// to the `VARIANT` UI Automation takes is the platform call's own work,
-    /// and it happens on the Windows side of this seam.
+    /// Raises a property change. Both raw VARIANTs are borrowed for this call;
+    /// the queue retains ownership and clears them after delivery or cancellation.
     raise_property_changed: RaisePropertyChangedSlot,
 };
 
@@ -344,36 +356,25 @@ pub fn unavailablePlatform() Platform {
 /// is every target except Windows. A caller asks `platformForCurrentTarget`
 /// rather than calling this and testing the answer.
 pub fn windowsPlatform() ?Platform {
-    const entry = uia_entry_points orelse return null;
+    if (builtin.os.tag != .windows) return null;
+    return platformWithEntryPoints(.{
+        .lookup_id = &bindings.win32.uiautomationcore.UiaLookupId,
+        .return_raw_element_provider = &bindings.win32.uiautomationcore.UiaReturnRawElementProvider,
+        .raise_event = &bindings.win32.uiautomationcore.UiaRaiseAutomationEvent,
+        .raise_property_changed = &bindings.win32.uiautomationcore.UiaRaiseAutomationPropertyChangedEvent,
+    });
+}
+
+fn platformWithEntryPoints(comptime entry: UiaEntryPoints) Platform {
     return .{
         .present = true,
         .init_uia = struct {
             fn call() ?i32 {
-                // The control type property identifier. Upstream passes it to
-                // `UiaLookupId` at `adapter.rs:599-602` only because the call
-                // forces UI Automation to load, and the answer is discarded.
-                const control_type_property = [_]u8{
-                    0xca, 0x77, 0x4f, 0xea, 0xac, 0x28, 0xc2, 0x4b,
-                    0x94, 0xca, 0xac, 0xec, 0x6d, 0x6c, 0x10, 0xa3,
-                };
-                const id = entry.lookup_id(0, &control_type_property);
-                return @intCast(id);
+                return entry.lookup_id(.Property, &bindings.uia.ControlType_Property_GUID);
             }
         }.call,
-        .create_provider = struct {
-            fn call(gpa: std.mem.Allocator, node_id: FullNodeId, slot: *ProviderSlot) void {
-                _ = gpa;
-                _ = node_id;
-                slot.interface = null;
-            }
-        }.call,
-        .destroy_provider = struct {
-            fn call(gpa: std.mem.Allocator, node_id: FullNodeId, slot: *ProviderSlot) void {
-                _ = gpa;
-                _ = node_id;
-                slot.interface = null;
-            }
-        }.call,
+        .create_provider = nativeCreateProvider,
+        .destroy_provider = nativeDestroyProvider,
         .return_raw_element_provider = struct {
             fn call(
                 hwnd: Hwnd,
@@ -381,35 +382,60 @@ pub fn windowsPlatform() ?Platform {
                 lparam: LParam,
                 slot: *const ProviderSlot,
             ) LResult {
-                _ = hwnd;
-                _ = wparam;
-                _ = lparam;
-                _ = slot;
-                return 0;
+                return entry.return_raw_element_provider(@ptrCast(hwnd), wparam, lparam, simple(slot));
             }
         }.call,
         .raise_event = struct {
             fn call(slot: *const ProviderSlot, event_id: EventId) RaiseStatus {
-                _ = slot;
-                _ = event_id;
-                return .unavailable;
+                const provider = simple(slot) orelse return .refused;
+                const result = entry.raise_event(provider, @enumFromInt(@intFromEnum(event_id)));
+                return if (!result.failed) .raised else .refused;
             }
         }.call,
         .raise_property_changed = struct {
             fn call(
                 slot: *const ProviderSlot,
                 property_id: PropertyId,
-                old: PropertyValue,
-                new: PropertyValue,
+                old: bindings.Variant,
+                new: bindings.Variant,
             ) RaiseStatus {
-                _ = slot;
-                _ = property_id;
-                _ = old;
-                _ = new;
-                return .unavailable;
+                const provider = simple(slot) orelse return .refused;
+                const result = entry.raise_property_changed(
+                    provider, @enumFromInt(@intFromEnum(property_id)), old, new,
+                );
+                return if (!result.failed) .raised else .refused;
             }
         }.call,
     };
+}
+
+fn simple(slot: *const ProviderSlot) ?*bindings.IRawElementProviderSimple {
+    return @ptrCast(@alignCast(slot.interface));
+}
+
+fn nativeCreateProvider(
+    gpa: std.mem.Allocator,
+    weak: context.WeakContext,
+    node_id: FullNodeId,
+    slot: *ProviderSlot,
+) context.ProviderError!void {
+    _ = gpa;
+    _ = node_id;
+    std.debug.assert(slot.interface == null);
+    slot.interface = try weak.createNode(slot.node_id);
+}
+
+fn nativeDestroyProvider(
+    gpa: std.mem.Allocator,
+    node_id: FullNodeId,
+    slot: *ProviderSlot,
+) void {
+    _ = gpa;
+    _ = node_id;
+    if (simple(slot)) |provider| {
+        slot.interface = null;
+        _ = provider.vtable.base.Release(@ptrCast(provider));
+    }
 }
 
 /// The seam for the target this build runs on.
@@ -488,33 +514,36 @@ pub fn unavailableWindowApi() WindowApi {
 ///
 /// `null` when the target has no Win32, which is every target except Windows.
 pub fn windowsWindowApi() ?WindowApi {
-    const entry = win32_entry_points orelse return null;
+    if (builtin.os.tag != .windows) return null;
     return .{
         .present = true,
         .is_window_visible = struct {
             fn call(hwnd: Hwnd) bool {
-                const answer = entry.is_window_visible(hwnd);
-                return answer != 0;
+                return bindings.win32.user32.IsWindowVisible(@ptrCast(hwnd)) != 0;
             }
         }.call,
         .get_property = struct {
             fn call(hwnd: Hwnd, name: [*:0]const u16) ?*anyopaque {
-                return entry.get_property(hwnd, name);
+                return @ptrCast(bindings.win32.user32.GetPropW(@ptrCast(hwnd), name));
             }
         }.call,
         .set_property = struct {
             fn call(hwnd: Hwnd, name: [*:0]const u16, value: ?*anyopaque) bool {
-                return entry.set_property(hwnd, name, value) != 0;
+                return bindings.win32.user32.SetPropW(
+                    @ptrCast(hwnd), name, @ptrCast(value),
+                ) != 0;
             }
         }.call,
         .remove_property = struct {
             fn call(hwnd: Hwnd, name: [*:0]const u16) bool {
-                return entry.remove_property(hwnd, name) != 0;
+                return bindings.win32.user32.RemovePropW(@ptrCast(hwnd), name) != null;
             }
         }.call,
         .set_window_proc = struct {
             fn call(hwnd: Hwnd, index: i32, procedure: WindowProc) LResult {
-                return entry.set_window_proc(hwnd, index, procedure);
+                return bindings.win32.windowlongptr.SetWindowLongPtrW(
+                    @ptrCast(hwnd), @enumFromInt(index), @bitCast(@intFromPtr(procedure)),
+                );
             }
         }.call,
         .call_window_proc = struct {
@@ -525,7 +554,9 @@ pub fn windowsWindowApi() ?WindowApi {
                 wparam: WParam,
                 lparam: LParam,
             ) LResult {
-                return entry.call_window_proc(procedure, hwnd, message, wparam, lparam);
+                return bindings.win32.user32.CallWindowProcW(
+                    @ptrCast(procedure), @ptrCast(hwnd), message, wparam, lparam,
+                );
             }
         }.call,
     };
@@ -571,12 +602,15 @@ fn unavailableInitUia() ?i32 {
 
 fn unavailableCreateProvider(
     gpa: std.mem.Allocator,
+    weak: context.WeakContext,
     node_id: FullNodeId,
     slot: *ProviderSlot,
-) void {
+) context.ProviderError!void {
     _ = gpa;
+    _ = weak;
     _ = node_id;
-    slot.interface = null;
+    _ = slot;
+    return error.NotImplemented;
 }
 
 fn unavailableDestroyProvider(
@@ -584,9 +618,11 @@ fn unavailableDestroyProvider(
     node_id: FullNodeId,
     slot: *ProviderSlot,
 ) void {
-    _ = gpa;
-    _ = node_id;
-    slot.interface = null;
+    if (comptime bindings.winapi_resolves or builtin.os.tag == .windows) {
+        nativeDestroyProvider(gpa, node_id, slot);
+    } else {
+        std.debug.assert(slot.interface == null);
+    }
 }
 
 fn unavailableReturnRawElementProvider(
@@ -614,8 +650,8 @@ fn unavailableRaiseEvent(
 fn unavailableRaisePropertyChanged(
     slot: *const ProviderSlot,
     property_id: PropertyId,
-    old: PropertyValue,
-    new: PropertyValue,
+    old: bindings.Variant,
+    new: bindings.Variant,
 ) RaiseStatus {
     _ = slot;
     _ = property_id;
@@ -674,135 +710,109 @@ fn unavailableCallWindowProc(
 // The Windows entry points.
 // =============================================================================
 
-/// The four `uiautomationcore` entry points, with their `winapi` types.
-///
-/// The spellings come from `docs/16-native-platform-apis.md` section W7:
-/// `int UiaLookupId(AutomationIdentifierType, const GUID*)`,
-/// `LRESULT UiaReturnRawElementProvider(HWND, WPARAM, LPARAM, IRawElementProviderSimple*)`,
-/// `HRESULT UiaRaiseAutomationEvent(IRawElementProviderSimple*, UIA_EVENT_ID)` and
-/// `HRESULT UiaRaiseAutomationPropertyChangedEvent(IRawElementProviderSimple*,
-/// UIA_PROPERTY_ID, VARIANT, VARIANT)`.
-///
-/// **Unverified.** No Windows SDK and no Windows target exist on this host, so
-/// nothing has compared these four against a header. They must be checked on a
-/// Windows host.
+/// Native types come directly from zigwin32, including by-value VARIANTs.
+/// This source mapping does not replace a Windows-native ABI and client check.
 const UiaEntryPoints = struct {
-    lookup_id: *const fn (id_type: c_int, guid: *const [16]u8) callconv(.winapi) c_int,
-    return_raw_element_provider: *const fn (
-        hwnd: ?*anyopaque,
-        wparam: usize,
-        lparam: isize,
-        element: ?*anyopaque,
-    ) callconv(.winapi) isize,
-    raise_event: *const fn (element: ?*anyopaque, event_id: u32) callconv(.winapi) c_long,
-    raise_property_changed: *const fn (
-        element: ?*anyopaque,
-        property_id: u32,
-        old: *const anyopaque,
-        new: *const anyopaque,
-    ) callconv(.winapi) c_long,
+    lookup_id: @TypeOf(&bindings.win32.uiautomationcore.UiaLookupId),
+    return_raw_element_provider: @TypeOf(&bindings.win32.uiautomationcore.UiaReturnRawElementProvider),
+    raise_event: @TypeOf(&bindings.win32.uiautomationcore.UiaRaiseAutomationEvent),
+    raise_property_changed: @TypeOf(&bindings.win32.uiautomationcore.UiaRaiseAutomationPropertyChangedEvent),
 };
 
-const uia_entry_points: ?UiaEntryPoints = if (builtin.os.tag == .windows) .{
-    .lookup_id = &UiaLookupId,
-    .return_raw_element_provider = &UiaReturnRawElementProvider,
-    .raise_event = &UiaRaiseAutomationEvent,
-    .raise_property_changed = &UiaRaiseAutomationPropertyChangedEvent,
-} else null;
+/// The complete native value backend, borrowed for the provider lifetime.
+/// Null means this target cannot call Windows APIs.
+pub fn nativeAutomationApi() ?*const util.AutomationApi {
+    if (builtin.os.tag != .windows) return null;
+    return &native_automation_api;
+}
 
-extern "win32" fn UiaLookupId(id_type: c_int, guid: *const [16]u8) callconv(.winapi) c_int;
-
-extern "win32" fn UiaReturnRawElementProvider(
-    hwnd: ?*anyopaque,
-    wparam: usize,
-    lparam: isize,
-    element: ?*anyopaque,
-) callconv(.winapi) isize;
-
-extern "win32" fn UiaRaiseAutomationEvent(
-    element: ?*anyopaque,
-    event_id: u32,
-) callconv(.winapi) c_long;
-
-extern "win32" fn UiaRaiseAutomationPropertyChangedEvent(
-    element: ?*anyopaque,
-    property_id: u32,
-    old: *const anyopaque,
-    new: *const anyopaque,
-) callconv(.winapi) c_long;
-
-/// The six Win32 entry points `subclass.rs` calls, with their `winapi` types.
-///
-/// The spellings come from `docs/16-native-platform-apis.md` section W6:
-/// `BOOL IsWindowVisible(HWND)`, `HANDLE GetPropW(HWND, LPCWSTR)`,
-/// `BOOL SetPropW(HWND, LPCWSTR, HANDLE)`, `BOOL RemovePropW(HWND, LPCWSTR)`,
-/// `LONG_PTR SetWindowLongPtrW(HWND, int, LONG_PTR)` and
-/// `LRESULT CallWindowProcW(WNDPROC, HWND, UINT, WPARAM, LPARAM)`.
-///
-/// **Unverified**, for the reason the `UiaEntryPoints` block gives.
-const Win32EntryPoints = struct {
-    is_window_visible: *const fn (hwnd: ?*anyopaque) callconv(.winapi) c_int,
-    get_property: *const fn (hwnd: ?*anyopaque, name: [*:0]const u16) callconv(.winapi) ?*anyopaque,
-    set_property: *const fn (
-        hwnd: ?*anyopaque,
-        name: [*:0]const u16,
-        value: ?*anyopaque,
-    ) callconv(.winapi) c_int,
-    remove_property: *const fn (hwnd: ?*anyopaque, name: [*:0]const u16) callconv(.winapi) c_int,
-    set_window_proc: *const fn (
-        hwnd: ?*anyopaque,
-        index: c_int,
-        procedure: ?*anyopaque,
-    ) callconv(.winapi) isize,
-    call_window_proc: *const fn (
-        procedure: ?*anyopaque,
-        hwnd: ?*anyopaque,
-        message: u32,
-        wparam: usize,
-        lparam: isize,
-    ) callconv(.winapi) isize,
+const native_automation_api: util.AutomationApi = .{
+    .alloc_string_len = struct {
+        fn call(_: ?*anyopaque, source: ?[*]const u16, length: u32) ?bindings.Bstr {
+            // SysAllocStringLen reads the explicit count, not a sentinel.
+            return @ptrCast(bindings.win32.oleaut32.SysAllocStringLen(@ptrCast(source), length));
+        }
+    }.call,
+    .string_len = struct {
+        fn call(_: ?*anyopaque, value: bindings.Bstr) u32 {
+            return bindings.win32.oleaut32.SysStringLen(@ptrCast(value));
+        }
+    }.call,
+    .free_string = struct {
+        fn call(_: ?*anyopaque, value: bindings.Bstr) void {
+            bindings.win32.oleaut32.SysFreeString(@ptrCast(value));
+        }
+    }.call,
+    .variant_clear = struct {
+        fn call(_: ?*anyopaque, value: *bindings.Variant) bindings.Hresult {
+            return bindings.win32.oleaut32.VariantClear(value);
+        }
+    }.call,
+    .array_create_vector = struct {
+        fn call(_: ?*anyopaque, kind: u16, lower_bound: i32, count: u32) ?*bindings.SafeArray {
+            return bindings.win32.oleaut32.SafeArrayCreateVector(
+                @enumFromInt(kind), lower_bound, count,
+            );
+        }
+    }.call,
+    .array_put_element = struct {
+        fn call(
+            _: ?*anyopaque,
+            array: *bindings.SafeArray,
+            index: *const i32,
+            value: *const anyopaque,
+        ) bindings.Hresult {
+            return bindings.win32.oleaut32.SafeArrayPutElement(
+                array, @constCast(index), @constCast(value),
+            );
+        }
+    }.call,
+    .array_destroy = struct {
+        fn call(_: ?*anyopaque, array: *bindings.SafeArray) bindings.Hresult {
+            return bindings.win32.oleaut32.SafeArrayDestroy(array);
+        }
+    }.call,
+    .host_provider_from_hwnd = struct {
+        fn call(
+            _: ?*anyopaque,
+            hwnd: bindings.Hwnd,
+            output: *?*bindings.IRawElementProviderSimple,
+        ) bindings.Hresult {
+            return bindings.win32.uiautomationcore.UiaHostProviderFromHwnd(hwnd, output);
+        }
+    }.call,
+    .reserved_mixed_value = struct {
+        fn call(_: ?*anyopaque, output: *?*bindings.IUnknown) bindings.Hresult {
+            return bindings.win32.uiautomationcore.UiaGetReservedMixedAttributeValue(output);
+        }
+    }.call,
+    .reserved_not_supported_value = struct {
+        fn call(_: ?*anyopaque, output: *?*bindings.IUnknown) bindings.Hresult {
+            return bindings.win32.uiautomationcore.UiaGetReservedNotSupportedValue(output);
+        }
+    }.call,
+    .locale_name_to_lcid = struct {
+        fn call(_: ?*anyopaque, name: [*:0]const u16, flags: u32) u32 {
+            return bindings.win32.kernel32.LocaleNameToLCID(name, flags);
+        }
+    }.call,
+    .client_to_screen = struct {
+        fn call(_: ?*anyopaque, hwnd: bindings.Hwnd, point: *bindings.Point) bindings.Bool {
+            return bindings.win32.user32.ClientToScreen(hwnd, point);
+        }
+    }.call,
+    .def_window_proc = struct {
+        fn call(
+            _: ?*anyopaque,
+            hwnd: bindings.Hwnd,
+            message: u32,
+            wparam: bindings.Wparam,
+            lparam: bindings.Lparam,
+        ) bindings.Lresult {
+            return bindings.win32.user32.DefWindowProcW(hwnd, message, wparam, lparam);
+        }
+    }.call,
 };
-
-const win32_entry_points: ?Win32EntryPoints = if (builtin.os.tag == .windows) .{
-    .is_window_visible = &IsWindowVisible,
-    .get_property = &GetPropW,
-    .set_property = &SetPropW,
-    .remove_property = &RemovePropW,
-    .set_window_proc = &SetWindowLongPtrW,
-    .call_window_proc = &CallWindowProcW,
-} else null;
-
-extern "win32" fn IsWindowVisible(hwnd: ?*anyopaque) callconv(.winapi) c_int;
-
-extern "win32" fn GetPropW(
-    hwnd: ?*anyopaque,
-    name: [*:0]const u16,
-) callconv(.winapi) ?*anyopaque;
-
-extern "win32" fn SetPropW(
-    hwnd: ?*anyopaque,
-    name: [*:0]const u16,
-    value: ?*anyopaque,
-) callconv(.winapi) c_int;
-
-extern "win32" fn RemovePropW(
-    hwnd: ?*anyopaque,
-    name: [*:0]const u16,
-) callconv(.winapi) c_int;
-
-extern "win32" fn SetWindowLongPtrW(
-    hwnd: ?*anyopaque,
-    index: c_int,
-    procedure: ?*anyopaque,
-) callconv(.winapi) isize;
-
-extern "win32" fn CallWindowProcW(
-    procedure: ?*anyopaque,
-    hwnd: ?*anyopaque,
-    message: u32,
-    wparam: usize,
-    lparam: isize,
-) callconv(.winapi) isize;
 
 // --- Tests -----------------------------------------------------------------
 
@@ -858,6 +868,7 @@ test "every event identifier carries the value the pinned binding gives" {
         .{ .id = .selection_item_element_selected, .bits = 20012 },
         .{ .id = .selection_invalidated, .bits = 20013 },
         .{ .id = .text_text_changed, .bits = 20015 },
+        .{ .id = .text_text_selection_changed, .bits = 20014 },
         .{ .id = .window_window_closed, .bits = 20017 },
         .{ .id = .window_window_opened, .bits = 20016 },
     };
@@ -878,10 +889,10 @@ test "every event identifier carries the value the pinned binding gives" {
     try testing.expectEqual(EventId.count, seen);
 }
 
-test "the one property identifier the adapter raises carries the binding's value" {
+test "selection property belongs to the complete provider property domain" {
     // `zigwin32/win32/ui/accessibility.zig:9459`.
     try testing.expectEqual(@as(u32, 30079), @intFromEnum(PropertyId.selection_item_is_selected));
-    try testing.expectEqual(@as(usize, 1), PropertyId.count);
+    try testing.expectEqual(@as(usize, 41), PropertyId.count);
 }
 
 test "the eight window messages and the procedure index carry the binding's values" {
@@ -919,7 +930,7 @@ test "the seam for this target refuses rather than reports a success it did not 
     try testing.expect(!platform.present);
     try testing.expectEqual(@as(?i32, null), platform.init_uia());
 
-    var slot: ProviderSlot = .{ .interface = @ptrFromInt(0x1234) };
+    var slot: ProviderSlot = .{ .interface = null };
     platform.destroy_provider(testing.allocator, .init(.{ .value = 1 }, .init(0)), &slot);
     try testing.expectEqual(@as(?*anyopaque, null), slot.interface);
 
@@ -938,8 +949,8 @@ test "the seam for this target refuses rather than reports a success it did not 
         platform.raise_property_changed(
             &slot,
             .selection_item_is_selected,
-            .{ .bool_ = false },
-            .{ .bool_ = true },
+            std.mem.zeroes(bindings.Variant),
+            std.mem.zeroes(bindings.Variant),
         ),
     );
 }
@@ -975,4 +986,223 @@ test "every raise status is distinct, so a refusal is not read as a success" {
             try testing.expect(outer != inner);
         }
     }
+}
+
+
+
+test "complete node property events use the upstream UIA property domain" {
+    try testing.expectEqual(@as(u32, 30005), @intFromEnum(PropertyId.name));
+    try testing.expectEqual(@as(u32, 30003), @intFromEnum(PropertyId.control_type));
+    try testing.expectEqual(@as(u32, 30159), @intFromEnum(PropertyId.full_description));
+    try testing.expectEqual(@as(u32, 30174), @intFromEnum(PropertyId.is_dialog));
+    try testing.expectEqual(@as(u32, 30079), @intFromEnum(PropertyId.selection_item_is_selected));
+    try testing.expectEqual(@as(u32, 30086), @intFromEnum(PropertyId.toggle_toggle_state));
+    try testing.expectEqual(@as(u32, 20014), @intFromEnum(EventId.text_text_selection_changed));
+}
+
+test "native BSTR preserves embedded NUL and VariantClear transfers cleanup" {
+    if (builtin.os.tag != .windows) return error.SkipZigTest;
+    const api = nativeAutomationApi().?;
+    const units = [_]u16{ 'a', 0, 'b' };
+    const value = api.alloc_string_len(api.context, &units, units.len) orelse
+        return error.OutOfMemory;
+    var raw_value = std.mem.zeroes(bindings.Variant);
+    raw_value.Anonymous.Anonymous.vt = .BSTR;
+    raw_value.Anonymous.Anonymous.Anonymous.bstrVal = value;
+    defer {
+        const result = api.variant_clear(api.context, &raw_value);
+        if (result.failed) @panic("native VariantClear failed");
+    }
+    try testing.expectEqual(@as(u32, 3), api.string_len(api.context, value));
+    try testing.expectEqualSlices(u16, &units, @as([*]const u16, @ptrCast(value))[0..3]);
+    const result = api.variant_clear(api.context, &raw_value);
+    try testing.expectEqual(@as(u32, 0), @as(u32, @bitCast(result)));
+    try testing.expectEqual(bindings.com.VARENUM.EMPTY, raw_value.Anonymous.Anonymous.vt);
+}
+
+test "native SAFEARRAY stores scalar data and preserves invalid-index HRESULT" {
+    if (builtin.os.tag != .windows) return error.SkipZigTest;
+    const api = nativeAutomationApi().?;
+    const array = api.array_create_vector(api.context, 3, 0, 1) orelse
+        return error.OutOfMemory;
+    defer {
+        const result = api.array_destroy(api.context, array);
+        if (result.failed) @panic("native SafeArrayDestroy failed");
+    }
+    const index: i32 = 0;
+    const input: i32 = -23;
+    const inserted = api.array_put_element(api.context, array, &index, &input);
+    try testing.expectEqual(@as(u32, 0), @as(u32, @bitCast(inserted)));
+    var output: i32 = 0;
+    const fetched = bindings.win32.oleaut32.SafeArrayGetElement(
+        array, @constCast(&index), &output,
+    );
+    try testing.expectEqual(@as(u32, 0), @as(u32, @bitCast(fetched)));
+    try testing.expectEqual(input, output);
+    const invalid_index: i32 = 1;
+    const rejected = api.array_put_element(api.context, array, &invalid_index, &input);
+    try testing.expectEqual(@as(u32, 0x8002000b), @as(u32, @bitCast(rejected)));
+}
+
+test "native provider factory failure preserves slot and borrowed context" {
+    if (!bindings.winapi_resolves) return error.SkipZigTest;
+    const adapter = @import("adapter.zig");
+    const Failure = struct {
+        fn create(_: std.mem.Allocator, _: context.WeakContext, _: ?FullNodeId)
+            context.ProviderError!*bindings.IRawElementProviderSimple
+        {
+            return error.OutOfMemory;
+        }
+        fn action(_: *boundary.CActionRequest, _: ?*anyopaque) callconv(.c) void {
+            @panic("provider construction must not dispatch an action");
+        }
+    };
+    var threaded = std.Io.Threaded.init(testing.allocator, .{});
+    defer threaded.deinit();
+    var abi = util.AutomationTestAbi.init(testing.allocator);
+    const api = abi.api();
+    var factory = adapter.testProviderFactory();
+    factory.create_node = Failure.create;
+    const owner = try adapter.WindowsAdapter.create(testing.allocator, .{
+        .io = threaded.io(),
+        .platform = unavailablePlatform(),
+        .factory = factory,
+        .automation = &api,
+        .hwnd = null,
+        .is_window_focused = false,
+        .action_sink = .{ .c = .{ .callback = Failure.action, .userdata = null } },
+    });
+    defer owner.deinit();
+    var weak = owner.context.weak();
+    defer weak.deinit();
+    var slot: ProviderSlot = .{ .interface = null };
+    try testing.expectError(error.NotImplemented, unavailableCreateProvider(
+        testing.allocator, weak, .init(.{ .value = 1 }, .init(0)), &slot,
+    ));
+    try testing.expectError(error.OutOfMemory, nativeCreateProvider(
+        testing.allocator, weak, .init(.{ .value = 1 }, .init(0)), &slot,
+    ));
+    try testing.expectEqual(@as(?*anyopaque, null), slot.interface);
+    var lease = try weak.control.enter();
+    lease.deinit();
+}
+
+test "native provider Release reclaims its weak context after adapter destruction" {
+    if (!bindings.winapi_resolves) return error.SkipZigTest;
+    const adapter = @import("adapter.zig");
+    const Callback = struct {
+        fn action(_: *boundary.CActionRequest, _: ?*anyopaque) callconv(.c) void {
+            @panic("provider construction must not dispatch an action");
+        }
+    };
+    var threaded = std.Io.Threaded.init(testing.allocator, .{});
+    defer threaded.deinit();
+    var abi = util.AutomationTestAbi.init(testing.allocator);
+    const api = abi.api();
+    const owner = try adapter.WindowsAdapter.create(testing.allocator, .{
+        .io = threaded.io(),
+        .platform = unavailablePlatform(),
+        .factory = adapter.testProviderFactory(),
+        .automation = &api,
+        .hwnd = null,
+        .is_window_focused = false,
+        .action_sink = .{ .c = .{ .callback = Callback.action, .userdata = null } },
+    });
+    var weak = owner.context.weak();
+    var slot: ProviderSlot = .{ .interface = null };
+    nativeCreateProvider(
+        testing.allocator, weak, .init(.{ .value = 1 }, .init(0)), &slot,
+    ) catch |err| {
+        weak.deinit();
+        owner.deinit();
+        return err;
+    };
+    defer weak.deinit();
+    owner.deinit();
+    defer nativeDestroyProvider(
+        testing.allocator, .init(.{ .value = 1 }, .init(0)), &slot,
+    );
+    var closed_slot: ProviderSlot = .{ .interface = null };
+    try testing.expectError(error.ElementNotAvailable, nativeCreateProvider(
+        testing.allocator, weak, .init(.{ .value = 2 }, .init(0)), &closed_slot,
+    ));
+    try testing.expectEqual(@as(?*anyopaque, null), closed_slot.interface);
+    try testing.expect(slot.interface != null);
+    const provider = simple(&slot).?;
+    try testing.expectEqual(@as(u32, 2), provider.vtable.base.AddRef(@ptrCast(provider)));
+    try testing.expectEqual(@as(u32, 1), provider.vtable.base.Release(@ptrCast(provider)));
+    try testing.expectEqual(@as(u32, 2), provider.vtable.base.AddRef(@ptrCast(provider)));
+    unavailableDestroyProvider(testing.allocator, .init(.{ .value = 1 }, .init(0)), &slot);
+    const remaining = provider.vtable.base.Release(@ptrCast(provider));
+    // Clean the old implementation's leaked slot reference before reporting red.
+    if (remaining != 0) {
+        _ = provider.vtable.base.Release(@ptrCast(provider));
+    }
+    try testing.expectEqual(@as(u32, 0), remaining);
+    try testing.expectEqual(@as(?*anyopaque, null), slot.interface);
+}
+
+test "native reserved text attributes remain distinct COM values" {
+    if (builtin.os.tag != .windows) return error.SkipZigTest;
+    try util.checkAutomationStatus(bindings.win32.ole32.CoInitializeEx(null, .{}));
+    defer bindings.win32.ole32.CoUninitialize();
+    const api = nativeAutomationApi().?;
+    var mixed: ?*bindings.IUnknown = null;
+    try util.checkAutomationStatus(api.reserved_mixed_value(api.context, &mixed));
+    const mixed_value = mixed orelse return error.UnexpectedNativeFailure;
+    defer {
+        _ = mixed_value.vtable.Release(mixed_value);
+    }
+    var unsupported: ?*bindings.IUnknown = null;
+    try util.checkAutomationStatus(api.reserved_not_supported_value(api.context, &unsupported));
+    const unsupported_value = unsupported orelse return error.UnexpectedNativeFailure;
+    defer {
+        _ = unsupported_value.vtable.Release(unsupported_value);
+    }
+    try testing.expect(mixed_value != unsupported_value);
+}
+
+test "native locale conversion preserves the English US culture identifier" {
+    if (builtin.os.tag != .windows) return error.SkipZigTest;
+    const api = nativeAutomationApi().?;
+    const english_us = [_:0]u16{ 'e', 'n', '-', 'U', 'S' };
+    try testing.expectEqual(
+        @as(u32, 0x0409), api.locale_name_to_lcid(api.context, &english_us, 0),
+    );
+}
+
+test "unavailable provider destruction releases its COM holder" {
+    if (!bindings.winapi_resolves) return error.SkipZigTest;
+    const com_object = @import("com.zig");
+    const State = struct {
+        finalized: *u32,
+        pub fn deinit(self: *@This()) void {
+            self.finalized.* += 1;
+        }
+    };
+    const Object = com_object.Object(State, .{com_object.Descriptor{
+        .Interface = bindings.IRawElementProviderSimple,
+        .Iid = bindings.uia.IID_IRawElementProviderSimple,
+    }});
+    const base = Object.baseVTable(0);
+    var finalized: u32 = 0;
+    // Only IUnknown methods are called, as in com.zig's base-vtable fixtures.
+    const object = try Object.create(testing.allocator, .{&base}, .{ .finalized = &finalized });
+    const unknown: *bindings.IUnknown = &object.words[0];
+    try testing.expectEqual(@as(u32, 2), unknown.vtable.AddRef(unknown));
+    var slot: ProviderSlot = .{ .interface = unknown };
+    unavailableDestroyProvider(testing.allocator, .init(.{ .value = 1 }, .init(0)), &slot);
+    const remaining = unknown.vtable.Release(unknown);
+    if (remaining != 0) {
+        _ = unknown.vtable.Release(unknown);
+    }
+    try testing.expectEqual(@as(u32, 0), remaining);
+    try testing.expectEqual(@as(u32, 1), finalized);
+    try testing.expectEqual(@as(?*anyopaque, null), slot.interface);
+}
+
+test "native UIA preload resolves the control type GUID" {
+    if (builtin.os.tag != .windows) return error.SkipZigTest;
+    const platform = windowsPlatform().?;
+    try testing.expectEqual(@as(?i32, 30003), platform.init_uia());
 }
