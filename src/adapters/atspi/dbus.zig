@@ -533,7 +533,10 @@ fn validateMessage(message: Message) CodecError!void {
     if (message.destination) |name| if (!validName(name, true, true)) return error.InvalidHeader;
     if (message.sender) |name| {
         if (!validName(name, true, true)) return error.InvalidHeader;
-        if (name[0] != ':') return error.InvalidHeader;
+        // zbus_names 4.3.4 accepts the bus driver identity as well as colon-prefixed peers.
+        // https://docs.rs/crate/zbus_names/4.3.4/source/src/unique_name.rs#L31-L39
+        if (name[0] != ':' and !std.mem.eql(u8, name, "org.freedesktop.DBus"))
+            return error.InvalidHeader;
     }
     switch (message.kind) {
         .method_call => if (message.path == null or message.member == null)
@@ -824,8 +827,8 @@ const recorded_big_return = [_]u8{
 };
 
 /// Fixed decoder seeds. SHA-256 and length literals identify the committed bytes.
-/// Return frames are rule-derived from the specification, not captured traffic;
-/// invalid seeds are deterministic single-change/truncation derivatives.
+/// Numeric return frames are rule-derived. The daemon Hello return is captured traffic.
+/// Invalid seeds are deterministic single-change/truncation derivatives.
 pub const CorpusEntry = struct {
     name: []const u8,
     bytes: []const u8,
@@ -881,12 +884,25 @@ pub const corpus = [_]CorpusEntry{
             0x3a, 0x33, 0x55, 0xca, 0x26, 0x51, 0x85, 0xcd,
         },
     },
+    .{
+        .name = "daemon-hello-return.bin",
+        .bytes = @embedFile("dbus_corpus/daemon-hello-return.bin"),
+        .length = 89,
+        .expected_error = null,
+        .sha256 = .{
+            0x59, 0xde, 0x2c, 0x6f, 0x17, 0x73, 0x7b, 0x66,
+            0x07, 0x04, 0x38, 0x67, 0x54, 0xa9, 0x04, 0xf8,
+            0x23, 0xfd, 0x2e, 0x55, 0x43, 0xc2, 0x54, 0x27,
+            0x71, 0x90, 0xfb, 0x12, 0xc5, 0x9e, 0x39, 0xd7,
+        },
+    },
 };
 
 test "dbus rule-derived specification frames decode and encode exactly" {
     inline for (.{ .{ recorded_little_return, std.builtin.Endian.little },
         .{ recorded_big_return, std.builtin.Endian.big } }) |fixture| {
-        var frame = try decode(std.testing.allocator, &fixture[0], .{});
+        const wire_bytes: [36]u8 = fixture[0];
+        var frame = try decode(std.testing.allocator, &wire_bytes, .{});
         defer frame.deinit();
         try std.testing.expectEqual(Kind.method_return, frame.message.kind);
         try std.testing.expectEqual(@as(?u32, 1), frame.message.reply_serial);
@@ -894,7 +910,7 @@ test "dbus rule-derived specification frames decode and encode exactly" {
         try std.testing.expectEqual(@as(u32, 42), frame.message.body[0].uint32);
         const bytes = try encode(std.testing.allocator, frame.message, fixture[1], .{});
         defer std.testing.allocator.free(bytes);
-        try std.testing.expectEqualSlices(u8, &fixture[0], bytes);
+        try std.testing.expectEqualSlices(u8, &wire_bytes, bytes);
     }
 }
 
@@ -1284,11 +1300,21 @@ test "dbus committed corpus has fixed hashes lengths and decoder outcomes" {
             var frame = try decode(std.testing.allocator, entry.bytes, .{});
             defer frame.deinit();
             try std.testing.expectEqual(Kind.method_return, frame.message.kind);
-            try std.testing.expectEqual(@as(u32, 42), frame.message.body[0].uint32);
-            const encoded = try encode(std.testing.allocator, frame.message,
-                try byteOrder(entry.bytes[0]), .{});
-            defer std.testing.allocator.free(encoded);
-            try std.testing.expectEqualSlices(u8, entry.bytes, encoded);
+            try std.testing.expectEqual(@as(usize, 1), frame.message.body.len);
+            switch (frame.message.body[0]) {
+                .uint32 => |value| {
+                    try std.testing.expectEqualStrings("u", frame.message.signature);
+                    try std.testing.expectEqual(@as(u32, 42), value);
+                },
+                .string => |value| {
+                    try std.testing.expectEqualStrings("s", frame.message.signature);
+                    try std.testing.expectEqualStrings(":1.7", value);
+                },
+                else => return error.TestUnexpectedResult,
+            }
+            // Fixture tests check semantic values and independent encoder golden bytes.
+            // Header order may differ. Every valid seed must reach the canonical fixed point.
+            try fuzzInput(std.testing.allocator, frame.bytes);
         }
     }
 }
@@ -1367,4 +1393,82 @@ test "dbus message measurement equals encoded frame and exact global value budge
             try std.testing.expectEqual(measured, encoded.len);
         }
     }
+}
+
+// This actual private dbus-daemon Hello return checks driver sender and assigned name retention.
+// Capture receipt: native-startup-bounded-wire-red.json.
+test "actual dbus-daemon Hello return retains driver sender and assigned unique name" {
+    const fixture = @embedFile("dbus_corpus/daemon-hello-return.bin");
+    try std.testing.expectEqual(@as(usize, 89), fixture.len);
+    const expected_sha256 = [_]u8{
+        0x59, 0xde, 0x2c, 0x6f, 0x17, 0x73, 0x7b, 0x66,
+        0x07, 0x04, 0x38, 0x67, 0x54, 0xa9, 0x04, 0xf8,
+        0x23, 0xfd, 0x2e, 0x55, 0x43, 0xc2, 0x54, 0x27,
+        0x71, 0x90, 0xfb, 0x12, 0xc5, 0x9e, 0x39, 0xd7,
+    };
+    var digest: [32]u8 = undefined;
+    std.crypto.hash.sha2.Sha256.hash(fixture, &digest, .{});
+    try std.testing.expectEqualSlices(u8, &expected_sha256, &digest);
+    try std.testing.expectEqual(@as(u8, 'l'), fixture[0]);
+    try std.testing.expectEqual(@as(u32, 9), std.mem.readInt(u32, fixture[4..8], .little));
+    try std.testing.expectEqual(@as(u32, 61), std.mem.readInt(u32, fixture[12..16], .little));
+    try std.testing.expectEqual(@as(usize, 89), try frameLength(fixture[0..16].*, .{}));
+
+    var frame = try decode(std.testing.allocator, fixture, .{});
+    defer frame.deinit();
+    try std.testing.expectEqual(Kind.method_return, frame.message.kind);
+    try std.testing.expectEqual(@as(u8, 1), frame.message.flags);
+    try std.testing.expectEqual(@as(u32, 1), frame.message.serial);
+    try std.testing.expectEqual(@as(?u32, 1), frame.message.reply_serial);
+    try std.testing.expectEqualStrings("org.freedesktop.DBus", frame.message.sender.?);
+    try std.testing.expectEqualStrings(":1.7", frame.message.destination.?);
+    try std.testing.expectEqualStrings("s", frame.message.signature);
+    try std.testing.expectEqual(@as(usize, 1), frame.message.body.len);
+    try std.testing.expect(frame.message.body[0] == .string);
+    try std.testing.expectEqualStrings(":1.7", frame.message.body[0].string);
+}
+
+test "dbus sender rejects ordinary well known names on encode and actual packet decode" {
+    // Replace only the sender bytes. Keep the captured header lengths, padding, and body.
+    const fixture = @embedFile("dbus_corpus/daemon-hello-return.bin");
+    const sender_start = 56;
+    const sender_end = 76;
+    try std.testing.expectEqualStrings("org.freedesktop.DBus", fixture[sender_start..sender_end]);
+    inline for (.{ "org.example.TestName", "org.freedesktop.Dbus" }) |sender| {
+        try std.testing.expect(validName(sender, true, true));
+        try std.testing.expectEqual(sender_end - sender_start, sender.len);
+        try std.testing.expectError(error.InvalidHeader, encode(std.testing.allocator,
+            .{ .kind = .method_return, .serial = 1, .reply_serial = 1,
+                .sender = sender }, .little, .{}));
+        var bytes: [fixture.len]u8 = fixture.*;
+        @memcpy(bytes[sender_start..sender_end], sender);
+        try std.testing.expectError(error.InvalidHeader,
+            decode(std.testing.allocator, &bytes, .{}));
+    }
+}
+
+test "dbus sender syntax guards still reject malformed unique and driver names" {
+    const fixture = @embedFile("dbus_corpus/daemon-hello-return.bin");
+    inline for (.{ "org.freedesktop..Bus", ":org..example.Testxx" }) |sender| {
+        try std.testing.expect(!validName(sender, true, true));
+        try std.testing.expectEqual(@as(usize, 20), sender.len);
+        try std.testing.expectError(error.InvalidHeader, encode(std.testing.allocator,
+            .{ .kind = .method_return, .serial = 1, .reply_serial = 1,
+                .sender = sender }, .little, .{}));
+        var bytes: [fixture.len]u8 = fixture.*;
+        @memcpy(bytes[56..76], sender);
+        try std.testing.expectError(error.InvalidHeader,
+            decode(std.testing.allocator, &bytes, .{}));
+    }
+    inline for (.{ "", ":" }) |sender| {
+        try std.testing.expectError(error.InvalidHeader, encode(std.testing.allocator,
+            .{ .kind = .method_return, .serial = 1, .reply_serial = 1,
+                .sender = sender }, .little, .{}));
+    }
+    var overlong: [256]u8 = @splat('a');
+    overlong[0] = ':';
+    overlong[2] = '.';
+    try std.testing.expectError(error.InvalidHeader, encode(std.testing.allocator,
+        .{ .kind = .method_return, .serial = 1, .reply_serial = 1,
+            .sender = &overlong }, .little, .{}));
 }
