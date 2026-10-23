@@ -8,18 +8,18 @@
 //! cycle, and a cycle at the seam where `@export` runs at `comptime` is the kind
 //! that fails with an error nobody can act on.
 //!
-//! Shared types and owned request conversion live here. This leaf imports only
-//! schema, handles, and the standard library. `platform.zig` re-exports the types,
-//! and adapters import this leaf directly. Neither side imports the other.
+//! So the shared types live here, in a file that imports nothing but `schema`.
+//! `platform.zig` imports this and re-exports every name, which keeps every
+//! existing reference in that file working, and every adapter imports this
+//! directly. **Neither side ever imports the other.**
 //!
-//! **What belongs here.** Types both sides must name and their request conversion
-//! belong here. Adapter-only work belongs in that adapter. Other C ABI work belongs
-//! in `platform.zig`. The JNI types and `COptLResult` are
+//! **What belongs here.** Only a type both sides must name. Anything one adapter
+//! uses alone belongs in that adapter, and anything the C ABI uses without an
+//! adapter belongs in `platform.zig`. The JNI types and `COptLResult` are
 //! deliberately *not* here: each is used by exactly one platform, and pulling
 //! them in would make this file a second home for a definition that has one.
 
 const schema = @import("../schema/root.zig");
-const handles = @import("handles.zig");
 const std = @import("std");
 
 /// The box the Unix family passes by value. `accesskit_rect` is four `double`
@@ -32,43 +32,14 @@ pub const CRect = schema.Rect;
 
 /// The tree an activation handler and a tree-update factory return.
 ///
-/// `accesskit_tree_update` is an opaque owning handle. Its representation and
-/// consuming conversion belong to `tree_update.zig`, not to the native schema.
-pub const CTreeUpdate = handles.accesskit_tree_update;
+/// `accesskit_tree_update` is an opaque handle at `include/zaccesskit.h:994`
+/// and `schema.TreeUpdate` is the object behind it.
+pub const CTreeUpdate = schema.TreeUpdate;
 
 /// The request an action handler receives. The port's own `extern struct` form
 /// of `accesskit_action_request` is already written at
 /// `src/schema/update.zig:363`, and the callback passes a pointer to it.
 pub const CActionRequest = schema.CActionRequest;
-
-/// Clones a borrowed native request into an independently owned C request.
-///
-/// `request` stays unchanged on success and error. The caller owns the outer
-/// request and its optional string, both allocated through `gpa`.
-/// Release the payload with `schema.cActionRequestDeinit`, then destroy the
-/// outer request through the same allocator. Foreign callers pass
-/// `allocation.allocator()` and transfer the result to the C action callback.
-/// `error.OutOfMemory` and `error.InteriorNul` leave no partial allocation.
-pub fn createActionRequest(
-    gpa: std.mem.Allocator,
-    request: schema.ActionRequest,
-) schema.ActionDataToCError!*schema.CActionRequest {
-    const copy = try gpa.create(schema.CActionRequest);
-    errdefer gpa.destroy(copy);
-    copy.* = .{
-        .action = request.action,
-        .target_tree = request.target_tree,
-        .target_node = request.target_node,
-        .data = .{
-            .has_value = request.data != null,
-            .value = if (request.data) |data|
-                try schema.actionDataToC(gpa, data)
-            else
-                std.mem.zeroes(schema.CActionData),
-        },
-    };
-    return copy;
-}
 
 /// `accesskit_tree_update_factory`, at `include/zaccesskit.h:1707` and upstream
 /// `src/lib.rs:1698`.
@@ -93,10 +64,10 @@ pub const ActivationHandler = *const fn (?*anyopaque) callconv(.c) ?*CTreeUpdate
 /// `accesskit_action_handler_callback`, at `include/zaccesskit.h:1737` and
 /// upstream `src/lib.rs:1728`.
 ///
-/// Ownership transfers to the callback. It releases the request with
-/// `accesskit_action_request_free` before returning, on every path.
-/// A `value` payload release also frees its string. The request borrows nothing
-/// from native input. The callback must not retain this pointer past its return.
+/// The request arrives by transfer: **the callback owns it and releases it with
+/// `accesskit_action_request_free` before returning, on every path out.** For a
+/// `value` payload that release also frees the string inside it. An adapter that
+/// stores the pointer and releases later has a double free.
 pub const ActionHandler = *const fn (*CActionRequest, ?*anyopaque) callconv(.c) void;
 
 /// `accesskit_deactivation_handler_callback`, at
@@ -163,175 +134,4 @@ comptime {
     // contract violation there — is no longer expressible in the types, so pin
     // it while it holds.
     if (ActivationHandler != TreeUpdateFactory) @compileError("the two factories are one shape");
-}
-
-test "owned C request copies fields and every payload without retaining the source" {
-    // Read the C fields directly, not through the reverse conversion recipe.
-    const gpa = std.testing.allocator;
-    const text = try gpa.dupe(u8, "copied native text");
-    defer gpa.free(text);
-    const payloads = actionRequestPayloads(text);
-    try std.testing.expectEqual(@as(usize, 9), payloads.len);
-    inline for (@typeInfo(schema.ActionData).@"union".fields) |field| {
-        var found = false;
-        for (payloads) |payload| {
-            if (payload) |data| {
-                if (std.mem.eql(u8, @tagName(data), field.name)) found = true;
-            }
-        }
-        try std.testing.expect(found);
-    }
-    for (payloads) |payload| {
-        var source = actionRequestFixture(payload);
-        const copy = try createActionRequest(gpa, source);
-        defer gpa.destroy(copy);
-        defer schema.cActionRequestDeinit(gpa, copy);
-        try expectCopiedRequest(source, copy);
-        source.action = .focus;
-        source.target_tree = schema.tree_id_root;
-        source.target_node = schema.nodeIdFromContent(0);
-        source.data = null;
-        try expectCopiedRequest(actionRequestFixture(payload), copy);
-    }
-}
-
-test "owned C value request survives mutation and release of native source" {
-    const gpa = std.testing.allocator;
-    var source = actionRequestFixture(.{ .value = try gpa.dupe(u8, "native value") });
-    var source_live = true;
-    defer if (source_live) source.deinit(gpa);
-    const copy = try createActionRequest(gpa, source);
-    defer gpa.destroy(copy);
-    defer schema.cActionRequestDeinit(gpa, copy);
-    const copied_text = copy.data.value.payload.value.?;
-    try std.testing.expect(@intFromPtr(copied_text) != @intFromPtr(source.data.?.value.ptr));
-    source.data.?.value[0] = 'X';
-    try std.testing.expectEqualStrings("native value", std.mem.span(copied_text));
-    source.deinit(gpa);
-    source_live = false;
-    try std.testing.expectEqual(schema.Action.click, copy.action);
-    try std.testing.expect(copy.target_tree.eql(actionRequestFixture(null).target_tree));
-    try std.testing.expect(copy.target_node.eql(schema.nodeIdFromContent(0x1234)));
-    try std.testing.expect(copy.data.has_value);
-    try std.testing.expectEqual(@intFromEnum(schema.ActionDataTag.value), copy.data.value.tag);
-    try std.testing.expectEqualStrings("native value", std.mem.span(copied_text));
-}
-
-test "owned C request fail-N frees partial copies and keeps every borrowed input" {
-    try std.testing.checkAllAllocationFailures(
-        std.testing.allocator,
-        actionRequestAllocationFailures,
-        .{},
-    );
-}
-
-test "owned C request InteriorNul frees the outer allocation and preserves borrowed bytes" {
-    const gpa = std.testing.allocator;
-    var source = actionRequestFixture(.{ .value = try gpa.dupe(u8, "before\x00after") });
-    defer source.deinit(gpa);
-    try std.testing.expectError(error.InteriorNul, createActionRequest(gpa, source));
-    try std.testing.expectEqualSlices(u8, "before\x00after", source.data.?.value);
-    try std.testing.expectEqual(schema.Action.click, source.action);
-    try std.testing.expect(source.target_tree.eql(actionRequestFixture(null).target_tree));
-    try std.testing.expect(source.target_node.eql(schema.nodeIdFromContent(0x1234)));
-}
-
-fn actionRequestFixture(data: ?schema.ActionData) schema.ActionRequest {
-    return .{
-        .action = .click,
-        .target_tree = .{ .bytes = .{
-            0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef,
-            0xfe, 0xdc, 0xba, 0x98, 0x76, 0x54, 0x32, 0x10,
-        } },
-        .target_node = schema.nodeIdFromContent(0x1234),
-        .data = data,
-    };
-}
-
-fn actionRequestPayloads(text: []u8) [9]?schema.ActionData {
-    return .{
-        null,
-        .{ .custom_action = -71 },
-        .{ .value = text },
-        .{ .numeric_value = -13.75 },
-        .{ .scroll_unit = .page },
-        .{ .scroll_hint = .bottom_edge },
-        .{ .scroll_to_point = .{ .x = 1.25, .y = -9.5 } },
-        .{ .set_scroll_offset = .{ .x = -0.5, .y = 7.25 } },
-        .{ .set_text_selection = .{
-            .anchor = .{ .node_id = schema.nodeIdFromContent(0x22), .character_index = 3 },
-            .focus = .{ .node_id = schema.nodeIdFromContent(0x33), .character_index = 17 },
-        } },
-    };
-}
-
-fn expectCopiedRequest(source: schema.ActionRequest, copy: *const schema.CActionRequest) !void {
-    try std.testing.expectEqual(source.action, copy.action);
-    try std.testing.expectEqualSlices(u8, &source.target_tree.bytes, &copy.target_tree.bytes);
-    try std.testing.expect(source.target_node.eql(copy.target_node));
-    try std.testing.expectEqual(source.data != null, copy.data.has_value);
-    const data = source.data orelse return;
-    const tag = std.meta.stringToEnum(schema.ActionDataTag, @tagName(data)).?;
-    try std.testing.expectEqual(@intFromEnum(tag), copy.data.value.tag);
-    const payload = copy.data.value.payload;
-    switch (data) {
-        .custom_action => |id| try std.testing.expectEqual(id, payload.custom_action),
-        .value => |text| {
-            try std.testing.expectEqualStrings(text, std.mem.span(payload.value.?));
-            try std.testing.expect(@intFromPtr(text.ptr) != @intFromPtr(payload.value.?));
-        },
-        .numeric_value => |number| try std.testing.expectEqual(number, payload.numeric_value),
-        .scroll_unit => |unit| try std.testing.expectEqual(unit, payload.scroll_unit),
-        .scroll_hint => |hint| try std.testing.expectEqual(hint, payload.scroll_hint),
-        .scroll_to_point => |point| {
-            try std.testing.expectEqual(point.x, payload.scroll_to_point.x);
-            try std.testing.expectEqual(point.y, payload.scroll_to_point.y);
-        },
-        .set_scroll_offset => |point| {
-            try std.testing.expectEqual(point.x, payload.set_scroll_offset.x);
-            try std.testing.expectEqual(point.y, payload.set_scroll_offset.y);
-        },
-        .set_text_selection => |selection| {
-            try std.testing.expect(selection.anchor.node_id.eql(
-                payload.set_text_selection.anchor.node_id,
-            ));
-            try std.testing.expectEqual(
-                selection.anchor.character_index,
-                payload.set_text_selection.anchor.character_index,
-            );
-            try std.testing.expect(selection.focus.node_id.eql(
-                payload.set_text_selection.focus.node_id,
-            ));
-            try std.testing.expectEqual(
-                selection.focus.character_index,
-                payload.set_text_selection.focus.character_index,
-            );
-        },
-    }
-}
-
-fn actionRequestAllocationFailures(gpa: std.mem.Allocator) !void {
-    const source_gpa = std.testing.allocator;
-    const text = try source_gpa.dupe(u8, "borrowed after allocation failure");
-    defer source_gpa.free(text);
-    for (actionRequestPayloads(text)) |payload| {
-        const source = actionRequestFixture(payload);
-        const copy = createActionRequest(gpa, source) catch |err| {
-            try std.testing.expectEqualStrings("borrowed after allocation failure", text);
-            try std.testing.expectEqual(schema.Action.click, source.action);
-            try std.testing.expect(source.target_tree.eql(actionRequestFixture(null).target_tree));
-            try std.testing.expect(source.target_node.eql(schema.nodeIdFromContent(0x1234)));
-            try std.testing.expectEqual(payload != null, source.data != null);
-            if (payload) |data| {
-                try std.testing.expectEqual(
-                    std.meta.activeTag(data),
-                    std.meta.activeTag(source.data.?),
-                );
-            }
-            return err;
-        };
-        defer gpa.destroy(copy);
-        defer schema.cActionRequestDeinit(gpa, copy);
-        try expectCopiedRequest(source, copy);
-    }
 }

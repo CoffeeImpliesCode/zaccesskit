@@ -60,10 +60,15 @@
 //! 3. **The pushers keep both arms of their error set.** The ten pusher
 //!    families return `vectors.ListPushError!void`, which carries
 //!    `OutOfMemory` and `PropertyTagMismatch`
-//!    (`src/schema/props/vectors.zig:60-70`). `PropertyTagMismatch` is
-//!    documented there as unreachable through valid property-store paths.
-//!    Each pusher handles both arms explicitly and maps them to
-//!    `ACCESSKIT_ERROR_OUT_OF_MEMORY`.
+//!    (`src/schema/props/vectors.zig:60-70`). `accesskit_error` has one failing
+//!    member, so the second arm has no tag of its own. It is documented at
+//!    `vectors.zig:62-65` as unreachable through any path that module can
+//!    produce, and nothing in this layer or in the C ABI can produce it either.
+//!    The port switches on both arms explicitly and maps the unreachable one to
+//!    the same tag. **That is a documented conflation, not a discarded error**,
+//!    and adding a third `accesskit_error` member was considered and refused: an
+//!    ABI member no caller can trigger is one more thing a C consumer must
+//!    handle.
 //!
 //! 4. **An out-of-range tag byte is a caller precondition, not a failure.** The
 //!    header says nothing about a role byte or an action byte past the last
@@ -970,6 +975,22 @@ test "the failure tag survives only until the next call" {
 
     try std.testing.expect(!accesskit_node_is_busy(fixture.handle));
     try std.testing.expect(allocation.lastError() == .none);
+}
+
+test "the failure tag is exactly the two members the header declares" {
+    // `accesskit-c/include/accesskit.h:1761-1764` declares two members and no
+    // more, so this is the comptime sweep over the whole domain. Both are named
+    // explicitly, so a third member or a rename of either fails here rather
+    // than reaching a C consumer with no case for it. The bound is the two the
+    // header prints.
+    try std.testing.expectEqual(
+        @as(usize, 2),
+        @typeInfo(allocation.Tag).@"enum".fields.len,
+    );
+    allocation.clearError();
+    try std.testing.expect(allocation.lastError() == .none);
+    allocation.failWith(.out_of_memory);
+    try std.testing.expect(allocation.lastError() == .out_of_memory);
 }
 
 test "the role gate accepts every tag and rejects every byte past the last" {

@@ -109,7 +109,9 @@ pub const AttributeSet = struct {
     ///
     /// **Errors.** This function does not fail.
     pub fn empty() AttributeSet {
-        return .{ .items = @splat(null), .count = 0 };
+        var out: AttributeSet = .{ .items = undefined, .count = 0 };
+        for (&out.items) |*slot| slot.* = null;
+        return out;
     }
 
     /// Stores `value` under `key`, replacing what is there.
@@ -185,7 +187,6 @@ pub const ActionList = struct {
     /// **Errors.** This function does not fail.
     pub fn empty() ActionList {
         return .{
-            // SAFETY: A caller fills each slot before including it in count.
             .items = undefined,
             .count = 0,
         };
@@ -411,10 +412,7 @@ pub fn documentAttributeValue(
 
     for (held.items[0..held.count]) |entry| {
         const one = entry.?;
-        if (std.ascii.eqlIgnoreCase(one.key, name)) {
-            const value = try gpa.dupe(u8, one.value);
-            return value;
-        }
+        if (std.ascii.eqlIgnoreCase(one.key, name)) return try gpa.dupe(u8, one.value);
     }
     return null;
 }
@@ -771,23 +769,14 @@ test "the attributes dictionary holds the six keys and no more" {
     defer held.deinit(gpa);
 
     try testing.expectEqual(@as(usize, 6), held.count);
-    const placeholder = held.get(key_placeholder_text) orelse return error.TestExpectedEqual;
+    const placeholder = held.get(key_placeholder_text).?;
     try testing.expectEqualStrings("type here", placeholder);
     // `node.rs:395-397` adds one to a position ARIA counts from zero.
-    try testing.expectEqualStrings(
-        "1",
-        held.get(key_position_in_set) orelse return error.TestExpectedEqual,
-    );
-    try testing.expectEqualStrings(
-        "4",
-        held.get(key_size_of_set) orelse return error.TestExpectedEqual,
-    );
-    try testing.expectEqualStrings("field", held.get(key_html_id) orelse return error.TestExpectedEqual);
-    try testing.expectEqualStrings("brl", held.get(key_braille_label) orelse return error.TestExpectedEqual);
-    try testing.expectEqualStrings(
-        "edit",
-        held.get(key_braille_role_description) orelse return error.TestExpectedEqual,
-    );
+    try testing.expectEqualStrings("1", held.get(key_position_in_set).?);
+    try testing.expectEqualStrings("4", held.get(key_size_of_set).?);
+    try testing.expectEqualStrings("field", held.get(key_html_id).?);
+    try testing.expectEqualStrings("brl", held.get(key_braille_label).?);
+    try testing.expectEqualStrings("edit", held.get(key_braille_role_description).?);
 }
 
 test "a node that states nothing carries no attribute" {
@@ -866,18 +855,15 @@ test "a document attribute is found whatever the case of the name" {
     state.is_host_focused = false;
     const node_ref = try handle(&state, 0);
 
-    const from_title = (try documentAttributeValue(gpa, node_ref, "Title")) orelse
-        return error.TestExpectedEqual;
+    const from_title = (try documentAttributeValue(gpa, node_ref, "Title")).?;
     defer gpa.free(from_title);
     try testing.expectEqualStrings("A page", from_title);
 
-    const from_lower = (try documentAttributeValue(gpa, node_ref, "title")) orelse
-        return error.TestExpectedEqual;
+    const from_lower = (try documentAttributeValue(gpa, node_ref, "title")).?;
     defer gpa.free(from_lower);
     try testing.expectEqualStrings("A page", from_lower);
 
-    const from_uri = (try documentAttributeValue(gpa, node_ref, "uri")) orelse
-        return error.TestExpectedEqual;
+    const from_uri = (try documentAttributeValue(gpa, node_ref, "uri")).?;
     defer gpa.free(from_uri);
     try testing.expectEqualStrings("https://example.invalid/page", from_uri);
 

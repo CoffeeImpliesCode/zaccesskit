@@ -6,16 +6,22 @@
 //! them. This file is the two-function half of that split, and
 //! `text/inherited.zig` is the macro half.
 //!
-//! **Why there are two filters.** Descendant and hit-test walks visit nodes
-//! below the requested root, so they use the stateless text-run filter.
-//! Sibling scans also offer ancestors to the filter while climbing. They must
-//! include the document root to stop there, without yielding that ancestor as
-//! a run. Their cursors own the root ID by value and borrow it as the filter
-//! context only during each synchronous scan.
+//! **Why there are two filters.** Upstream captures the root id in the closure
+//! it hands to `filtered_children`. `FilterFn` carries a `context` pointer, and a
+//! context holding the root id would dangle: `textRuns` returns an iterator that
+//! outlives the call, so the context would have to outlive `textRuns` too. The
+//! port therefore uses a stateless filter, and `textNodeFilter` keeps the root
+//! clause as the faithful two-argument spelling.
+//!
+//! The two answer the same for every node a caller can reach, because the root
+//! clause fires only for the root itself and no call site offers the root as a
+//! candidate. A text run is found among the root's children, among the siblings
+//! of another text run, or by a hit test that descends through the root. A node
+//! is not its own child, so the root is never among the runs.
 //!
 //! **What this module deliberately does not own.** The hit test itself belongs
-//! to `node_ref/geometry.zig`, the text-run iterators to `text/position_inner.zig`,
-//! and the inherited walk this file uses to read a run's direction to
+//! to `node_ref/geometry.zig`, the text-run iterators to `text/query.zig`, and
+//! the inherited walk this file uses to read a run's direction to
 //! `node_ref/properties.zig`. This module holds no state.
 
 const std = @import("std");
@@ -40,8 +46,8 @@ const testing = std.testing;
 /// Includes the root node and every `Role.text_run` node, and excludes every
 /// other node. Upstream `text_node_filter` at `text.rs:932-938`.
 ///
-/// `context` borrows a `FullNodeId` for this synchronous call. A sibling cursor
-/// retains the ID by value and supplies its address anew for each scan.
+/// `context` must be a `FullNodeId`, because that is the root the closure
+/// upstream captures held. The module doc says why no iterator passes one.
 pub fn textNodeFilter(context: ?*anyopaque, node: NodeRef) QueryError!FilterResult {
     const root_id: *const FullNodeId = @ptrCast(@alignCast(context orelse return .exclude_node));
     const id = node.id();
@@ -49,14 +55,15 @@ pub fn textNodeFilter(context: ?*anyopaque, node: NodeRef) QueryError!FilterResu
     return textRunFilter(null, node);
 }
 
-/// The stateless `FilterFn` for descendant and hit-test walks. Sibling walks
-/// instead use `textNodeFilter` with their owned document root ID.
+/// The `FilterFn` the text-run iterators and the hit test are built from. It
+/// carries no context, because the context would have to outlive the iterator
+/// `textRuns` returns. See the module doc.
 pub const text_run_filter: FilterFn = .{ .context = null, .filter = textRunFilter };
 
 /// Includes a `Role.text_run` node and excludes every other node.
 ///
-/// Unlike `textNodeFilter`, this does not stop an ascending sibling scan at
-/// the document root, so it must not be used for text sibling walks.
+/// It answers `textNodeFilter` for every node except the root, and the module
+/// doc carries the argument for why no caller can tell the difference.
 pub fn textRunFilter(context: ?*anyopaque, node: NodeRef) QueryError!FilterResult {
     _ = context;
     return if (node.data().role == .text_run) .include else .exclude_node;

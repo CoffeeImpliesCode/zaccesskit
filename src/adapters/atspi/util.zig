@@ -153,10 +153,12 @@ pub fn textRangeFromOffsets(
     end_offset: i32,
 ) UtilError!?Range {
     const start = (try textPositionFromOffset(node, start_offset)) orelse return null;
-    const end = if (end_offset == document_end_offset)
-        try consumer.text.query.documentEnd(node)
-    else
-        (try textPositionFromOffset(node, end_offset)) orelse return null;
+    var end: Position = undefined;
+    if (end_offset == document_end_offset) {
+        end = try consumer.text.query.documentEnd(node);
+    } else {
+        end = (try textPositionFromOffset(node, end_offset)) orelse return null;
+    }
     var range = try consumer.text.range.toDegenerateRange(gpa, start);
     try consumer.text.range.setEnd(gpa, &range, end);
     return range;

@@ -1,11 +1,11 @@
 # Jujutsu VCS
 .jj/
 
-# Zig caches and install output. All three paths are symlinks to local disk (see AGENTS.md), so
+# Zig caches. On this host both are symlinks to local disk (see AGENTS.md), so
 # the patterns must match the link itself, not a directory behind it.
 .zig-cache
 zig-pkg
-zig-out
+zig-out/
 
 # codedb index snapshot
 codedb.snapshot

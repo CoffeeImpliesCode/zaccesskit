@@ -1,29 +1,31 @@
 # 30 — The design of `zaccesskit`, a pure Zig port of the AccessKit toolkit
 
-The package publishes a native Zig module and a C library.
-The contracts below separate source structure from run evidence in `docs/50-verification.md`.
+**Branch: shape.** The contract is new. No `zaccesskit` module is released, no
+consumer links a `zaccesskit` symbol. Every decision below is an offer, not a migration.
 
 **Consumes.** The 29 documents under `docs/`, `local://zaccesskit-risk-register.md`
 and `local://zaccesskit-deps.md`, plus four read-only upstream checkouts at the revisions in section
 1.2. **Consumed by.** `docs/31-c-abi-design.md` for the C seam, `docs/40-plan.md` for the milestone order, `docs/50-verification.md` for the evidence each milestone produces.
 
-**Proof labels.** Source reading, exercised compilation, and runtime observation are separate evidence classes.
-`docs/50-verification.md` records observed checks and their limits.
-The module budgets below remain design targets, not measured sizes.
+**Proof labels.** Every build, test, runtime or measurement claim carries one of
+three labels and none is upgraded: *source reading at a pinned revision*,
+*exercised compilation*, *runtime observation*. **Nothing in this repository has
+been compiled for this document.** No `zig build`, no test, no gate, no `zig fmt` has run against the port. Every claim about the port's own code is a design claim. Claims about upstream, zio, goose
+or the standard library travel as portable source cards with a full 40-character revision and a `Reads as` limit. Module sizes are budgets computed from upstream line counts, never measurements.
 ---
 ## 1. The pin and the surface
 ### 1.1 The compiler line
-**Zig 0.16.0.** `build.zig.zon` sets the compiler floor.
-`build.zig:75-84` registers the native module with `zio`, `build_options`, and `win32` imports.
-The module honors the selected target and optimization mode.
+**Zig 0.16.0.** `build.zig.zon:11` reads `.minimum_zig_version = "0.16.0"`, with a
+comment at `:8-10` saying this is the line the project targets, not merely a lower bound, and that `zig` on this host is an anyzig shim reading the same field. `build.zig:10-14` repeats it for a
+build-script reader. The module is declared at `build.zig:37-44` through `b.addModule`, rooted at `src/root.zig`, with `zio` as its only import.
 
 | Rung of the build ladder | What it is | State of `zaccesskit` |
 |---|---|---|
 | manifest floor | a declared lower bound | **present.** `build.zig.zon:11` |
-| declared target | a target a build script names | **present.** `b.standardTargetOptions(.{})` at `build.zig:35` |
+| declared target | a target a build script names | **present.** `b.standardTargetOptions(.{})` at `build.zig:25` |
 | configured CI | a compiler wired into a build path at that revision | **absent.** No CI configuration file exists |
-| reached build | a build on a named target and mode | See `docs/50-verification.md` |
-| observed run | an executed binary | See `docs/50-verification.md` |
+| reached build | a build you ran, on a named target, in a named mode | **absent.** The port has never been compiled |
+| observed run | a binary you executed | **absent.** No port binary has run |
 
 A declared step is a declared target, not a reached build: under lazy analysis a declaration no analysed path references is never analysed, so even a green default build certifies only the paths
 that build reaches.
@@ -48,20 +50,20 @@ Evidence: The bindings crate depends on the core crate by version, and the core 
 about how upstream intends to version the header in future.
 ```
 ### 1.3 The bounded supported consumer surface
-Two routes define the supported surface.
-`dep.module("zaccesskit")` publishes `schema`, `consumer`, `capi`, `version`, and `minimum_zig_version`.
-The schema and consumer namespaces provide the native value types, tree store, queries, and update protocol.
-The root does not publish separate `handlers` or `adapters` namespaces.
-The C route consists of the installed header and linked library.
-`docs/31-c-abi-design.md` owns its symbols and ownership rules.
+Two product kinds, each bounded by what a consumer can actually reach. **The native Zig module**, through `dep.module("zaccesskit")`, publishes the namespaces in section 3.5; the types a consumer
+must write in a signature (`Role`, `Action`, `ActionRequest`, `TreeUpdate`, `TreeInfo`, `NodeId`, `TreeId`, `PropertyId`, `TextRange`, `WeakTextRange`, `NodeRef`, `TreeState`, `FullNodeId`); the
+four vtables of section 6; and every field of every published type, because Zig struct fields are reachable without `pub` (guard L13). It publishes no `comptime` constraint, and every file under
+`src/` the root does not re-export is merely present. **The C ABI**, through a shipped header and a shipped library, is counted by `docs/31` section 1.4 and nothing here reopens it. The two surfaces
+differ: a Zig consumer gets optional types, typed error sets, allocators as parameters and `deinit`;
+a C consumer gets flat functions, sentinels and a declared allocator.
 ### 1.4 What this package publishes
-The package publishes both routes through the build graph.
+One sentence: **a registered module today; a C library and a shipped header when `docs/31` declares them.**
 
 | Route | Published? | What a consumer asks for |
 |---|---|---|
 | Registered module | yes, declared | `dep.module("zaccesskit")` |
-| C library, static or dynamic | yes, declared at `build.zig:86-102` | `dep.artifact("zaccesskit")`. Set `.linkage = .static` or `.dynamic` in dependency options |
-| Shipped header | yes | The library installs `include/zaccesskit.h` as `zaccesskit.h` |
+| C library, static and shared | not declared. `build.zig:5-6` says no C artifact exists | `dep.artifact("zaccesskit")` is unsupported |
+| Shipped header | not declared | it does not exist |
 | Named sub-modules, build-script re-export | no | none |
 
 `addModule` registers while its neighbour `createModule` does not. That one function name is the whole published-versus-present boundary, and a `pub` declaration is not a published API: the
@@ -73,8 +75,8 @@ stable-0.16 Source:   lib/std/Build.zig Reads as: Two declarations. It establish
 nothing about whether any package picked the wrong one.
 ```
 ### 1.5 What is not claimed
-This contract does not claim native platform execution, Unix bus delivery, or Rust reference execution.
-`docs/50-verification.md` records checks for the pinned source and their exact limits.
+No build, no run, no gate. No measurement of this port. No claim about a future upstream release: the pins in section 1.2 are the frozen baseline, and `powerpc64-linux` and every other cross-matrix
+row are design intent.
 ---
 ## 2. The architecture in one page
 
@@ -267,19 +269,25 @@ per update. And position-based equality, because upstream compared by slot posit
 commit fixed it once clone buffer reuse broke the slot correspondence, and a sorted slice makes the comparison structural.
 ### 3.5 The root re-export list
 
-The current root declares these five names:
-
 ```zig
-pub const schema = @import("schema/root.zig");
-pub const consumer = @import("consumer/root.zig");
-pub const capi = @import("capi/root.zig");
-pub const version = @import("build_options").version;
-pub const minimum_zig_version = @import("build_options").minimum_zig_version;
+//! zaccesskit — the AccessKit accessibility toolkit, ported to Zig 0.16.
+//!
+//! Four routes in:
+//!   * `zaccesskit.schema` — the platform-neutral value types: `Role`, `Action`,
+//!     `NodeId`, `TreeId`, `Node`, `Properties`, `PropertyId`, `TreeInfo`,
+//!     `TreeUpdate`, `ActionRequest`, and the geometry types.
+//!   * `zaccesskit.consumer` — the tree an application reads: `Tree`,
+//!     `TreeState`, `NodeRef`, `FullNodeId`, `TextRange`, `WeakTextRange`,
+//!     `FilterResult`.
+//!   * `zaccesskit.handlers` — the four vtables of the seam.
+//!   * `zaccesskit.adapters` — the platform adapters, one module per platform.
+//!
+//! Nothing here reads a clock, an environment variable or a socket. Every entry
+//! point that can block takes `io: std.Io`. A `*zio.Runtime` appears only in
+//! `zaccesskit.adapters.*`. No type names `std.heap` and no type reaches a global.
+pub const schema = @import("schema/root.zig"); pub const consumer = @import("consumer/root.zig"); pub const handlers = @import("schema/handlers.zig"); pub const adapters =
+@import("adapters/root.zig");
 ```
-
-`src/root.zig` checks the compiler floor and version shape.
-Its namespace tests reach the declared schema, consumer, and C ABI exports.
-The pure schema and consumer layers do not start a runtime.
 
 > **Record R2 — the root carries three namespaces, not a flat index.** **Priority.** Make the path carry the
 > taxonomy. **Constraint.** The published set is roughly 60 names across three audiences: a platform-adapter
@@ -292,9 +300,9 @@ The pure schema and consumer layers do not start a runtime.
 > not say which family a name belongs to. **Grade and origin.** taste · analyst-inferred; both shapes ship in
 > one library at the pin and neither is a house rule.
 
-The module import table supplies `zio`, `win32`, and `build_options`.
-Consumers import the registered `zaccesskit` module rather than recreate that table.
-The C library uses its separate `capi_root.zig` root.
+**No published signature names a `zio` or `goose` type.** A module's import table is
+per module and is not transitive, so such a signature would mean a consumer must add the dependency themselves. The root declares `zio` as its only import and it appears only inside the adapter
+modules.
 ---
 ## 4. The pure core
 ### 4.1 The identity types
@@ -905,5 +913,5 @@ would settle it.
 | 5 | Whether the macOS, iOS and Android adapters link against real system libraries on a host that has the SDKs. This host builds objects for those targets and cannot link executables, and there is no Wine. | A host with the SDKs, or the SDK-less `build-obj` results those three already produce |
 | 6 | What `zig-cov` will report for the port. The house gate measures line coverage only, and no threshold is promised here. | The first `zig-gate` run over the port, recorded in `docs/50-verification.md` |
 
-Compilation is not an open design question.
-`docs/50-verification.md` records the builds that reached source paths and the runs that checked behavior.
+**One thing is deliberately not listed.** Whether the port will compile. That is
+not an open question; it is a fact about the current state, recorded in sections 1.1 and 1.5, and the first build either confirms or refutes the design.

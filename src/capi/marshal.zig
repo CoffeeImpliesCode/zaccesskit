@@ -86,7 +86,7 @@
 //!    `opt_text_selection_to_c`, `opt_coords_to_c`, `opt_lresult_to_c`.
 //! 3. **The list, string and handle conversions.** `node_ids_to_c`,
 //!    `lengths_to_c`, `dup_c_string`, `string_free`, `c_string_to_slice`,
-//!    `cArrayToSlice`, `c_bytes_to_slice`, `custom_actions_to_c`, `custom_actions_deinit`.
+//!    `c_bytes_to_slice`, `custom_actions_to_c`, `custom_actions_deinit`.
 //! 4. **The four action-data forms `src/schema/update.zig` already owns,**
 //!    re-exported rather than written twice, as `docs/40-capi-build-map.md`
 //!    section 8 step 2 requires: `CActionData`, `COptActionData`,
@@ -1105,19 +1105,6 @@ pub fn string_free(gpa: std.mem.Allocator, value: [*c]u8) void {
 /// answer for it.
 pub fn c_string_to_slice(value: [*:0]const u8) []const u8 {
     return std.mem.span(value);
-}
-
-/// Borrows a C array whose pointer may be null only when its length is zero.
-///
-/// The node-list and text-vector setters permit this empty shape
-/// (`include/zaccesskit.h:2326,4451`). The custom-action setter copies every
-/// element (`:5097`), so an empty array contributes no handles.
-/// Return before converting the pointer: even an empty Zig slice cannot have
-/// a null pointer. A positive length still requires a valid non-null array.
-pub fn cArrayToSlice(comptime T: type, values: [*c]const T, length: usize) []const T {
-    if (length == 0) return &.{};
-    std.debug.assert(values != null);
-    return values[0..length];
 }
 
 /// The bytes a `(const char *, size_t)` argument contributes, for the

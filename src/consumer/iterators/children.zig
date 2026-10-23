@@ -375,25 +375,23 @@ pub const FilteredChildrenIterator = struct {
     done: bool,
 
     /// The next included descendant of `node` from the front, or `null` once
-    /// the cursor is spent. Advances the front unless this is the final node.
-    /// Returns `error.TreeCycle` when a nonterminal scan overruns its bound.
+    /// the cursor is spent. Advances the front, and returns
+    /// `error.TreeCycle` when the scan behind it overruns its bound.
     pub fn next(self: *FilteredChildrenIterator) QueryError!?NodeRef {
         if (self.done) return null;
         self.done = endsMeet(self.front, self.back);
         const current = self.front;
-        if (self.done) return current;
         self.front = try sibling_scan.nextFilteredSibling(self.front, self.filter);
         return current;
     }
 
     /// The next included descendant of `node` from the back, or `null` once
-    /// the cursor is spent. Advances the back unless this is the final node.
-    /// Reports scan errors on the same terms as `next`.
+    /// the cursor is spent. Advances the back, and returns `error.TreeCycle`
+    /// on the same terms as `next`.
     pub fn nextBack(self: *FilteredChildrenIterator) QueryError!?NodeRef {
         if (self.done) return null;
         self.done = endsMeet(self.front, self.back);
         const current = self.back;
-        if (self.done) return current;
         self.back = try sibling_scan.previousFilteredSibling(self.back, self.filter);
         return current;
     }

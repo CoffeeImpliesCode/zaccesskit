@@ -106,14 +106,12 @@
 
 const std = @import("std");
 
-const abi = @import("powerpc64_abi.zig");
 const allocation = @import("allocation.zig");
 const handles = @import("handles.zig");
 const marshal = @import("marshal.zig");
 const node = @import("node.zig");
 const schema = @import("../schema/root.zig");
 const tree_info = @import("tree_info.zig");
-const consumer_tree = @import("../consumer/tree.zig");
 
 const Node = schema.Node;
 const NodeId = schema.NodeId;
@@ -213,109 +211,6 @@ pub const accesskit_tree_update = struct {
         self.update.tree = if (tree) |held| held.value() else null;
     }
 };
-
-/// Keeps C-owned toolkit strings alive while either native snapshot borrows them.
-///
-/// The native consumer stores metadata only on the root, in its committed and
-/// working snapshots. Three slots cover those two owners and one incoming update.
-/// Copying this store does not create another owner. Release the native tree before
-/// `deinit`; call `reap` after every update attempt, including rejected updates.
-pub const LiveMetadataOwners = struct {
-    owners: [3]?*tree_info.accesskit_tree_info = .{ null, null, null },
-
-    /// Consumes a C handle on success and error, returning its native payload.
-    ///
-    /// The node-entry array moves without allocation only in a known shared domain.
-    /// Different or unknown domains migrate that array. Node buffers keep their
-    /// own allocators. `error.OutOfMemory` releases the entire incoming handle and
-    /// leaves existing tree borrows live. The returned value must be consumed once
-    /// by the native tree, or released with `deinit(gpa)`.
-    pub fn consume(
-        self: *LiveMetadataOwners,
-        gpa: std.mem.Allocator,
-        handle: *handles.accesskit_tree_update,
-        tree: ?*const consumer_tree.Tree,
-    ) TreeUpdateError!schema.TreeUpdate {
-        self.reap(tree);
-        const owned: *accesskit_tree_update = @ptrCast(@alignCast(handle));
-        errdefer owned.deinit();
-        const source_gpa = owned.gpa;
-        if (!allocation.sameDomain(.{ .source = source_gpa, .destination = gpa })) {
-            var migrated: std.ArrayList(schema.NodeEntry) = .empty;
-            try migrated.appendSlice(gpa, owned.update.nodes.items);
-            owned.update.nodes.deinit(source_gpa);
-            owned.update.nodes = migrated;
-        }
-        const update = owned.update;
-        if (owned.info) |info| {
-            if (hasOwnedStrings(info)) {
-                var retained = false;
-                for (&self.owners) |*slot| {
-                    if (slot.* == null) {
-                        slot.* = info;
-                        retained = true;
-                        break;
-                    }
-                }
-                // Two snapshots cannot borrow three distinct incoming owners.
-                std.debug.assert(retained);
-            } else {
-                tree_info.treeInfoFree(info);
-            }
-        }
-        source_gpa.destroy(owned);
-        return update;
-    }
-
-    /// Releases owners neither committed nor partially written state still borrows.
-    /// Equality uses storage identity, not bytes: equal metadata can leave the
-    /// committed snapshot borrowing the old owner while the working one uses the new.
-    pub fn reap(self: *LiveMetadataOwners, tree: ?*const consumer_tree.Tree) void {
-        for (&self.owners) |*slot| {
-            const info = slot.* orelse continue;
-            if (tree) |live| {
-                if (borrows(live.state.info, info)) continue;
-                if (borrows(live.next_state.info, info)) continue;
-            }
-            tree_info.treeInfoFree(info);
-            slot.* = null;
-        }
-    }
-
-    /// Releases retained metadata after its native tree has been released.
-    /// Leaves an empty store; a second call releases nothing.
-    pub fn deinit(self: *LiveMetadataOwners) void {
-        self.reap(null);
-    }
-
-    fn hasOwnedStrings(info: *const tree_info.accesskit_tree_info) bool {
-        if (info.toolkit_name_storage) |storage| {
-            if (storage.len != 0) return true;
-        }
-        if (info.toolkit_version_storage) |storage| {
-            if (storage.len != 0) return true;
-        }
-        return false;
-    }
-
-    fn borrows(value: schema.TreeInfo, info: *const tree_info.accesskit_tree_info) bool {
-        return sameStorage(value.toolkit_name, info.toolkit_name_storage) or
-            sameStorage(value.toolkit_version, info.toolkit_version_storage);
-    }
-
-    fn sameStorage(borrowed: ?[]const u8, storage: ?[]u8) bool {
-        const view = borrowed orelse return false;
-        const owned = storage orelse return false;
-        return owned.len != 0 and view.len == owned.len and view.ptr == owned.ptr;
-    }
-};
-
-/// Consumes a callback handle whose payload will not be applied to a native tree.
-/// Releases its nodes, metadata, and outer object through their captured allocators.
-pub fn discard(handle: *handles.accesskit_tree_update) void {
-    const owned: *accesskit_tree_update = @ptrCast(@alignCast(handle));
-    owned.deinit();
-}
 
 /// The only failure any function in this file has.
 ///
@@ -481,9 +376,10 @@ pub fn treeUpdateDebug(
     defer owning.deinit();
     formatTreeUpdate(update, &owning.writer) catch |err| switch (err) {
         // `std.Io.Writer.Allocating.drain` returns `error.WriteFailed` from one
-        // place, `lib/std/Io/Writer.zig:2705`, when `ensureUnusedCapacity`
-        // cannot grow the buffer. This writer owns its buffer, so that failure
-        // means allocation growth failed and maps to `error.OutOfMemory`.
+        // place, `lib/std/Io/Writer.zig:2705`, and that place is the
+        // `ensureUnusedCapacity` call that could not make room. A writer that
+        // owns its buffer and grows it has no other way to fail, so the C
+        // layer's one failing tag answers it.
         error.WriteFailed => return error.OutOfMemory,
     };
     const text = try owning.toOwnedSliceSentinel(0);
@@ -608,9 +504,9 @@ export fn accesskit_tree_update_set_focus(
 /// The value is copied, so no release is owed.
 export fn accesskit_tree_update_get_tree_id(
     update: *const accesskit_tree_update,
-) callconv(.c) abi.TreeIdValue {
+) callconv(.c) TreeId {
     allocation.clearError();
-    return abi.treeIdToValue(treeUpdateGetTreeId(update));
+    return treeUpdateGetTreeId(update);
 }
 
 /// Sets the update's tree identifier.
@@ -619,10 +515,10 @@ export fn accesskit_tree_update_get_tree_id(
 /// the other direction. Returns nothing and cannot fail.
 export fn accesskit_tree_update_set_tree_id(
     update: *accesskit_tree_update,
-    tree_id: abi.TreeIdValue,
+    tree_id: TreeId,
 ) callconv(.c) void {
     allocation.clearError();
-    treeUpdateSetTreeId(update, abi.treeIdFromValue(tree_id));
+    treeUpdateSetTreeId(update, tree_id);
 }
 
 /// Returns a text rendering of the update, or `null` when it could not be built.
@@ -815,17 +711,19 @@ comptime {
         assertPointerShaped(exported);
     }
 
-    // The header passes and returns the tree identifier by value.
-    // Both exports lower its representation only on PowerPC64 Linux musl.
+    // The other two are the tree identifier, which the header passes and
+    // returns by value on purpose. Both sides are the same `extern struct` at
+    // the same size and the same alignment, so the conversion is the identity
+    // and the signature is the header's.
     const getter = @typeInfo(@TypeOf(accesskit_tree_update_get_tree_id)).@"fn";
     std.debug.assert(getter.params.len == 1);
     std.debug.assert(!isAggregate(getter.params[0].type.?));
-    std.debug.assert(getter.return_type.? == abi.TreeIdValue);
+    std.debug.assert(getter.return_type.? == TreeId);
 
     const setter = @typeInfo(@TypeOf(accesskit_tree_update_set_tree_id)).@"fn";
     std.debug.assert(setter.params.len == 2);
     std.debug.assert(!isAggregate(setter.params[0].type.?));
-    std.debug.assert(setter.params[1].type.? == abi.TreeIdValue);
+    std.debug.assert(setter.params[1].type.? == TreeId);
     std.debug.assert(setter.return_type.? == void);
     std.debug.assert(@sizeOf(TreeId) == 16);
     std.debug.assert(@alignOf(TreeId) == 1);
@@ -1253,16 +1151,12 @@ test "the focus and the tree identifier round trip" {
     treeUpdateSetFocus(update, 99);
     try testing.expectEqual(@as(NodeIdContent, 99), update.update.focus.value);
 
-    const wanted: TreeId = .{ .bytes = .{
-        0xf1, 0x82, 0xb3, 0xc4, 0xd5, 0xe6, 0x47, 0x98,
-        0xa9, 0xfa, 0x8b, 0x9c, 0xad, 0xbe, 0xcf, 0xd0,
-    } };
-    accesskit_tree_update_set_tree_id(update, abi.treeIdToValue(wanted));
-    const actual = abi.treeIdFromValue(accesskit_tree_update_get_tree_id(update));
-    try testing.expectEqualSlices(u8, &wanted.bytes, &actual.bytes);
-    // The native store retains the same bytes without owning a second handle.
-    const stored = treeUpdateGetTreeId(update);
-    try testing.expectEqualSlices(u8, &wanted.bytes, &stored.bytes);
+    const wanted: TreeId = .{ .bytes = [_]u8{1} ** 16 };
+    treeUpdateSetTreeId(update, wanted);
+    try testing.expect(wanted.eql(treeUpdateGetTreeId(update)));
+    // The identifier is a value and not a handle, so a second read is the same
+    // 16 bytes and no release is owed for either read.
+    try testing.expect(treeUpdateGetTreeId(update).eql(wanted));
 }
 
 test "the debug text names the type, both nodes, the tree and the focus" {
@@ -1357,24 +1251,9 @@ test "the exported constructor, pusher and accessors answer through the C layer"
     accesskit_tree_update_set_focus(update, 12);
     try testing.expectEqual(@as(NodeIdContent, 12), update.update.focus.value);
 
-    // Compare every stored byte against independent logical values.
-    const tree_ids = [_]TreeId{
-        .{ .bytes = [_]u8{0} ** 16 },
-        .{ .bytes = .{
-            0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef,
-            0xfe, 0xdc, 0xba, 0x98, 0x76, 0x54, 0x32, 0x10,
-        } },
-        .{ .bytes = .{
-            0xf1, 0x82, 0xb3, 0xc4, 0xd5, 0xe6, 0x47, 0x98,
-            0xa9, 0xfa, 0x8b, 0x9c, 0xad, 0xbe, 0xcf, 0xd0,
-        } },
-    };
-    for (tree_ids) |wanted| {
-        accesskit_tree_update_set_tree_id(update, abi.treeIdToValue(wanted));
-        try testing.expectEqualSlices(u8, &wanted.bytes, &update.update.tree_id.bytes);
-        const actual = abi.treeIdFromValue(accesskit_tree_update_get_tree_id(update));
-        try testing.expectEqualSlices(u8, &wanted.bytes, &actual.bytes);
-    }
+    const wanted: TreeId = .{ .bytes = [_]u8{2} ** 16 };
+    accesskit_tree_update_set_tree_id(update, wanted);
+    try testing.expect(wanted.eql(accesskit_tree_update_get_tree_id(update)));
 
     const text = accesskit_tree_update_debug(update) orelse return error.NoDebugText;
     defer releaseCString(gpa, text);
@@ -1396,266 +1275,4 @@ test "the exported tree info calls answer through the C layer" {
     accesskit_tree_update_clear_tree_info(update);
     try testing.expectEqual(@as(?schema.TreeInfo, null), update.update.tree);
     try testing.expect(update.info != null);
-}
-
-fn callbackOwnerFixture(gpa: std.mem.Allocator) TreeUpdateError!*accesskit_tree_update {
-    const update = try treeUpdateWithFocus(gpa, 1);
-    errdefer update.deinit();
-    const info = build_info: {
-        const value = try tree_info.treeInfoNew(gpa, 1);
-        errdefer tree_info.treeInfoFree(value);
-        try tree_info.treeInfoSetToolkitName(value, "Captured toolkit");
-        try tree_info.treeInfoSetToolkitVersion(value, "2.4");
-        break :build_info value;
-    };
-    update.setTreeInfo(info);
-    const root = build_node: {
-        var value = schema.Node.init(gpa, .window);
-        errdefer value.deinit();
-        try schema.strings.setLabel(&value.properties, "Captured node");
-        break :build_node value;
-    };
-    try update.update.pushNode(gpa, .{ .value = 1 }, root);
-    return update;
-}
-
-fn callbackFixtureAllocationFailure(gpa: std.mem.Allocator) !void {
-    const handle = try callbackOwnerFixture(gpa);
-    defer handle.deinit();
-    try testing.expectEqualStrings("Captured toolkit", handle.update.tree.?.toolkit_name.?);
-    try testing.expectEqualStrings("2.4", handle.update.tree.?.toolkit_version.?);
-    try testing.expectEqual(@as(usize, 1), handle.update.nodes.items.len);
-    try testing.expectEqualStrings(
-        "Captured node",
-        schema.strings.label(&handle.update.nodes.items[0].node.properties).?,
-    );
-}
-
-test "callback fixture construction releases partial payload at every allocation failure" {
-    try testing.checkAllAllocationFailures(
-        testing.allocator,
-        callbackFixtureAllocationFailure,
-        .{},
-    );
-}
-
-const RegisteredCallbackAllocator = struct {
-    inner: std.mem.Allocator,
-    const header_bytes = 16;
-    const alignment: std.mem.Alignment = .of(u128);
-
-    fn alloc(size: usize, context: ?*anyopaque) callconv(.c) ?*anyopaque {
-        const self: *RegisteredCallbackAllocator = @ptrCast(@alignCast(context orelse return null));
-        const memory = self.inner.rawAlloc(size + header_bytes, alignment, @returnAddress()) orelse
-            return null;
-        const length: *usize = @ptrCast(@alignCast(memory));
-        length.* = size + header_bytes;
-        return memory + header_bytes;
-    }
-
-    fn free(pointer: ?*anyopaque, context: ?*anyopaque) callconv(.c) void {
-        const self: *RegisteredCallbackAllocator = @ptrCast(@alignCast(context orelse return));
-        const payload: [*]u8 = @ptrCast(pointer orelse return);
-        const memory = payload - header_bytes;
-        const length: *const usize = @ptrCast(@alignCast(memory));
-        self.inner.rawFree(memory[0..length.*], alignment, @returnAddress());
-    }
-};
-
-test "callback conversion moves registered allocator array without allocation" {
-    // Fail the next backend allocation after construction, through the actual C provider.
-    var counting: CountingAllocator = .{ .inner = testing.allocator };
-    defer counting.release();
-    var failing: std.testing.FailingAllocator = .init(counting.allocator(), .{});
-    var backend: RegisteredCallbackAllocator = .{ .inner = failing.allocator() };
-    allocation.installAllocator(RegisteredCallbackAllocator.alloc, RegisteredCallbackAllocator.free, &backend);
-    defer allocation.installAllocator(null, null, null);
-    const gpa = allocation.allocator();
-    const handle = try callbackOwnerFixture(gpa);
-    const allocation_count = failing.allocations;
-    failing.fail_index = failing.alloc_index;
-    {
-        var owners: LiveMetadataOwners = .{};
-        defer owners.deinit();
-        var native = try owners.consume(gpa, @ptrCast(handle), null);
-        defer native.deinit(gpa);
-        try testing.expectEqualStrings("Captured toolkit", native.tree.?.toolkit_name.?);
-        try testing.expectEqualStrings("2.4", native.tree.?.toolkit_version.?);
-        try testing.expectEqual(@as(u64, 1), native.tree.?.root.value);
-        try testing.expectEqual(@as(usize, 1), native.nodes.items.len);
-        try testing.expectEqual(@as(u64, 1), native.nodes.items[0].node_id.value);
-        try testing.expectEqual(schema.Role.window, native.nodes.items[0].node.role);
-        try testing.expectEqualStrings(
-            "Captured node",
-            schema.strings.label(&native.nodes.items[0].node.properties).?,
-        );
-        try testing.expectEqual(allocation_count, failing.allocations);
-    }
-    try testing.expectEqual(@as(usize, 7), try counting.expectOneReleaseEach());
-}
-
-test "default public C update converts actual node and metadata payload" {
-    allocation.installAllocator(null, null, null);
-    const gpa = allocation.allocator();
-    const handle = accesskit_tree_update_with_capacity_and_focus(1, 1) orelse
-        return error.NoTreeUpdate;
-    var pending: ?*accesskit_tree_update = handle;
-    defer if (pending) |held| held.deinit();
-    const info = build_info: {
-        const held = try tree_info.treeInfoNew(gpa, 1);
-        errdefer held.deinit();
-        try tree_info.treeInfoSetToolkitName(held, "Public toolkit");
-        try tree_info.treeInfoSetToolkitVersion(held, "3.1");
-        break :build_info held;
-    };
-    accesskit_tree_update_set_tree_info(handle, info);
-    const root = build_node: {
-        const held = try newNode(gpa, .window);
-        errdefer {
-            node.mutable_node(held).deinit();
-            gpa.destroy(node.mutable_node(held));
-        }
-        try schema.strings.setLabel(&node.mutable_node(held).properties, "Public node");
-        break :build_node held;
-    };
-    accesskit_tree_update_push_node(handle, 1, root);
-    try testing.expectEqual(allocation.Tag.none, allocation.lastError());
-    var owners: LiveMetadataOwners = .{};
-    defer owners.deinit();
-    pending = null;
-    var native = try owners.consume(gpa, @ptrCast(handle), null);
-    defer native.deinit(gpa);
-    try testing.expectEqual(@as(u64, 1), native.focus.value);
-    try testing.expectEqual(@as(u64, 1), native.tree.?.root.value);
-    try testing.expectEqualStrings("Public toolkit", native.tree.?.toolkit_name.?);
-    try testing.expectEqualStrings("3.1", native.tree.?.toolkit_version.?);
-    try testing.expectEqual(@as(usize, 1), native.nodes.items.len);
-    try testing.expectEqual(@as(u64, 1), native.nodes.items[0].node_id.value);
-    try testing.expectEqual(schema.Role.window, native.nodes.items[0].node.role);
-    try testing.expectEqualStrings(
-        "Public node",
-        schema.strings.label(&native.nodes.items[0].node.properties).?,
-    );
-}
-
-test "unknown custom allocator migrates array even with the same context" {
-    for ([_]bool{ true, false }) |same_context| {
-        var source: CountingAllocator = .{ .inner = testing.allocator };
-        defer source.release();
-        var destination: CountingAllocator = .{ .inner = testing.allocator };
-        defer destination.release();
-        const source_gpa = source.allocator();
-        const gpa = if (same_context) source_gpa else destination.allocator();
-        const handle = try callbackOwnerFixture(source_gpa);
-        const original_array = handle.update.nodes.items.ptr;
-        {
-            var owners: LiveMetadataOwners = .{};
-            defer owners.deinit();
-            var native = try owners.consume(gpa, @ptrCast(handle), null);
-            defer native.deinit(gpa);
-            try testing.expectEqual(@as(usize, 1), source.timesReleased(original_array));
-            try testing.expectEqualStrings("Captured toolkit", native.tree.?.toolkit_name.?);
-            try testing.expectEqualStrings("2.4", native.tree.?.toolkit_version.?);
-            try testing.expectEqual(@as(u64, 1), native.tree.?.root.value);
-            try testing.expectEqual(@as(usize, 1), native.nodes.items.len);
-            try testing.expectEqual(@as(u64, 1), native.nodes.items[0].node_id.value);
-            try testing.expectEqual(schema.Role.window, native.nodes.items[0].node.role);
-            try testing.expectEqualStrings(
-                "Captured node",
-                schema.strings.label(&native.nodes.items[0].node.properties).?,
-            );
-        }
-        try testing.expectEqual(
-            @as(usize, if (same_context) 8 else 7),
-            try source.expectOneReleaseEach(),
-        );
-        try testing.expectEqual(
-            @as(usize, if (same_context) 0 else 1),
-            try destination.expectOneReleaseEach(),
-        );
-    }
-}
-
-fn callbackMigrationAllocationFailure(gpa: std.mem.Allocator) !void {
-    // The outer handle, metadata, and node buffers belong to a different domain.
-    var source: CountingAllocator = .{ .inner = testing.allocator };
-    defer source.release();
-    const source_gpa = source.allocator();
-    const handle = try callbackOwnerFixture(source_gpa);
-    const original_array = handle.update.nodes.items.ptr;
-    const address = @intFromPtr(handle);
-    var owners: LiveMetadataOwners = .{};
-    defer owners.deinit();
-    var native = owners.consume(gpa, @ptrCast(handle), null) catch |err| {
-        try testing.expectEqual(@as(usize, 1), source.released.get(address).?);
-        try testing.expectEqual(@as(usize, 1), source.timesReleased(original_array));
-        try testing.expectEqual(@as(usize, 7), try source.expectOneReleaseEach());
-        return err;
-    };
-    defer native.deinit(gpa);
-    try testing.expectEqual(@as(usize, 1), source.released.get(address).?);
-    try testing.expectEqual(@as(usize, 1), source.timesReleased(original_array));
-    try testing.expectEqualStrings("Captured toolkit", native.tree.?.toolkit_name.?);
-    try testing.expectEqualStrings("2.4", native.tree.?.toolkit_version.?);
-    try testing.expectEqual(@as(u64, 1), native.tree.?.root.value);
-    try testing.expectEqual(@as(usize, 1), native.nodes.items.len);
-    try testing.expectEqual(@as(u64, 1), native.nodes.items[0].node_id.value);
-    try testing.expectEqual(schema.Role.window, native.nodes.items[0].node.role);
-    try testing.expectEqualStrings(
-        "Captured node",
-        schema.strings.label(&native.nodes.items[0].node.properties).?,
-    );
-}
-
-test "callback conversion consumes captured allocator handle at every migration allocation failure" {
-    try testing.checkAllAllocationFailures(
-        testing.allocator,
-        callbackMigrationAllocationFailure,
-        .{},
-    );
-}
-
-test "equal metadata replacement keeps separate committed and working storage owners" {
-    // The native commit compares metadata bytes, so equal text keeps the old borrow.
-    const gpa = testing.allocator;
-    var owners: LiveMetadataOwners = .{};
-    defer owners.deinit();
-    const first = try callbackOwnerFixture(gpa);
-    var tree = try consumer_tree.Tree.init(
-        gpa,
-        try owners.consume(gpa, @ptrCast(first), null),
-        false,
-    );
-    defer tree.deinit();
-    owners.reap(&tree);
-    const second = try callbackOwnerFixture(gpa);
-    const update = try owners.consume(gpa, @ptrCast(second), &tree);
-    var context: u8 = 0;
-    const changes: consumer_tree.TreeChangeHandler = .{ .ptr = &context };
-    try tree.updateAndProcessChanges(update, &changes);
-    owners.reap(&tree);
-    try testing.expectEqualStrings("Captured toolkit", tree.state.toolkitName());
-    try testing.expectEqualStrings("Captured toolkit", tree.next_state.toolkitName());
-    try testing.expectEqualStrings("2.4", tree.state.toolkitVersion().?);
-    try testing.expectEqualStrings("2.4", tree.next_state.toolkitVersion().?);
-}
-
-test "callback metadata without owned nonempty storage needs no retained owner" {
-    const gpa = testing.allocator;
-    const handle = try treeUpdateWithFocus(gpa, 1);
-    var pending: ?*accesskit_tree_update = handle;
-    defer if (pending) |owned| owned.deinit();
-    const info = build_info: {
-        const value = try tree_info.treeInfoNew(gpa, 1);
-        errdefer tree_info.treeInfoFree(value);
-        try tree_info.treeInfoSetToolkitName(value, "");
-        break :build_info value;
-    };
-    handle.setTreeInfo(info);
-    var owners: LiveMetadataOwners = .{};
-    defer owners.deinit();
-    pending = null;
-    var native = try owners.consume(gpa, @ptrCast(handle), null);
-    defer native.deinit(gpa);
-    try testing.expectEqualStrings("", native.tree.?.toolkit_name.?);
 }

@@ -38,18 +38,33 @@ becomes an RO claim because a test binary exists.
 | EC | That the program does the right thing. That the assertion inside a passing test is meaningful. That a file no build step names was checked at all. That a green gate says anything about behaviour. Section 2.2 lists the eight cases. |
 | RO | That the result generalises. That the transcript was not cherry-picked. That the same code on another host, another endianness, or another bus behaves the same way. |
 
-### 1.3 How to read the repository state
+### 1.3 The state of this repository today
 
-Sections 2 through 5 preserve the original verification design.
-Their unproven labels describe that design record, not the current source.
-Sections 6 through 9 record earlier port checks and corrections.
-Section 10 records the API integration work and its observed checks.
-Later evidence supersedes earlier counts only where it names the same check.
+State it plainly, because every row in section 4 depends on it.
 
-The research probes remain separate from port checks.
-The goose live-bus probe ran in a separate scratch package.
-The geometry probes and platform compile matrix also used separate programs.
-A probe result does not prove this package's native platform behavior.
+**Almost every claim in this repository is SR.** A few are RO, and they all come
+from the research phase, not from the port. **No file under `src/` has ever
+been compiled.** `src/root.zig` is a module root that carries no declarations,
+and `src/root.zig:11-14` says so.
+
+The RO claims that exist are these, and no others:
+
+- the goose probe against the live accessibility bus (`docs/26`), a separate
+  program in a separate scratch package;
+- the geometry layout probe and the geometry vector probe (`docs/19` §2.2 and
+  §7), separate programs under Zig 0.16.0;
+- the platform cross-compile matrix (`docs/16`, the link table at
+  `docs/16:1771-1788`).
+
+The exercised compilations in this record all sit outside `src/`, and two of
+them are easy to over-read. The build-graph skeleton in `docs/22` section 8 was
+extracted verbatim into a temporary scratch package, and that package was
+deleted afterwards (`docs/22:33-36`), so its green steps are EC for the build
+graph and for nothing else. The goose probe build is EC for goose under a
+patched copy, not for this package.
+
+**Nothing in section 4 has reached EC or RO inside `src/`.** Every row below is
+marked accordingly, and every unproven row says what is missing.
 
 ---
 
@@ -222,26 +237,59 @@ what makes them evidence.
 
 ### 3.2 Layer 2 — recorded fixtures
 
-**Route.** `zig build reference` runs `reference_root.zig` in Debug and ReleaseSafe.
-`zig build reference-run -Doptimize=ReleaseSafe` runs the standalone fixture loader.
-It reads `test/fixtures/manifest.json`, `geometry.json`, and `text.json`.
+**Route.** `test/fixtures/manifest.json` plus one `.bin` and one `.meta.json`
+per case. The harness is `test/vectors/main.zig`, its own module root, so
+`@embedFile` resolves and a missing fixture is a build failure rather than a
+silent skip (`docs/18` §2.5, §5.5).
 
-**Provenance.** The manifest pins core revision `466e24e252103f4d82bd6fbab98141b551e46e0c`.
-The cases record upstream paths and source test locations.
-These are finite, hand-recorded source oracles.
-Hand-computed expected values are `[INFERENCE]`, not Rust runtime output.
+**The format.** One case is two files. The `.bin` is the recorded bytes and
+nothing else. The `.meta.json` is the identity of the case.
 
-**Integrity.** The loader checks raw byte length and SHA-256 before it parses each body.
-It then checks case identity, provenance, and exact production output.
-The geometry body contains four cases. The text body contains eight cases.
-Section 10 records their lengths, hashes, and observed checks.
+**The version field.** `manifest.json` carries `schema`, and `sources.core`
+pins `commit` `466e24e252103f4d82bd6fbab98141b551e46e0c` at version 0.25.1, and
+`sources.c` pins `commit` `8b6ed37c20ed4c59390e253407983333053662ba` at version
+0.23.1. A change to the container or the metadata is a version bump, and the
+harness refuses a `schema` it does not know (`docs/18` §5.2).
 
-**Proves.** The checked Zig operations match these twelve stored expected results.
-The integrity checks detect changed fixture bytes.
+**The checksum.** `cases[].body_sha256`, lowercase hex, computed with
+`std.crypto.hash.sha2.Sha256` (`docs/18` §5.2). `cases[].body_len` is the
+length the recorder observed. The harness asserts the length first, then the
+hash, then decodes. A truncated or hand-edited capture is a test failure.
 
-**Does not prove.** The loader does not execute Rust.
-It does not prove wire-byte parity, serde compatibility, or equivalence for unrecorded inputs.
-An upstream pin states provenance. It does not turn a hand-recorded value into runtime evidence.
+**Proves.** The port decodes the exact bytes upstream produced at a named
+commit, and re-encodes to the same bytes. `docs/18` §5.3 makes each case
+reviewable without a decoder through an `input_semantics` block that states
+what the bytes mean in plain numbers, and the harness cross-checks every field
+against the decoded value.
+
+**Does not prove.** That upstream still produces those bytes. That the port
+handles an input nobody recorded. That a fixture is upstream truth rather than
+the port's own re-recording.
+
+**The regeneration problem, stated honestly.** Upstream may be unavailable. A
+tag may be force-pushed, or the network may be gone. The procedure does not
+need upstream: regeneration is a re-recording from another recorded fixture,
+extended through the port's own serialiser, stored as a **new** case whose
+`recorded_from` names its parent case and marked with `derived_from`
+(`docs/18` §5.4 rule 2). Such a case is a regression test, not a conformance
+test. Only a case carrying a real upstream commit supports an interoperability
+claim (`docs/18` §5.4 rule 3). Bumping upstream is a new `sources` entry and a
+higher `schema`, never a rewrite (`docs/18` §5.4 rule 4).
+
+**The oracle route is closed and no substitute is equivalent.**
+`docs/25-r2z-oracle-and-promotion.md` §3.5 closes it for four reasons, and the
+fourth is the one that hurts: the value in an oracle is in the expected values,
+and what cannot be transcribed is a *live* re-verification. The port has no
+`cargo`, so there is no way to re-derive a value on demand.
+
+The consequence, stated rather than papered over: **drift is impossible and
+verification is impossible at the same time.** The checksum proves the bytes
+are the committed bytes. The recorded commit proves which upstream tree they
+came from. Neither lets a reviewer re-derive the value without upstream. What
+survives is a recorded conformance suite in which every case names the upstream
+commit, the file inside that commit, and the byte offset or test name the value
+came from (`docs/25` §3.5). A reviewer can check provenance. A reviewer cannot
+check the value without the toolchain this project forbids.
 
 ### 3.3 Layer 3 — the live AT-SPI bus on this host
 
@@ -494,709 +542,3 @@ cannot yet support.
 | H14 | **Line coverage for the whole tree.** No coverage number exists and none is promised. The `zig-cov` wiring is documented two ways that disagree (`docs/18` §7.3), and the stage is advisory anyway. | Not a number. The obligation `docs/18` §7.2 sets instead: every uncovered path in the changed set carries one of three dispositions, and the third is written down. A number is not a disposition. |
 
 ---
-
-## 8. Portable AT-SPI node fixes
-
-This change addresses [issue #2](https://github.com/CoffeeImpliesCode/zaccesskit/issues/2).
-The source reference is AccessKit commit
-`466e24e252103f4d82bd6fbab98141b551e46e0c`.
-The 43 original open rows now name their portable Zig counterparts.
-The methods return values or emit application actions. They do not register D-Bus objects.
-The ledger also corrects the three mappings for `adapter_id`, `id`, and `role`.
-
-### 8.1 Defects and regression tests
-
-| Defect | Observed failure before the fix | Regression |
-|---|---|---|
-| Unsupported bulk selection resolved the node | The missing-node case returned `error.Defunct` instead of `false`. Upstream `node.rs:1381-1389` returns `false` without resolution. | `unsupported bulk selection returns false without resolving a node` |
-| Cache strings lost their allocation length | `CacheNode.deinit` triggered `Invalid free`. The stored text length was smaller than the list capacity. | `cache text ownership transfer releases grown name and description under fail N` and the real cache query |
-| Child lookup ran before the selection capability check | `expected error.UnsupportedInterface, found error.Defunct` for an image with no children. | `selection and text methods emit actions for the real consumer tree` |
-| Lazy method analysis hid invalid calls | The first build reported two errors. The broader value/action tests exposed seven more. Caret and point queries exposed two more. | The real value, action, caret, and point tests call those methods. |
-
-The cache fix transfers each list through `toOwnedSlice`.
-An error releases the list and each earlier buffer.
-Fail-N tests exercise the existing `error.OutOfMemory` paths.
-This change adds no production error tag.
-Selection methods use the resolved node once.
-The filtered child cursor owns the walk bound and reports `error.TreeCycle` on exhaustion.
-The fixture loops use finite named arrays.
-
-The initial command was:
-
-```sh
-zig build test --summary all -j4
-```
-
-Its step summary was:
-
-```text
-Build Summary: 6/11 steps succeeded (2 failed)
-test transitive failure
-```
-
-The focused run includes six behavior tests and six existing reachability sweeps.
-The final run reported:
-
-```text
-All 12 tests passed.
-```
-
-The mutation check changed only `selectAll` from `false` to `true`.
-The regression detected the change:
-
-```text
-adapters.atspi.node.test.unsupported bulk selection returns false without resolving a node...FAIL (TestUnexpectedResult)
-6 passed; 0 skipped; 1 failed.
-```
-
-The implementation was restored before the passing run.
-
-### 8.2 Real consumer smoke
-
-A standalone program built a seven-node `TreeUpdate` and passed it to `Tree.init`.
-It called the real node methods and inspected their emitted `ActionRequest` values.
-It did not replace the node implementation.
-The program reported:
-
-```text
-PASS real Tree.init: image=(115,230,40,40) value=4.5 step=0.25 text=bc family=Fixture Sans selected=1 click_target=5 selection=(0,2) removed=(3,3) scroll=(45,50) substring_scroll=(60,80)
-```
-
-The substring-scroll oracle follows `node.rs:1728-1758` and `util.rs:44-56`.
-Window coordinates use a zero origin.
-The text range starts at `(10,0)`, so the request `(70,80)` emits `(60,80)`.
-The smoke proves portable queries and action emission only.
-It does not prove live D-Bus registration or communication with an accessibility client.
-
-### 8.3 Android decisions
-
-[Issue #4](https://github.com/CoffeeImpliesCode/zaccesskit/issues/4) permits written decisions.
-The ledger records scroll payload ownership and the accessibility-manager lookup contract.
-Root scroll events use the host-view representation.
-The proposed slot error set preserves filter errors.
-The manager descriptor follows the linked Android API and JNI specification.
-Both rows remain open because this change does not implement either contract.
-
-### 8.4 Retained root-mapper obligation
-
-Review identified a separate path in `PlatformRoot.mapDescendantCacheNodes`.
-A standalone identity-mapper probe used a real tree and the application registry.
-Compilation failed before the mapper could run:
-
-```text
-src/adapters/atspi/node.zig:2375:9: error: expected type 'i32', found 'error{TooManyChildren}!i32'
-        child_count,
-        ^~~~~~~~~~~
-```
-
-The child-count cast at `node.zig:2369` lacks an error return.
-The ledger reopens upstream `node.rs:1973` instead of retaining a completion claim.
-`[INFERENCE]` The mapper can also retain cache strings that the collector then releases.
-The compile failure prevented a runtime check of that ownership concern.
-This path needs its own cast, ownership, and allocation-failure checks.
-
-The actual ledger has 1356 rows.
-The original 43 completions and the reopened root row change the open count from 108 to 66.
-The prior header count of 104 did not match the inventory.
-
-### 8.5 Final native tests and gate
-
-The final `zig build test --summary all -j4` run reported these count and summary lines:
-
-```text
-All 353 tests passed.
-All 353 tests passed.
-All 1599 tests passed.
-All 1599 tests passed.
-Build Summary: 11/11 steps succeeded
-```
-
-The two library shards run in Debug and ReleaseSafe.
-The two 353-test shards replay the committed decoder corpus in those modes.
-This change adds no decoder boundary or fixture.
-
-The final `zig-gate` run executed all nine default stages.
-These are its verdict lines:
-
-```text
-== zig fmt --check ==
-  fmt: OK
-== zig build ==
-  build: OK
-== zig build test ==
-  test: OK
-== zig ast-check ==
-  ast-check: OK
-== ziglint ==
-  ziglint: found 119 issue(s), exit 1
-== zlint ==
-  zlint: found 10 issue(s), exit 0
-== zbc ==
-  zbc: 0 error(s), 0 warning(s) (advisory), exit 134
-== zwanzig ==
-  zwanzig: found 103 finding(s) in 4 rule class(es), exit 1
-  zwanzig: FAILED (zwanzig reported 104 issue(s) but 103 diagnostic line(s) parsed; the output format moved)
-== cross-test ==
-  cross-test: status=pass pass=3 fail=0 build_only=0 partial=0 summary=/tmp/cache/zaccesskit/cross-test/cross-test-summary.json
-  cross-test: OK
-GATE FAILED — fix the issues above
-```
-
-The gate exited 1. This is not a green-gate claim.
-The `zbc` process panicked with `integer overflow` in its AST parameter scan.
-The `zwanzig` finding count did not match the parsed diagnostic count.
-The native tests do not resolve the remaining lint findings or either tool failure.
-No rule was disabled and no stage was skipped.
-The four optional-unwrap findings introduced by the first test draft were removed.
-
-The final cross-test summary records execution, not build-only results:
-
-| Target | Status | Tests | Reason |
-|---|---|---|---|
-| `x86_64-linux` | pass | 1599 | `tests_complete` |
-| `aarch64-linux` | pass | 1589 | `tests_complete` |
-| `powerpc64-linux` | pass | 1589 | `tests_complete` |
-
-The foreign rows do not execute the Windows COM surface.
-No row proves communication with a live platform accessibility object.
-
-The final source format check reported no file.
-The added source lines contain no unbounded loop, empty catch, discarded error,
-unexplained `unreachable`, or file-scope variable.
-Repository scans found no Rust manifest or build input and no Rust tool invocation.
-
-## 9. Final correction evidence
-
-This section supersedes section 8.4's reopened cache claim and section 8's final counters.
-Section 8 remains the historical record of that earlier run.
-The evidence comes from `correction-proof.json` and raw artifacts `252`, `292`, and `303`.
-
-### 9.1 Root cache contract and tests
-
-`PlatformRoot.mapDescendantCacheNodes` at `src/adapters/atspi/node.zig:2251` now uses an owned-input mapper contract.
-The mapper consumes each `CacheNode` on success and error, including both text buffers.
-The collector reserves output capacity before handoff.
-The release callback frees partial mapped output on failure and must not retain its item pointer.
-Both callbacks run on the calling thread and must not change the registry or trees.
-On success, the caller owns all mapped items and the list buffer through the supplied allocator.
-On error, no result survives. The collector does not undo mapper side effects.
-The return error set joins `NodeError` with the mapper's closed error set and rejects `anyerror`.
-Checked child counts and indices replace the failed cast recorded in section 8.4.
-
-The focused result records 17 passing tests, including these five root-cache tests:
-
-| Test | Evidence covered |
-|---|---|
-| `root cache identity retains owned name and description` | Identity mapping retains text after collector temporaries end. |
-| `root cache preserves multi window preorder filtering indices and focus` | Two windows preserve preorder, promoted children, hidden-subtree filtering, indices, and per-window focus. |
-| `root cache releases owned inputs and mapped outputs under fail N` | Fail-N covers the successful walk's allocations and partial ownership. |
-| `root cache query failure releases partial mapped outputs under fail N` | Fail-N covers allocations before query failure and releases earlier results. |
-| `root cache mapper rejection consumes input and releases outputs under fail N` | Fail-N covers mapper rejection, consumed input, and partial output release. |
-
-### 9.2 Windows formatter cases and errors
-
-`src/adapters/windows/util.zig` has nine formatter tests:
-
-| Test | Cases covered |
-|---|---|
-| `toolkit description preserves Unicode code units and version presence` | Default name, empty name, absent/empty version, empty-name version, BMP/non-BMP Unicode, and interior NUL. |
-| `ARIA empty and exact multiple properties have no invented escaping` | Empty builder, empty fields, exact semicolons, Unicode, equals signs, and literal backslashes. |
-| `ARIA booleans and usize use lowercase and exact decimal digits` | Both booleans, zero, and maximum `usize`. |
-| `toolkit description fail-N releases all intermediate buffers` | Description allocation failures release temporary storage. |
-| `ARIA fail-N preserves completed properties separators and transfer ownership` | Property allocation failures and owned output. |
-| `ARIA allocation failure does not leave a separator before a later retry` | Failed writes preserve completed properties and permit a correct retry. |
-| `ARIA failed ownership transfer keeps completed bytes until a successful transfer` | Failed transfer preserves the builder and permits a later transfer. |
-| `ARIA typed writers fail-N leave an empty builder usable and leak nothing` | Boolean and integer writer allocation failures. |
-| `toolkit description rejects invalid UTF-8 in name and version` | Both inputs return `error.InvalidUtf8`. |
-
-`DescriptionError` is the closed set `error{ OutOfMemory, InvalidUtf8 }`.
-`PropertyError` is the closed set `error{OutOfMemory}`.
-Fail-N tests reach the new APIs' `OutOfMemory` paths. The named invalid-UTF-8 test reaches `InvalidUtf8`.
-Neither formatter imposes an arbitrary size cap. Checked size arithmetic reports unrepresentable allocation sizes as `OutOfMemory`.
-The integer buffer uses `@bitSizeOf(usize)`, which bounds every decimal representation, including zero.
-The description returns native UTF-16 code units, not a little-endian byte sequence.
-The big-endian branch converts decoder output and the space separator with `littleToNative`.
-The executed `powerpc64-linux` suite checks the same exact Unicode code-unit oracle on a big-endian target.
-This is portable formatter evidence, not Windows COM execution.
-
-### 9.3 Smoke, mutation, and native results
-
-The real-consumer smoke reported this exact line:
-
-```text
-PASS cache preorder=[7:0,7:2,7:5,11:0,11:2,11:5] indices=[0,0,1,1,0,1] children=[2,0,0,2,0,0] focused=[0,1,0,0,0,0] name="Retained image" description="Retained description" toolkit_utf16=[233,55357,56832,32,946,46,49] aria="disabled=false;level=7"
-```
-
-Artifact `292` records the wrong-cache-index and comma-for-semicolon mutations in one native run:
-
-```text
-1400/1624 adapters.atspi.node.test.root cache preserves multi window preorder filtering indices and focus...expected 1, found 0
-FAIL (TestExpectedEqual)
-1619 passed; 0 skipped; 5 failed.
-```
-
-The comma mutation failed four formatter checks: exact properties, booleans/integers, fail-N property output, and allocation-failure retry.
-The index mutation failed the root-cache preorder test. The proof records that both mutations were restored.
-Artifact `252` records these native count and summary lines:
-
-```text
-All 353 tests passed.
-All 1624 tests passed.
-All 353 tests passed.
-All 1624 tests passed.
-Build Summary: 11/11 steps succeeded
-```
-
-Debug and ReleaseSafe each ran 1624 library tests and 353 committed-corpus tests.
-This correction adds no protocol-decoder boundary or corpus fixture.
-These results do not claim new fuzz coverage or live-platform proof.
-
-### 9.4 Full gate result and retained policy
-
-Artifact `303` ran all nine stages. Its stage heads and verdict were:
-
-```text
-== zig fmt --check ==
-  fmt: OK
-== zig build ==
-  build: OK
-== zig build test ==
-  test: OK
-== zig ast-check ==
-  ast-check: OK
-== ziglint ==
-  ziglint: found 96 issue(s), exit 1
-== zlint ==
-  zlint: found 3 issue(s), exit 0
-== zbc ==
-  zbc: 0 error(s), 0 warning(s) (advisory), exit 134
-== zwanzig ==
-  zwanzig: found 66 finding(s) in 4 rule class(es), exit 1
-  zwanzig: FAILED (zwanzig reported 67 issue(s) but 66 diagnostic line(s) parsed; the output format moved)
-== cross-test ==
-  cross-test: status=pass pass=3 fail=0 build_only=0 partial=0 summary=/tmp/tmp/zig-gate-cross/cross-test-summary.json
-  cross-test: OK
-GATE FAILED — fix the issues above
-```
-
-The gate exited 1. It did not pass.
-`zbc` still panicked with integer overflow. The `zwanzig` count still disagreed with the parsed diagnostic count.
-The final executed cross-test counts supersede section 8.5:
-
-| Target | Status | Tests |
-|---|---|---|
-| `x86_64-linux` | pass | 1624 |
-| `aarch64-linux` | pass | 1614 |
-| `powerpc64-linux` | pass | 1614 |
-
-Tools, lint rules, production invariant-backed unwraps, and the external checker's 200-state cap remain unchanged.
-Allocator-first parameters, foreign SDK/C names, and valid deinitialization resets remain unchanged.
-The Z017 direct-return experiment failed compilation because the error-union payload could not coerce to the optional payload.
-The recorded Debug `zig test` CLI experiment exited 1 with eleven errors in the optional string getters.
-The compiler reported: `error union payload '[]u8' cannot cast into error union payload '?[]u8'`.
-That experiment does not show that a hoisted temporary fails.
-The current source retains `return try`. It does not apply lint-policy hoisting solely to hide the warning.
-
-### 9.5 Tool reports, host fit, and ledger
-
-The approved tool reports are:
-
-- [zbc #105](https://github.com/CoffeeImpliesCode/zbc/issues/105): integer overflow in the AST parameter scan.
-- [zwanzig #87](https://github.com/CoffeeImpliesCode/zwanzig/issues/87): separate owned getter results reported as a double free.
-- [zwanzig #86](https://github.com/CoffeeImpliesCode/zwanzig/issues/86): a live generic callback reported as unused.
-
-`CoffeeImpliesCode/ziglint` has issues disabled.
-The five Ziglint drafts cover Z030 valid resets/idempotent deinitialization, Z006 PascalCase SDK type aliases,
-Z006 exported C ABI constants, Z032 foreign SDK/JNI acronym names, and Z017 syntactically truncated code suggestions.
-The Z017 draft does not report the `return try` warning itself as a checker defect.
-Z023 allocator-first order remains a policy conflict, not a tool-defect draft.
-All five remain drafts, not posted issues.
-Authenticated queries for `CoffeeImpliesCode/zlint` and `CoffeeImpliesCode/zig-gate` returned HTTP 404.
-Reports for those destinations remain unfileable. No report was redirected to an unrelated repository.
-
-The nogui fit review inspected source at
-[`a7761b4245974d62adf6f65fba41812f23bc5b9c`](https://github.com/CoffeeImpliesCode/nogui/tree/a7761b4245974d62adf6f65fba41812f23bc5b9c).
-It did not execute nogui.
-`src/v7/semantics.zig` owns the model semantics. `App.present` commits the semantic snapshot.
-The replacement seam is the host accessibility adapter and its bridge, not the semantic producer.
-Current zaccesskit is not a drop-in replacement.
-Custom-action, positioned editable-text, callback-close, and native bus/attachment gaps still need equivalent implementations.
-The tool reports contain no nogui review data.
-
-At that historical checkpoint, the ledger recorded 1356 rows: 457 ported, 647 adapted, 194 not applicable, and 58 open.
-The open rows split into Unix 39, Windows 13, atspi-common 4, and Android 2.
-The signature wrap added five lines below `node.zig:2256`.
-The then-current LSP coordinate named `notifyChanges` at `node.zig:2453`.
-Original upstream coordinates remain unchanged. Section 10.5 records the later document-event closure.
-
-## 10. API integration evidence
-
-This section records the integrated API work.
-The artifact counts below describe their recorded runs, not a current source census.
-Sections 10.5 through 10.7 record later execution evidence.
-These sections do not replace earlier platform refusal limits or claim a green house gate.
-`docs/40-plan.md` section 1.2 owns the build-step command list.
-
-### 10.1 Offline application and linked C consumer
-
-Artifact `388` records 857 integration tests per mode in Debug and ReleaseSafe.
-Artifact `414` records the ReleaseSafe standalone application scenario, with a two-millisecond run.
-The scenario converts pure application-model commands to tree updates.
-It checks the exact eight-node result and returns `InvalidState` on a wrong result.
-It does not execute nogui or a native accessibility bus.
-
-Artifact `426` records the ReleaseSafe linked C11 consumer:
-
-| Counter | Observed value |
-|---|---:|
-| Checks | 1676 |
-| Failed checks | 0 |
-| Allocations | 598 |
-| Frees | 598 |
-| Active allocations | 0 |
-| String releases | 184 |
-| Custom-action releases | 4 |
-| Action-list releases | 7 |
-| Node releases | 53 |
-| Tree-info releases | 2 |
-| Tree-update releases | 2 |
-
-This run links and executes the real library.
-The empty-array regressions cover eligible `NULL, 0` setters.
-The run does not prove native platform object attachment.
-
-### 10.2 Hand-recorded reference fixtures
-
-Artifact `426` records 766 passing reference-shard tests per mode in Debug and ReleaseSafe.
-The ReleaseSafe standalone run took four milliseconds.
-It printed two raw-fixture passes and twelve exact-output case passes.
-It also printed `reference-runtime=not-executed` and `wire-parity=not-claimed`.
-
-| Fixture | Cases | Raw bytes | SHA-256 |
-|---|---:|---:|---|
-| `test/fixtures/geometry.json` | 4 | 1686 | `055257448677d44741d3d80c29c61ed0fdcc46654484d8c8d5e710137ac271f2` |
-| `test/fixtures/text.json` | 8 | 4447 | `ec41b6fcaa01d2816f751f2c1598559a471f9334ee1096e192ba0e2e588357a8` |
-
-`test/fixtures/manifest.json` records these bytes and core revision `466e24e252103f4d82bd6fbab98141b551e46e0c`.
-These results support the finite source-oracle scope in section 3.2.
-They do not support Rust execution or wire-byte parity.
-
-### 10.3 Measured registry reuse
-
-The benchmark tests passed nine tests per mode in Debug and ReleaseSafe.
-The benchmark emits deterministic digests and work counts. It has no internal timing.
-`TreeIndexMap.cloneInto` compares the next index, both counts, and every mapping in both directions.
-Equal registries skip two map clones and destination replacement.
-Changed registries keep the existing transactional copy path.
-
-Run `bg_24` measured all eighteen cases in the table below.
-Both binaries used ReleaseSafe and CPU 0.
-GNU time recorded five interleaved runs per version, with compilation idle.
-Allocation instrumentation ran separately.
-Times cover the whole process, including fixture construction, canonical checksum verification, and teardown.
-They do not measure native accessibility-bus latency.
-
-The receipts are `/tmp/cache/zaccesskit/evidence/api-integration-perf/benchmark-results.json`.
-The baseline binary SHA-256 is `64662b278d7a918a8d810f073b1f2ca9e460c5b3843e0e5512fb06330d9c0d58`.
-The candidate binary SHA-256 is `f6fe1a2c5c6a07eada4a75e03e5c4b87c830098e9647c05accfea20db1d89ee6`.
-The baseline cache artifact starts with `148b62d6`. The candidate starts with `efa3ccc5`.
-Earlier calibration artifact `f669` used different host load. It is not a comparative result.
-
-| Shape | Nodes | Workload | Work units | Baseline median seconds | Candidate median seconds | Baseline allocations | Candidate allocations |
-|---|---:|---|---:|---:|---:|---:|---:|
-| balanced | 65 | snapshot | 8192 | 1.67 | 1.67 | 5267457 | 5267457 |
-| balanced | 65 | update 1 | 65536 | 0.23 | 0.21 | 656004 | 524932 |
-| balanced | 65 | update 64 | 4096 | 0.33 | 0.33 | 889476 | 881284 |
-| balanced | 4096 | snapshot | 128 | 1.88 | 1.89 | 4925697 | 4925697 |
-| balanced | 4096 | update 1 | 65536 | 0.27 | 0.25 | 693843 | 562771 |
-| balanced | 4096 | update 64 | 4096 | 0.89 | 0.86 | 1193555 | 1185363 |
-| balanced | 65536 | snapshot | 8 | 3.09 | 3.10 | 4916113 | 4916113 |
-| balanced | 65536 | update 1 | 65536 | 0.76 | 0.73 | 1269875 | 1138803 |
-| balanced | 65536 | update 64 | 4096 | 1.39 | 1.36 | 1769587 | 1761395 |
-| wide | 65 | snapshot | 8192 | 2.00 | 1.99 | 5095425 | 5095425 |
-| wide | 65 | update 1 | 65536 | 0.19 | 0.16 | 524911 | 393839 |
-| wide | 65 | update 64 | 4096 | 0.34 | 0.34 | 832111 | 823919 |
-| wide | 4096 | snapshot | 128 | 1.89 | 1.90 | 4729473 | 4729473 |
-| wide | 4096 | update 1 | 65536 | 0.17 | 0.15 | 561238 | 430166 |
-| wide | 4096 | update 64 | 4096 | 0.29 | 0.29 | 868438 | 860246 |
-| wide | 65536 | snapshot | 8 | 2.43 | 2.40 | 4719537 | 4719537 |
-| wide | 65536 | update 1 | 65536 | 0.51 | 0.49 | 1114231 | 983159 |
-| wide | 65536 | update 64 | 4096 | 0.63 | 0.63 | 1421431 | 1413239 |
-
-All eighteen cases preserve input and output digests, work counts, and callback counts.
-Both versions report zero live bytes after teardown.
-Each update work unit removes exactly two allocations.
-Update-1 cases remove 131072 allocations. Update-64 cases remove 8192.
-Snapshot allocation counts do not change.
-Update-1 medians improve in each case.
-Update-64 medians show small or no gains. Snapshot medians vary within measurement noise.
-These results support registry-copy allocation removal, not a general platform latency claim.
-
-Seven separate `perf stat` repeats measured balanced 65-node update-1 with 65536 work units.
-The input digest was `cc7a5aced880e530`. The output digest was `5b762f34cb278bab`.
-
-| Counter | Baseline | Candidate |
-|---|---:|---:|
-| Cycles | 966558257 | 862744010 |
-| Instructions | 1558597028 | 1440632208 |
-| Branches | 252474013 | 237007506 |
-| Branch misses | 1580553 | 1390446 |
-| Mean elapsed seconds | 0.26532 | 0.23658 |
-| Reported elapsed standard error, seconds | 0.00381 | 0.00445 |
-
-The cycle count decreases by 10.74 percent. The instruction count decreases by 7.57 percent.
-An earlier sparse-update profile collected 136 samples at 199 Hz, with none lost.
-`memset` accounted for 25.88 percent of those samples.
-The profile does not identify its causal caller or prove that registry cloning caused those samples.
-
-### 10.4 Callback and registry regression evidence
-
-The public-C Unix callback regression failed before the ownership change.
-Run `bg_11` records a segmentation fault at address `0x18` and an abort.
-The stack crossed `Properties.deinit`, `Node.deinit`, `TreeUpdate.deinit`, `Tree.init`, `PlatformAdapter.apply`, and `unixAdapterUpdateIfActive`.
-The callback had returned an actual C factory handle.
-This failure exposed the opaque-handle/native-update mismatch.
-
-The equal-registry regression also failed before the source change.
-Run `bg_14` records `OutOfMemory` at the original `cloneInto` map clone.
-The test used an equal destination registry and a fail-first allocator.
-The failure showed that the old equal-copy path still allocated.
-
-**Source reading.** All five adapters now consume owning opaque C callback handles through the shared conversion.
-It releases the outer handle through the captured allocator on success and error.
-Zero-copy requires proof of the same allocator domain, not an unconditional context-pointer comparison.
-Known stateless standard allocators and C ABI registered pairs permit that proof.
-Unknown custom vtables require array migration without a context-pointer read.
-Different initialized stateful contexts also require array migration.
-Nodes retain their property allocators.
-Three fixed owner slots protect committed, working, and incoming metadata.
-Pruning uses storage identity after every update attempt.
-The native tree dies before the retained metadata owners.
-macOS queued events keep the reference-counted context and its metadata alive.
-
-**Source reading.** `platform_adapter.onNodeUpdated` calls `node.notifyChanges`.
-The notifier orders state, property, bounds, children, and document events.
-It keeps focus in a separate change slot.
-`notifyDocumentChanges` adds `LoadComplete` only when a document changes from busy to not busy.
-The event queue owns announcement text.
-The notifier error set excludes unreachable action failures.
-These are generated queue notifications, not signals sent on a real Unix bus.
-
-### 10.5 Publication execution evidence
-
-Run `bg_29` passed all 70 focused native callback, allocator, and notification tests.
-Run `bg_31` passed these shards in both Debug and ReleaseSafe:
-
-| Shard | Passing tests per mode |
-|---|---:|
-| Reference | 767 |
-| Integration | 860 |
-| Benchmark | 9 |
-| Committed decoder corpus | 356 |
-
-The native shard in that run had one focus-fixture failure.
-The fixture required two total events, but legitimate role and state notifications made four.
-The corrected fixture checks both exact Focus identities and addresses.
-It excludes `StateChanged(focused)` and permits unrelated property notifications.
-That correction is not a passing native-shard receipt.
-
-The linked C consumer recorded 1676 checks, zero failed checks, 598 allocations, and 598 frees.
-It reported zero active allocations.
-The actual `integration-run` and `reference-run` executions passed.
-The reference run checked all twelve source-derived cases for exact output.
-Both raw fixtures matched their recorded byte lengths and SHA-256 values in section 10.2.
-These checks do not execute a Rust reference or establish wire parity.
-The 356-test corpus shard replays committed decoder inputs. It is not mutation fuzzing.
-
-The C ABI parity sweep reported `IN PARITY` for all five targets.
-It covered 498 functions and one exported data symbol.
-The target-set comparisons matched at 447, 457, 454, 454, and 451 symbols.
-The guard census printed portable `440` versus `441` as `MISMATCH`.
-The second count includes the exported data symbol. This census discrepancy is not a target ABI mismatch.
-
-A separate external package used `dependency.module("zaccesskit")` and `dependency.artifact("zaccesskit")`.
-All four external smoke configurations passed:
-
-| Optimization | Linkage | Build steps |
-|---|---|---|
-| Debug | static | 9/9 passed |
-| Debug | dynamic | 9/9 passed |
-| ReleaseSafe | static | 9/9 passed |
-| ReleaseSafe | dynamic | 9/9 passed |
-
-Each configuration executed both consumers and reported:
-
-```text
-external-zig root=1 role=window label=ExternalZig focus=1 toolkit=AccessKit toolkit_version=null
-external-C label=ExternalC-é affine=(-3,11) reverse=(-18,-3)
-```
-
-The external Unix callback probe exercised actual C factory, activation, update, debug, and free routes.
-Its callback returned actual owning C payloads. The probe passed through the no-bus Unix path.
-It did not attach to a real platform accessibility object.
-It did not run nogui.
-The source-only nogui review in section 9.5 remains integration guidance, not an executed consumer claim.
-
-Three deliberate mutations produced red results:
-
-| Mutation | Observed failure |
-|---|---|
-| Parse before fixture length/SHA validation | Expected `HashMismatch`, found `InvalidFixture` |
-| Retain a removed text run through the actual update | `OutputMismatch` at the absent-node check |
-| Compare registry counts without mappings | Expected mapping index `0`, found `7`. A stale ID remained present |
-
-The corrected reference source passed before these mutations.
-These results test fixture validation order, removed-node behavior, and registry mapping comparison.
-They do not add platform execution evidence.
-
-The verified document-event path closes only `atspi-common/adapter.rs:513` as adapted.
-The ledger now has 457 ported, 648 adapted, 194 not applicable, and 57 open rows, totaling 1356.
-The open rows comprise 39 Unix, 13 Windows, three AT-SPI common, and two Android rows.
-Main-source LSP reports `allocation.release` at `src/capi/allocation.zig:386`.
-It reports `notifyChanges` at `src/adapters/atspi/node.zig:2459` and `notifyDocumentChanges` at `:2703`.
-
-The actual AArch64 run passed all 15 steps through QEMU.
-Its native shard reported 1643 passes and 10 skips out of 1653 tests.
-Its linked C consumer passed 1676 checks with zero failures.
-It recorded 598 allocations, 598 frees, and zero active allocations.
-All twelve reference cases and the standalone integration scenario passed.
-
-The actual big-endian powerpc64 run passed all twelve reference cases and the standalone integration scenario.
-Its native shard reported 1643 passes and 10 skips out of 1653 tests.
-The linked real C consumer crashed with `SIGSEGV`. The build completed 13 of 15 steps.
-This result is not a passing powerpc64 matrix receipt.
-The user accepted publication with an unsupported PowerPC64 C boundary, not a fixed C-consumer claim.
-All checks remain enabled. No speculative wrapper or compiler change is included.
-
-An independent reproduction used no zaccesskit code.
-The manifest-selected Zig 0.16.0 shim compiled it with static `zig cc -target powerpc64-linux`.
-Actual executions returned these results:
-
-| Aggregate-return case | Observed result |
-|---|---|
-| Dense `usize` and pointer control | PASS, exit 0 |
-| Flattened bool and `u64` | FAIL, exit 1 |
-| Bool and `f64` | FAIL, exit 1 |
-| Direct nested NodeID | `SIGSEGV`, exit 139 |
-| Indirect nested case | FAIL, exit 1 |
-
-GDB showed a 16-byte bool/`u64` C caller expecting results in `r3` and `r4`.
-The Zig callee expected a hidden result pointer in `r3` and the node pointer in `r4`.
-The node pointer therefore became a function address.
-The ELF flags identified ABI v2. This evidence isolates the compiler boundary from the project.
-The `CoffeeImpliesCode/zig` repository lookup returned HTTP 404. No issue was created in that repository.
-[zaccesskit issue #5](https://github.com/CoffeeImpliesCode/zaccesskit/issues/5) records the Zig 0.17 aggregate-return ABI migration check.
-The user-approved issue is OPEN and has no labels.
-It tracks a future Zig 0.17 check, not a claim that Zig 0.17 fixes the compiler defect.
-
-### 10.6 Native Debug C repair and first final gate
-
-The first final house gate ran all nine default stages. It did not pass.
-Formatting, build, and AST checks passed.
-Both native library shards passed all 1653 tests, in Debug and ReleaseSafe.
-The reference shards passed 767 tests per mode. Integration passed 860 and benchmark passed nine per mode.
-The linked Debug C consumer failed five geometry result checks.
-It still reported 598 allocations, 598 frees, and zero active allocations.
-
-The source correction sets `.use_llvm = true` for the C artifact only.
-The self-hosted x86 Debug backend produced incorrect C geometry aggregate results.
-The LLVM backend produced the correct results.
-After this source correction, actual `zig build test-c -Doptimize=Debug` passed all seven steps.
-The consumer passed 1676 checks with zero failures, 598 allocations, 598 frees, and zero active allocations.
-This is a native Debug C receipt, not a new passing full-gate receipt.
-No compiler, checker, or test-shape change forms part of this repair.
-The PowerPC64 C boundary remains unsupported.
-Issue #5 requires another aggregate-return ABI check during Zig 0.17 migration before the limit can change.
-
-The first gate reported these remaining checker and cross results:
-
-| Stage | Observed result |
-|---|---|
-| ziglint | 110 findings, exit 1 |
-| zlint | Warnings, exit 0 |
-| zbc | Integer overflow, exit 134. Existing issue #105 applies |
-| zwanzig | 88 reported findings, 87 parsed findings, exit 1 |
-| Strict cross x86 | Failed at the five C geometry checks |
-| Strict cross AArch64 | Passed, 1643 tests plus 10 skips |
-| Strict cross PowerPC64 | Failed at the known C ABI boundary |
-
-The zwanzig report retains the known format and false-positive limits.
-The user accepted publication with the PowerPC64 C limit and disclosed checker failures.
-All checks remain enabled. Section 10.7 records the corrected-source gate receipt.
-
-### 10.7 Corrected-source final gate
-
-Artifact `614` records the corrected-source `zig-gate` output and exit 1.
-This is not a green full-gate result.
-No source or coordinate change followed the previous documentation integration.
-The manifest-selected compiler and external tools remain unchanged.
-
-| Stage | Actual result |
-|---|---|
-| fmt | PASS |
-| build | PASS |
-| test | PASS |
-| ast-check | PASS |
-| ziglint | 109 issues, exit 1 |
-| zlint | 9 issues, exit 0 |
-| zbc | Integer-overflow panic in the AST parameter scan, exit 134. Existing [zbc issue #105](https://github.com/CoffeeImpliesCode/zbc/issues/105) applies |
-| zwanzig | 87 reported issues versus 86 parsed findings, exit 1. Parser count mismatch |
-| strict cross | `status=fail pass=2 fail=1 build_only=0 partial=0` |
-
-The zlint warnings comprise six `unsafe-undefined`, one `unused-decls`, one `suppressed-errors`, and one `no-print`.
-The zwanzig parser counted three `analysis-limit-exceeded`, 24 `optional-unwrap`, one `store-violations-engine`, and 58 `unused-decl` findings.
-The output reports a moved format because the reported total does not match the parsed diagnostics.
-Neither zlint's exit 0 nor zbc's zero-diagnostic prefix establishes a warning-free or completed analysis.
-
-The strict cross summary is `/tmp/cache/zaccesskit/cross-test/cross-test-summary.json`.
-Its run ID is `20261008-021910-25483-19862`.
-The per-target logs are under `/tmp/cache/zaccesskit/cross-test/runs/20261008-021910-25483-19862`.
-
-| Target | Library tests | Linked C checks | Strict row |
-|---|---|---|---|
-| `x86_64-linux` | 1653/1653 PASS | 1676 checks, 0 failed | PASS |
-| `aarch64-linux` | 1643/1653 PASS, 10 skipped | 1676 checks, 0 failed | PASS |
-| `powerpc64-linux` | 1643/1653 pure Zig PASS, 10 skipped | Segmentation fault at the known compiler ABI defect | FAIL |
-
-The cross failure is a real linked-C failure, not a timeout or build-only result.
-The foreign library rows do not execute the Windows COM surface.
-The pure Zig PowerPC64 result does not support its C consumer boundary.
-[Issue #5](https://github.com/CoffeeImpliesCode/zaccesskit/issues/5) remains OPEN for the future Zig 0.17 ABI check.
-No observed result establishes that Zig 0.17 fixes it.
-
-The native Debug C repair retains the RED-to-GREEN evidence in section 10.6.
-The self-hosted x86 Debug artifact failed five geometry checks.
-The C artifact now requires LLVM without changing the compiler.
-The focused `zig build test-c -Doptimize=Debug` run passed 7/7 steps and 1676 checks with 0 failed.
-It recorded 598 allocations, 598 frees, and 0 active allocations.
-This backend selection applies only to the C library, not the native Zig consumer module.
-
-Run `bg_51`, recorded in artifact `616`, passed the counted native suite.
-Its summary reported `Build Summary: 27/27 steps succeeded`.
-
-| Shard | Debug passes | ReleaseSafe passes |
-|---|---:|---:|
-| Library | 1653 | 1653 |
-| Integration | 860 | 860 |
-| Reference | 767 | 767 |
-| Benchmark | 9 | 9 |
-| Committed decoder corpus replay | 356 | 356 |
-| Total shard test executions | 3645 | 3645 |
-
-All 7290 shard test executions passed across the two modes.
-These totals count executions across overlapping shard imports, not unique test declarations.
-The corpus results replay committed inputs. They do not establish mutation-fuzzing coverage.
-
-The suite also executed the linked Debug C consumer.
-It reported 1676 checks, 0 failed, 598 allocations, 598 frees, and 0 active allocations.
-Its release counters were 184 strings, four custom actions, seven action lists, and 53 nodes.
-It also released two tree infos and two tree updates.
-This counted native-suite PASS does not change the failed full-gate or PowerPC64 linked-C receipts above.
-
-The user accepted the disclosed external-checker failures and unsupported PowerPC64 C boundary for publication.
-All checks remain enabled.
-The ledger remains at 57 open rows.
-Hand-recorded reference cases remain finite source-reference evidence, not an executed Rust oracle or wire-parity proof.
-No receipt claims real-platform accessibility attachment.
-Nogui remains source-only and was not executed.
-

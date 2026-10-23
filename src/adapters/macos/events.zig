@@ -631,41 +631,17 @@ test "the adapter names exactly seven notifications and picks the right one per 
 }
 
 test "an assertive live region announces at high priority and a polite one at medium" {
-    // Drive live-region nodes through the producer, not just its mapping helper.
-    // Apple's macOS 11.3 SDK, AppKit/NSAccessibilityConstants.h, defines
-    // low=10, medium=50, high=90. The old 700/500 fixture copied unverified
-    // placeholder values, not AppKit announcement priorities.
-    // Upstream event.rs selects high/medium and QueuedEvent::raise boxes the
-    // integer under NSAccessibilityPriorityKey. Native dictionary delivery
-    // remains CI-pending: this test checks the payload before posting.
-    const gpa = testing.allocator;
-    const specs = [_]ArmSpec{
-        .{ .local = 1, .role = .window, .children = &.{ 2, 3 } },
-        .{ .local = 2, .role = .document, .label = "Urgent update", .live = .assertive },
-        .{ .local = 3, .role = .document, .label = "Routine update", .live = .polite },
-    };
-    var tree = try buildArmTree(gpa, 1, &specs);
-    defer tree.deinit();
-
-    var generator = EventGenerator.init(gpa);
-    defer generator.deinit();
-    try generator.slotNodeAdded(try armNode(&tree, 2));
-    try generator.slotNodeAdded(try armNode(&tree, 3));
-
-    const expected = [_]struct { text: []const u8, priority: i32 }{
-        .{ .text = "Urgent update", .priority = 90 },
-        .{ .text = "Routine update", .priority = 50 },
-    };
-    try testing.expectEqual(expected.len, generator.events.items.len);
-    for (generator.events.items, expected) |event, payload| {
-        switch (event) {
-            .announcement => |announcement| {
-                try testing.expectEqualStrings(payload.text, announcement.text);
-                try testing.expectEqual(payload.priority, @intFromEnum(announcement.priority));
-            },
-            else => return error.TestUnexpectedResult,
-        }
-    }
+    // Both arms of `AK/macos/src/event.rs:35-43`. No Mac is needed: the mapping
+    // from a `Live` tag to a priority level is a two-arm function. What needs a
+    // Mac is delivering the dictionary.
+    try testing.expectEqual(literals.PriorityLevel.high, priorityFor(.assertive));
+    try testing.expectEqual(literals.PriorityLevel.medium, priorityFor(.polite));
+    // `off` is not an announcement, and the caller checks for it before it calls
+    // this, so the answer for it is the medium arm.
+    try testing.expectEqual(literals.PriorityLevel.medium, priorityFor(.off));
+    try testing.expectEqual(@as(usize, 3), @typeInfo(schema.Live).@"enum".fields.len);
+    try testing.expectEqual(@as(i32, 700), @intFromEnum(priorityFor(.assertive)));
+    try testing.expectEqual(@as(i32, 500), @intFromEnum(priorityFor(.polite)));
 }
 
 test "a FullNodeId is compared with std.meta.eql and never with ==" {

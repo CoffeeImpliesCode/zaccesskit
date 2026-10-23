@@ -87,7 +87,7 @@ pub const Rect = struct {
         gpa: std.mem.Allocator,
         out: *std.ArrayList(u8),
     ) std.mem.Allocator.Error!void {
-        try padTo(8, gpa, out);
+        try padTo(gpa, 8, out);
         try writeI32(gpa, out, self.x);
         try writeI32(gpa, out, self.y);
         try writeI32(gpa, out, self.width);
@@ -127,8 +127,8 @@ fn isI32(comptime T: type) bool {
 ///
 /// **Errors.** `error.OutOfMemory` from `out`.
 fn padTo(
-    comptime alignment: usize,
     gpa: std.mem.Allocator,
+    comptime alignment: usize,
     out: *std.ArrayList(u8),
 ) std.mem.Allocator.Error!void {
     if (alignment != 4 and alignment != 8) {

@@ -22,14 +22,19 @@
 //! `children.zig`'s `filteredParent` was `null` for every document, so the
 //! cursor set `done` on its first line and both ends yielded `null`.
 //!
-//! Upstream reads `node.filtered_parent(&filter).and_then(|parent|
-//! parent.last_filtered_child(&filter))` at `iterators.rs:351-353`.
-//! `text_node_filter` at `text.rs:932-938` includes the root so that step
-//! succeeds and sibling scans stop at that root. Generic constructors here
-//! derive the nearest ancestor without filtering it. Text callers instead
-//! set both ends within their selected root and store its ID by value in the
-//! cursor. Each scan borrows that ID only until the synchronous scan returns.
-//! No stored pointer refers to the owned ID, so copies need no stable address.
+//! Upstream reaches the same back end by another route. `iterators.rs:351-353`
+//! reads `node.filtered_parent(&filter).and_then(|parent|
+//! parent.last_filtered_child(&filter))`, and `text_node_filter` at
+//! `text.rs:932-938` includes the root precisely so that step succeeds. That
+//! clause has no home in a `FilterFn`, which carries no context: naming a root
+//! in the context would make the caller responsible for keeping it alive
+//! across every walk the cursor makes, so a caller that drops the cursor early
+//! and a caller that consumes it in the same call would owe different things.
+//! Deriving the ancestor instead of filtering for it keeps the back end
+//! independent of which roles a filter names, which a second role-based filter
+//! naming `Role.document` would not: `Role.label` and `Role.terminal` satisfy
+//! `supportsTextRanges` upstream too, so the filters that break this way are
+//! not one.
 //!
 //! **Why a sibling cursor reads the state itself.** `FollowingSiblings::new` at
 //! `iterators.rs:88-114` calls `node.parent_and_index()`, then `parent.is_graft()`
@@ -238,29 +243,23 @@ pub const ScanDirection = enum {
 /// type for both directions; the constructor in `preceding.zig` sets the
 /// direction.
 ///
-/// The cursor takes no allocator. Its ends borrow `NodeRef` handles, and its
-/// optional root ID is a value copy. Copies advance independently and need no
-/// stable address. Caller-supplied `filter.context` must outlive all scans
-/// unless `filter_root_id` replaces it. Dropping the cursor writes nothing.
-/// See `iterators/children.zig` for what a write invalidates.
+/// The value owns nothing and takes no allocator: `filter` is a plain function
+/// pointer and the two ends are borrowed `NodeRef` handles. Dropping the
+/// cursor early writes nothing; see `iterators/children.zig` for what a write
+/// invalidates.
 pub const FilteredSiblingsIterator = struct {
     /// The test applied to every node the cursor visits. It is a pointer, so
     /// the function it names must outlive the cursor.
     filter: FilterFn,
-
-    /// A root ID passed as filter context during each scan. `null` preserves
-    /// `filter.context`. Set this only when the callback reads a `FullNodeId`.
-    /// The ID is owned by value. The callback must not retain or change it.
-    filter_root_id: ?FullNodeId = null,
 
     /// The next node to yield from the front, or `null` when the front is
     /// spent.
     front: ?NodeRef,
 
     /// The next node to yield from the back, or `null` when the back is
-    /// spent. It bounds the front, so the two never cross. Generic constructors
-    /// read it from the nearest ancestor without consulting the filter about
-    /// that ancestor. Text callers set it within their selected root.
+    /// spent. It bounds the front, so the two never cross. A constructor reads
+    /// it from the nearest ancestor of the node the walk starts at, without
+    /// consulting the filter about that ancestor; the module doc gives why.
     back: ?NodeRef,
 
     /// Set once the front and the back meet or one of them is exhausted, so a
@@ -278,7 +277,7 @@ pub const FilteredSiblingsIterator = struct {
         if (self.done) return null;
         self.done = endsMeet(self.front, self.back);
         const current = self.front;
-        if (!self.done) self.front = try self.step(self.front);
+        self.front = try self.step(self.front);
         return current;
     }
 
@@ -288,37 +287,24 @@ pub const FilteredSiblingsIterator = struct {
         if (self.done) return null;
         self.done = endsMeet(self.front, self.back);
         const current = self.back;
-        if (!self.done) self.back = try self.stepBack(self.back);
+        self.back = try self.stepBack(self.back);
         return current;
-    }
-
-    /// Borrows the owned ID only for the synchronous scan that follows.
-    fn effectiveFilter(self: *const FilteredSiblingsIterator) FilterFn {
-        if (self.filter_root_id) |*root_id| {
-            return .{
-                .context = @ptrCast(@constCast(root_id)),
-                .filter = self.filter.filter,
-            };
-        }
-        return self.filter;
     }
 
     /// The scan from the front, which is the forward scan in a following
     /// cursor and the backward scan in a preceding one.
     fn step(self: *const FilteredSiblingsIterator, from: ?NodeRef) QueryError!?NodeRef {
-        const filter = self.effectiveFilter();
         return switch (self.direction) {
-            .following => try sibling_scan.nextFilteredSibling(from, filter),
-            .preceding => try sibling_scan.previousFilteredSibling(from, filter),
+            .following => try sibling_scan.nextFilteredSibling(from, self.filter),
+            .preceding => try sibling_scan.previousFilteredSibling(from, self.filter),
         };
     }
 
     /// The scan from the back, which is the mirror of `step`.
     fn stepBack(self: *const FilteredSiblingsIterator, from: ?NodeRef) QueryError!?NodeRef {
-        const filter = self.effectiveFilter();
         return switch (self.direction) {
-            .following => try sibling_scan.previousFilteredSibling(from, filter),
-            .preceding => try sibling_scan.nextFilteredSibling(from, filter),
+            .following => try sibling_scan.previousFilteredSibling(from, self.filter),
+            .preceding => try sibling_scan.nextFilteredSibling(from, self.filter),
         };
     }
 };

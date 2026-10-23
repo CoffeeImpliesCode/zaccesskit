@@ -167,22 +167,22 @@ pub const NodeWrapper = struct {
     pub fn value(self: NodeWrapper) NodeError!?Value {
         const properties = consumer.node_ref.properties;
         if (properties.toggled(self.node)) |toggled| {
-            return .{ .boolean = toggled != .false_ };
+            return Value{ .boolean = toggled != .false_ };
         }
         const role = properties.role(self.node);
         if (role == .tab) {
-            return .{ .boolean = properties.isSelected(self.node) orelse false };
+            return Value{ .boolean = properties.isSelected(self.node) orelse false };
         }
         if (roles.labelIsExposedInValue(role)) {
             if (try labelText(self.gpa, self.node)) |label_text| {
-                return .{ .string = label_text };
+                return Value{ .string = label_text };
             }
         }
         if (try valueText(self.gpa, self.node)) |text| {
-            return .{ .string = text };
+            return Value{ .string = text };
         }
         if (properties.numericValue(self.node)) |number| {
-            return .{ .number = number };
+            return Value{ .number = number };
         }
         return null;
     }
@@ -411,7 +411,7 @@ test "a role that exposes its label in its value reports no title and a value" {
     const option = NodeWrapper.init(gpa, try nodeOf(&tree, 2));
     try testing.expectEqual(@as(?ArrayList(u8), null), try option.title());
 
-    const value = (try option.value()) orelse return error.TestUnexpectedResult;
+    const value = (try option.value()).?;
     defer value.deinit(gpa);
     try testing.expectEqual(Value.string, std.meta.activeTag(value));
     try testing.expectEqualStrings("choice", value.string.items);
@@ -432,11 +432,11 @@ test "a node whose label comes from its value answers the value as its label" {
 
     const from_value = try NodeWrapper.init(gpa, try nodeOf(&tree, 2)).label();
     defer releaseText(gpa, from_value);
-    try testing.expectEqualStrings("typed", (from_value orelse return error.TestUnexpectedResult).items);
+    try testing.expectEqualStrings("typed", from_value.?.items);
 
     const from_label = try NodeWrapper.init(gpa, try nodeOf(&tree, 3)).label();
     defer releaseText(gpa, from_label);
-    try testing.expectEqualStrings("name", (from_label orelse return error.TestUnexpectedResult).items);
+    try testing.expectEqualStrings("name", from_label.?.items);
 }
 
 test "a toggled state wins over every other value shape" {
@@ -453,12 +453,9 @@ test "a toggled state wins over every other value shape" {
     var tree = try buildTree(gpa, 1, &specs);
     defer tree.deinit();
 
-    const on = (try NodeWrapper.init(gpa, try nodeOf(&tree, 2)).value()) orelse
-        return error.TestUnexpectedResult;
-    const off = (try NodeWrapper.init(gpa, try nodeOf(&tree, 3)).value()) orelse
-        return error.TestUnexpectedResult;
-    const mixed = (try NodeWrapper.init(gpa, try nodeOf(&tree, 4)).value()) orelse
-        return error.TestUnexpectedResult;
+    const on = (try NodeWrapper.init(gpa, try nodeOf(&tree, 2)).value()).?;
+    const off = (try NodeWrapper.init(gpa, try nodeOf(&tree, 3)).value()).?;
+    const mixed = (try NodeWrapper.init(gpa, try nodeOf(&tree, 4)).value()).?;
     try testing.expect(on.boolean);
     try testing.expect(!off.boolean);
     // `Toggled::Mixed` is not `False`, so it answers `true`, which is
@@ -480,15 +477,12 @@ test "a tab answers its selection state and a node with no value answers none" {
     var tree = try buildTree(gpa, 1, &specs);
     defer tree.deinit();
 
-    const selected = (try NodeWrapper.init(gpa, try nodeOf(&tree, 2)).value()) orelse
-        return error.TestUnexpectedResult;
+    const selected = (try NodeWrapper.init(gpa, try nodeOf(&tree, 2)).value()).?;
     try testing.expect(selected.boolean);
-    const unselected = (try NodeWrapper.init(gpa, try nodeOf(&tree, 3)).value()) orelse
-        return error.TestUnexpectedResult;
+    const unselected = (try NodeWrapper.init(gpa, try nodeOf(&tree, 3)).value()).?;
     try testing.expect(!unselected.boolean);
 
-    const number = (try NodeWrapper.init(gpa, try nodeOf(&tree, 4)).value()) orelse
-        return error.TestUnexpectedResult;
+    const number = (try NodeWrapper.init(gpa, try nodeOf(&tree, 4)).value()).?;
     try testing.expectEqual(Value.number, std.meta.activeTag(number));
     try testing.expectEqual(@as(f64, 2.5), number.number);
 }
@@ -508,10 +502,10 @@ test "a description and a placeholder come from the node itself" {
 
     const described = try NodeWrapper.init(gpa, try nodeOf(&tree, 2)).description();
     defer releaseText(gpa, described);
-    try testing.expectEqualStrings("hint", (described orelse return error.TestUnexpectedResult).items);
+    try testing.expectEqualStrings("hint", described.?.items);
 
     const placeholder = try NodeWrapper.init(gpa, try nodeOf(&tree, 3)).placeholder();
-    try testing.expectEqualStrings("search", placeholder orelse return error.TestUnexpectedResult);
+    try testing.expectEqualStrings("search", placeholder.?);
 }
 
 test "two absent titles are equal and one absent title is a change" {

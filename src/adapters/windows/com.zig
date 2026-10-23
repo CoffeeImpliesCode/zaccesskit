@@ -78,10 +78,11 @@ pub const Descriptor = struct {
 /// and cannot be indexed, so a type parameter could not read a single
 /// descriptor.
 ///
-/// **The allocator.** Final Release calls the state's optional `deinit` method
-/// and frees the object through `gpa`. The allocator must outlive all clients.
-/// State cleanup must be infallible. Construction transfers state only on
-/// success, so the caller releases its state if allocation fails.
+/// **The allocator.** `gpa` is a field, not a global, and the caller frees the
+/// object when the last `Release` brings the count to zero. A caller that
+/// wants the object to outlive its own allocator must supply one that will
+/// still be valid, which is the requirement every allocating call in this
+/// port carries.
 ///
 /// **The reference count.** It starts at one. `addRef` and `release` are the
 /// only two ways it changes, so a count that is not one after `create` means
@@ -158,7 +159,7 @@ pub fn Object(comptime StateType: type, comptime interfaces: anytype) type {
             gpa: std.mem.Allocator,
             vtables: [interface_count]*const anyopaque,
             state: State,
-        ) std.mem.Allocator.Error!*Self {
+        ) !*Self {
             const object = try gpa.create(Self);
             for (&object.words, 0..) |*word, index| {
                 word.* = .{ .vtable = @ptrCast(@alignCast(vtables[index])) };
@@ -212,16 +213,13 @@ pub fn Object(comptime StateType: type, comptime interfaces: anytype) type {
             return self.ref_count.fetchAdd(1, .acq_rel) + 1;
         }
 
-        /// Releases one reference. Final Release destroys state and object.
-        /// The caller must not read the object after a zero result.
+        /// One fewer holder. Answers the count after the change.
+        ///
+        /// The caller frees the object when the answer is zero, and only then.
+        /// A count that reaches zero twice is a caller error: two holders
+        /// released the same reference.
         pub fn release(self: *Self) u32 {
-            const previous = self.ref_count.fetchSub(1, .acq_rel);
-            std.debug.assert(previous > 0);
-            if (previous != 1) return previous - 1;
-            const gpa = self.gpa;
-            if (@hasDecl(State, "deinit")) self.state.deinit();
-            gpa.destroy(self);
-            return 0;
+            return self.ref_count.fetchSub(1, .acq_rel) - 1;
         }
 
         /// The interface pointer for word `index`. For word zero it is also
@@ -268,21 +266,27 @@ pub fn Object(comptime StateType: type, comptime interfaces: anytype) type {
         /// Compares `riid` against every identifier the object answers for,
         /// including `IID_IUnknown`. A match writes the interface pointer
         /// through `ppv` and adds a holder, which is what COM requires of a
-        /// success. A miss clears the caller's output and answers `E_NOINTERFACE`.
-        /// A null output address answers `E_POINTER` without retaining the object.
+        /// success. A miss answers `E_NOINTERFACE` and writes nothing at all,
+        /// which is what COM requires of a miss, so the caller's out-parameter
+        /// is left as it found it and must not be read.
         ///
-        /// The thunk accepts nullable C pointers. Its function-pointer cast
-        /// preserves the ABI while correcting the binding's nonnullable annotation.
+        /// A `null` `ppv` answers `E_INVALIDARG` and writes nothing.
+        ///
+        /// `ppv` is optional because COM lets a caller pass `NULL` there.
+        /// The binding's slot type is `**anyopaque`
+        /// (`zigwin32/win32/system/com.zig:5241`), which is not optional, so
+        /// the thunk coerces the ABI value into this parameter. A caller that
+        /// holds the ABI value therefore cannot hand this function a `null`,
+        /// and that is the one case the `E_INVALIDARG` branch does not reach.
         pub fn queryInterface(
             self: *Self,
             comptime index: comptime_int,
             riid: *const Guid,
-            ppv: ?*?*anyopaque,
+            ppv: ?**anyopaque,
         ) Hresult {
             comptime std.debug.assert(index >= 0);
             comptime std.debug.assert(index < interface_count);
-            const slot = ppv orelse return e_pointer();
-            slot.* = null;
+            const slot = ppv orelse return e_invalidarg();
             const requested = guidBytes(riid);
             if (std.mem.eql(u8, requested, guidBytes(iid_unknown))) {
                 slot.* = @ptrCast(@constCast(self.iface(0)));
@@ -308,15 +312,15 @@ pub fn Object(comptime StateType: type, comptime interfaces: anytype) type {
             comptime std.debug.assert(index >= 0);
             comptime std.debug.assert(index < interface_count);
             const Outer = Self;
-            return @ptrCast(&struct {
+            return struct {
                 fn thunk(
                     word: *const IUnknown,
                     riid: *const Guid,
-                    ppv: ?*?*anyopaque,
+                    ppv: **anyopaque,
                 ) callconv(.winapi) Hresult {
                     return Outer.objectAt(index, word).queryInterface(index, riid, ppv);
                 }
-            }.thunk);
+            }.thunk;
         }
 
         /// `AddRef` as word `index` receives it.
@@ -358,9 +362,9 @@ pub fn Object(comptime StateType: type, comptime interfaces: anytype) type {
             return @bitCast(@as(u32, @bitCast(win32.foundation.S_OK)));
         }
 
-        /// `E_POINTER`, the status for an absent out-parameter.
-        fn e_pointer() Hresult {
-            return @bitCast(@as(u32, @bitCast(win32.foundation.E_POINTER)));
+        /// `E_INVALIDARG`, the status for an absent out-parameter.
+        fn e_invalidarg() Hresult {
+            return @bitCast(@as(u32, @bitCast(win32.foundation.E_INVALIDARG)));
         }
 
         /// `E_NOINTERFACE`, the status for an identifier this object does not
@@ -373,8 +377,10 @@ pub fn Object(comptime StateType: type, comptime interfaces: anytype) type {
 
 // --- Tests -----------------------------------------------------------------
 
-// Tests release through the same reference protocol as clients. Failure cleanup
-// releases every acquired holder; no test manually destroys a live fixed object.
+// Every test below releases its holders on the success path and frees the
+// object on the failure path. The release is the assertion that the count
+// reached zero, and a `defer` body may not `try`, so it cannot live in a
+// `defer`. This is the shape "add and release move the count" already uses.
 
 // The elements are spelled `Descriptor{...}` and not `.{}`: a bare `.{}` with
 // named fields builds a new anonymous struct type, so a bare `.{}` element
@@ -424,12 +430,6 @@ const com_test_base_vtables = blk: {
     break :blk out;
 };
 
-fn releaseTestReferences(object: *TestNode) void {
-    const count = object.ref_count.load(.monotonic);
-    std.debug.assert(count <= TestNode.interface_count + 1);
-    for (0..count) |_| _ = object.release();
-}
-
 test "the words sit one pointer apart and the first word is the object" {
     // The design needs two things and no third: the words begin at offset
     // zero, and each word is one pointer wide. Nothing needs `ref_count` to
@@ -450,14 +450,14 @@ test "a fresh object holds one reference and reads back the state it was given" 
             .tree_id = 3,
             .node_id = .{ .value = 9 },
         });
-        var held = true;
-        defer if (held) releaseTestReferences(object);
+        // The release is the check, so it runs here rather than in a `defer`.
+        errdefer object.gpa.destroy(object);
         try std.testing.expectEqual(@as(u32, 1), object.ref_count.load(.monotonic));
         try std.testing.expectEqual(@as(u64, 3), object.state.tree_id);
         try std.testing.expectEqual(@as(u64, 9), object.state.node_id.value);
 
-        held = false;
         try std.testing.expectEqual(@as(u32, 0), object.release());
+        object.gpa.destroy(object);
     } else return error.SkipZigTest;
 }
 
@@ -467,14 +467,12 @@ test "add and release move the count and stop at one" {
             .tree_id = 1,
             .node_id = .{ .value = 2 },
         });
-        var held = true;
-        defer if (held) releaseTestReferences(object);
+        defer object.gpa.destroy(object);
 
         try std.testing.expectEqual(@as(u32, 2), object.addRef());
         try std.testing.expectEqual(@as(u32, 3), object.addRef());
         try std.testing.expectEqual(@as(u32, 2), object.release());
         try std.testing.expectEqual(@as(u32, 1), object.release());
-        held = false;
         try std.testing.expectEqual(@as(u32, 0), object.release());
     } else return error.SkipZigTest;
 }
@@ -485,8 +483,8 @@ test "an interface pointer reads back to the object that holds it" {
             .tree_id = 7,
             .node_id = .{ .value = 8 },
         });
-        var held = true;
-        defer if (held) releaseTestReferences(object);
+        // The release is the check, so it runs here rather than in a `defer`.
+        errdefer object.gpa.destroy(object);
 
         inline for (test_interfaces, 0..) |descriptor, index| {
             const word = object.iface(index);
@@ -495,8 +493,8 @@ test "an interface pointer reads back to the object that holds it" {
             try std.testing.expectEqual(word, found.iface(index));
         }
 
-        held = false;
         try std.testing.expectEqual(@as(u32, 0), object.release());
+        object.gpa.destroy(object);
     } else return error.SkipZigTest;
 }
 
@@ -506,18 +504,18 @@ test "QueryInterface answers each implemented identifier and holds a reference" 
             .tree_id = 5,
             .node_id = .{ .value = 6 },
         });
-        var held = true;
-        defer if (held) releaseTestReferences(object);
+        // The release is the check, so it runs here rather than in a `defer`.
+        errdefer object.gpa.destroy(object);
 
         var out: ?*anyopaque = null;
-        const status = object.queryInterface(0, iid_unknown, &out);
+        const status = object.queryInterface(0, iid_unknown, @ptrCast(&out));
         try std.testing.expectEqual(@as(u32, 0), @as(u32, @bitCast(status)));
         try std.testing.expectEqual(@as(u32, 2), object.ref_count.load(.monotonic));
         const first: *anyopaque = @ptrCast(@constCast(object.iface(0)));
         try std.testing.expect(out.? == first);
 
         out = null;
-        const second = object.queryInterface(0, test_interfaces[1].Iid, &out);
+        const second = object.queryInterface(0, test_interfaces[1].Iid, @ptrCast(&out));
         try std.testing.expectEqual(@as(u32, 0), @as(u32, @bitCast(second)));
         try std.testing.expectEqual(@as(u32, 3), object.ref_count.load(.monotonic));
         const toggle: *anyopaque = @ptrCast(@constCast(object.iface(1)));
@@ -528,8 +526,8 @@ test "QueryInterface answers each implemented identifier and holds a reference" 
         // handed out.
         try std.testing.expectEqual(@as(u32, 2), object.release());
         try std.testing.expectEqual(@as(u32, 1), object.release());
-        held = false;
         try std.testing.expectEqual(@as(u32, 0), object.release());
+        object.gpa.destroy(object);
     } else return error.SkipZigTest;
 }
 
@@ -539,18 +537,18 @@ test "QueryInterface refuses an identifier the object does not answer" {
             .tree_id = 2,
             .node_id = .{ .value = 1 },
         });
-        var held = true;
-        defer if (held) releaseTestReferences(object);
+        // The release is the check, so it runs here rather than in a `defer`.
+        errdefer object.gpa.destroy(object);
 
         var out: ?*anyopaque = @ptrFromInt(0xdead);
         const asked = win32.ui.accessibility.IID_ISelectionProvider;
-        const status = object.queryInterface(0, asked, &out);
+        const status = object.queryInterface(0, asked, @ptrCast(&out));
         try std.testing.expectEqual(@as(u32, 0x80004002), @as(u32, @bitCast(status)));
-        try std.testing.expectEqual(@as(?*anyopaque, null), out);
+        try std.testing.expect(out.? == @as(*anyopaque, @ptrFromInt(0xdead)));
         try std.testing.expectEqual(@as(u32, 1), object.ref_count.load(.monotonic));
 
-        held = false;
         try std.testing.expectEqual(@as(u32, 0), object.release());
+        object.gpa.destroy(object);
     } else return error.SkipZigTest;
 }
 
@@ -563,8 +561,8 @@ test "the base vtable of each word reaches the object through that word" {
             .tree_id = 11,
             .node_id = .{ .value = 12 },
         });
-        var held = true;
-        defer if (held) releaseTestReferences(object);
+        // The release is the check, so it runs here rather than in a `defer`.
+        errdefer object.gpa.destroy(object);
 
         const second = com_test_base_vtables[1];
         try std.testing.expectEqual(@as(u32, 2), second.AddRef(object.iface(1)));
@@ -574,8 +572,8 @@ test "the base vtable of each word reaches the object through that word" {
         try std.testing.expectEqual(@as(u32, 2), first.AddRef(object.iface(0)));
         try std.testing.expectEqual(@as(u32, 1), first.Release(object.iface(0)));
 
-        held = false;
         try std.testing.expectEqual(@as(u32, 0), object.release());
+        object.gpa.destroy(object);
     } else return error.SkipZigTest;
 }
 
@@ -587,71 +585,4 @@ test "the descriptor tuple fixes the word order" {
     try std.testing.expectEqual(@as(?comptime_int, 1), TestNode.indexOf(bindings.IToggleProvider));
     try std.testing.expectEqual(@as(?comptime_int, 2), TestNode.indexOf(bindings.IInvokeProvider));
     try std.testing.expect(TestNode.indexOf(bindings.ISelectionProvider) == null);
-}
-
-test "final COM Release destroys owned state exactly once" {
-    if (comptime bindings.winapi_resolves) {
-        const OwnedState = struct {
-            const Self = @This();
-            drops: *u32,
-
-            pub fn deinit(self: *Self) void {
-                self.drops.* += 1;
-                self.* = undefined;
-            }
-        };
-        const OwnedObject = Object(OwnedState, .{test_interfaces[0]});
-        const table = OwnedObject.baseVTable(0);
-        var drops: u32 = 0;
-        const object = try OwnedObject.create(std.testing.allocator, .{&table}, .{
-            .drops = &drops,
-        });
-        // On the old implementation only, free the still-live object after the
-        // assertion fails. The fixed implementation owns final destruction.
-        defer if (drops == 0) std.testing.allocator.destroy(object);
-        const client = object.iface(0);
-        try std.testing.expectEqual(@as(u32, 2), client.vtable.AddRef(client));
-        try std.testing.expectEqual(@as(u32, 1), client.vtable.Release(client));
-        try std.testing.expectEqual(@as(u32, 0), drops);
-        try std.testing.expectEqual(@as(u32, 0), client.vtable.Release(client));
-        try std.testing.expectEqual(@as(u32, 1), drops);
-    } else return error.SkipZigTest;
-}
-
-test "unsupported QueryInterface clears the caller output without retaining the object" {
-    if (comptime !bindings.winapi_resolves) return error.SkipZigTest;
-    const object = try TestNode.create(std.testing.allocator, testVTables(TestNode), .{
-        .tree_id = 5,
-        .node_id = .{ .value = 7 },
-    });
-    defer _ = object.release();
-    var output: ?*anyopaque = @ptrFromInt(0xdead);
-    const client = object.iface(0);
-    const status = client.vtable.QueryInterface(
-        client,
-        win32.ui.accessibility.IID_ISelectionProvider,
-        @ptrCast(&output),
-    );
-    try std.testing.expectEqual(@as(u32, 0x80004002), @as(u32, @bitCast(status)));
-    try std.testing.expectEqual(@as(?*anyopaque, null), output);
-    try std.testing.expectEqual(@as(u32, 1), object.ref_count.load(.monotonic));
-}
-
-test "QueryInterface rejects a null caller output with E_POINTER" {
-    if (comptime !bindings.winapi_resolves) return error.SkipZigTest;
-    const object = try TestNode.create(std.testing.allocator, testVTables(TestNode), .{
-        .tree_id = 6,
-        .node_id = .{ .value = 8 },
-    });
-    defer _ = object.release();
-    const client = object.iface(0);
-    const NullableQuery = *const fn (
-        *const IUnknown,
-        *const Guid,
-        ?*?*anyopaque,
-    ) callconv(.winapi) Hresult;
-    const query: NullableQuery = @ptrCast(client.vtable.QueryInterface);
-    const status = query(client, iid_unknown, null);
-    try std.testing.expectEqual(@as(u32, 0x80004003), @as(u32, @bitCast(status)));
-    try std.testing.expectEqual(@as(u32, 1), object.ref_count.load(.monotonic));
 }

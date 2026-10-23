@@ -238,7 +238,6 @@ pub const NodeEntry = update_mod.NodeEntry;
 pub const ActionData = update_mod.ActionData;
 pub const ActionDataTag = update_mod.ActionDataTag;
 pub const ActionDataPayload = update_mod.ActionDataPayload;
-pub const ActionDataToCError = update_mod.ActionDataToCError;
 pub const ActionRequest = update_mod.ActionRequest;
 
 /// The C boundary forms. A `C` prefix means "this is the layout the C header

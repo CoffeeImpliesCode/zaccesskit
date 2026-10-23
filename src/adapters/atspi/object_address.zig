@@ -109,7 +109,7 @@ pub const ObjectAddress = struct {
         gpa: std.mem.Allocator,
         out: *std.ArrayList(u8),
     ) std.mem.Allocator.Error!void {
-        try padTo(8, gpa, out);
+        try padTo(gpa, 8, out);
         try writeString(gpa, out, self.bus_name);
         try writePath(gpa, out, self.path);
     }
@@ -223,8 +223,8 @@ comptime {
 ///
 /// **Errors.** `error.OutOfMemory` from `out`.
 fn padTo(
-    comptime alignment: usize,
     gpa: std.mem.Allocator,
+    comptime alignment: usize,
     out: *std.ArrayList(u8),
 ) std.mem.Allocator.Error!void {
     if (alignment != 4 and alignment != 8) {
@@ -246,7 +246,7 @@ fn writeString(
     out: *std.ArrayList(u8),
     bytes: []const u8,
 ) std.mem.Allocator.Error!void {
-    try padTo(4, gpa, out);
+    try padTo(gpa, 4, out);
     var header: [4]u8 = undefined;
     // A D-Bus string length is a `u32`. No object path or bus name comes near
     // four gigabytes, and truncating instead would put a length on the wire that

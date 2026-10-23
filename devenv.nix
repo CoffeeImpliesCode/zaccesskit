@@ -47,13 +47,13 @@ in
   env.GATE_EXCLUDE = "/[.]zig-cache/ /zig-out/ /zig-cache/ /.jj/ /devenv/ /.direnv/";
 
   enterShell = ''
-    # Create this project's cache and install targets before linking the build root.
-    mkdir -p -- "${cacheRoot}/build" "${cacheRoot}/pkg" "${cacheRoot}/install" "$ZIG_GLOBAL_CACHE_DIR"
+    # Create this project's cache targets before linking the build root.
+    mkdir -p -- "${cacheRoot}/build" "${cacheRoot}/pkg" "$ZIG_GLOBAL_CACHE_DIR"
 
-    # `.zig-cache`, `zig-pkg`, and `zig-out` must be symlinks to local disk. A real
+    # `.zig-cache` and `zig-pkg` must be symlinks to local disk. A real
     # directory on a network filesystem is the failure this guards against,
     # so say so rather than silently moving a populated cache.
-    for d in .zig-cache zig-pkg zig-out; do
+    for d in .zig-cache zig-pkg; do
       if [ -e "$d" ] && [ ! -L "$d" ]; then
         echo "zaccesskit: $PWD/$d is a real directory; Zig 0.16.0 cannot build here." >&2
         echo "zaccesskit: remove it and let devenv link it to ${cacheRoot}." >&2
@@ -61,7 +61,6 @@ in
         case $d in
           .zig-cache) ln -sfn "${cacheRoot}/build" "$d" ;;
           zig-pkg) ln -sfn "${cacheRoot}/pkg" "$d" ;;
-          zig-out) ln -sfn "${cacheRoot}/install" "$d" ;;
         esac
       fi
     done

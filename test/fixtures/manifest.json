@@ -1,8 +1,0 @@
-{
-  "source_commit":"466e24e252103f4d82bd6fbab98141b551e46e0c",
-  "oracle_scope":"Finite hand-recorded pinned-source oracles. Handcomputed claims are INFERENCE. No Rust toolchain, reference runtime execution, serde protocol, or wire-byte parity proof.",
-  "fixtures":[
-    {"path":"test/fixtures/geometry.json","byte_length":3097,"sha256":"6d56a673b21d02425e35adab4d23f0cfb54fd7a5afd191eb1124c21f86848e04","case_count":7},
-    {"path":"test/fixtures/text.json","byte_length":4447,"sha256":"ec41b6fcaa01d2816f751f2c1598559a471f9334ee1096e192ba0e2e588357a8","case_count":8}
-  ]
-}

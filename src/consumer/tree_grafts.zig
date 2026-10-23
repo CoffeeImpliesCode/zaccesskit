@@ -16,12 +16,12 @@
 //! That is what upstream's `node_removed` callback does, at `tree.rs:582` and
 //! `tree.rs:674-677`.
 //!
-//! **What an error leaves.** `error.OutOfMemory` preserves every logical
-//! mapping, though a reserve may already have grown its backing arrays.
-//! All fallible allocation precedes the first logical write. A transactional
-//! caller runs this pass on its private working state. Every other error
-//! reports an update upstream would have panicked on; that working state may
-//! be partly written and must be discarded or restored before reuse.
+//! **What an error leaves.** `error.OutOfMemory` leaves `state` exactly as it
+//! was. The pass reserves every buffer it will need before its first write to
+//! `state` and performs no fallible step after that write, so a caller may
+//! retry the same update and sees the same tree. Every other tag this pass
+//! returns reports an update upstream would have panicked on, and a tree in that
+//! condition does not satisfy I1 to I4, so the caller must drop it.
 //! `docs/33-consumer-interface-contract.md` section 5 says the same of
 //! `error.NodeMissingFromState`.
 //!
@@ -234,14 +234,13 @@ pub const GraftScratch = struct {
     /// `changes` is `null` when the caller reports nothing, which is what
     /// `Tree.init` does.
     ///
-    /// `error.OutOfMemory` preserves logical state; capacity may have grown.
-    /// Every fallible allocation precedes the first logical write.
-    /// `error.NodeMissingFromState` reports a
+    /// `error.OutOfMemory` leaves `state` exactly as it was, because every
+    /// allocation the pass makes happens before its first write to `state` and
+    /// nothing after that write can fail. `error.NodeMissingFromState` reports a
     /// removal walk that ran out of steps or reached a node the state does not
     /// hold, and `error.DuplicateGraftParent` reports a graft parent the state
-    /// already held. Both leave `state` partly written. Its owner must restore
-    /// or discard it. Public `Tree` restores its dirty working state before the
-    /// next update or host-focus call.
+    /// already held. Both leave `state` partly written, and both mean the update
+    /// upstream would have panicked on, so the caller must drop the tree.
     pub fn resolve(
         self: *GraftScratch,
         state: *TreeState,
@@ -251,9 +250,10 @@ pub const GraftScratch = struct {
         const will_walk = self.unreachable_ids.count() != 0 or self.grafts_to_remove.count() != 0;
         const will_install = self.pending_grafts.count() != 0;
 
-        // Reserves may grow backing arrays, but logical mappings are not
-        // written until they all succeed. Every later insert uses
-        // `putAssumeCapacity` or `appendAssumeCapacity` covered here.
+        // Nothing below this block writes to `state`, and nothing above it
+        // writes to anything, so `error.OutOfMemory` here leaves the caller's
+        // tree untouched. Every later insert is a `putAssumeCapacity` or an
+        // `appendAssumeCapacity` covered by one of these reserves.
         var walks: WalkBuffers = .{};
         defer walks.deinit(self.gpa);
         if (will_walk) {
@@ -272,15 +272,12 @@ pub const GraftScratch = struct {
         }
         if (changes) |recorded| {
             if (will_walk) try recorded.removed_node_ids.ensureUnusedCapacity(self.gpa, step_bound);
-            // A metadata-only update still attaches its existing subtree root,
-            // even when no graft is being installed. Added roots need no slot.
-            const rewrites_root = if (self.new_tree_root) |root|
-                state.graft_parents.contains(self.tree_id) and !recorded.added_node_ids.contains(root)
-            else
-                false;
-            const updated_bound = self.pending_grafts.count() + @as(usize, @intFromBool(rewrites_root));
-            if (updated_bound != 0)
-                try recorded.updated_node_ids.ensureUnusedCapacity(self.gpa, updated_bound);
+            if (will_install) {
+                try recorded.updated_node_ids.ensureUnusedCapacity(
+                    self.gpa,
+                    self.pending_grafts.count() + 1,
+                );
+            }
         }
 
         recordTreeFocus(self, state);

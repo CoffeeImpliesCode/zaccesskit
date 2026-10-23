@@ -89,19 +89,15 @@
 //! are 8, 2, 2, 21 and 8. Two walks in the exports run over caller-supplied
 //! storage rather than over a domain this file declares, and each is bounded by
 //! the length the caller passed or by the list's own length:
-//! `accesskit_node_set_custom_actions` walks the borrowed C array and then
+//! `accesskit_node_set_custom_actions` walks `values[0..length]` and then
 //! `copies.items`, and `CountingPair.expectOneReleaseEach` walks its own map.
 //!
 //! **What this layer never does.** No `zio`, no `io: std.Io`, no clock, no global
-//! state, no `unreachable` and no discarded error. `src/capi/handles.zig` owns
-//! the handle and `src/capi/marshal.zig` owns the public canonical C types and
-//! conversions. Private return packing below changes only the compiler's
-//! return classification for 49 optional getters on PowerPC64 Linux musl ELFv2;
-//! their C layouts and caller signatures do not change.
-//! Private argument lowering covers the seven Color, TextDecoration and TreeId
-//! setters on that target; geometry and selection arguments stay canonical.
-//! `src/capi/allocation.zig` owns the allocator and the per-thread error tag.
-//! The one pointer type this
+//! state, no `unreachable` and no discarded error. It declares no type and no
+//! conversion: `src/capi/handles.zig` owns the handle,
+//! `src/capi/marshal.zig` owns every conversion between the port's types and the
+//! header's `extern struct` forms, and `src/capi/allocation.zig` owns the
+//! declared allocator and the per-thread error tag. The one pointer type this
 //! file spells is the element type of a C `const accesskit_node_id *`, which is
 //! `schema.NodeId`: an `extern struct` whose only field is the `uint64_t` the
 //! header declares at `include/zaccesskit.h:177`, and the same type
@@ -119,14 +115,12 @@
 //! ```
 
 const std = @import("std");
-const builtin = @import("builtin");
 
 const action_request = @import("action_request.zig");
 const allocation = @import("allocation.zig");
 const handles = @import("handles.zig");
 const marshal = @import("marshal.zig");
 const node_module = @import("node.zig");
-const powerpc_abi = @import("powerpc64_abi.zig");
 const schema = @import("../schema/root.zig");
 
 const testing = std.testing;
@@ -151,134 +145,21 @@ const props_option = schema.option;
 const props_strings = schema.strings;
 const props_vectors = schema.vectors;
 
-// Zig 0.16 misclassifies small bool/payload C returns on this target (GH #5).
-// Dense words or scalar integer bits select the observed ELFv2 register return.
-// Five/six-byte aggregates are right-justified, unlike the full eight-byte form.
-// GNU ELFv1 and other unverified PowerPC targets keep the canonical types.
-const dense_optional_return = powerpc_abi.needs_lowering;
-
-const DenseReturn = extern struct {
-    first: u64,
-    second: u64,
-};
-
-fn OptionalReturn(comptime Canonical: type) type {
-    if (!dense_optional_return) return Canonical;
-    if (Canonical == marshal.COptNodeId or Canonical == marshal.COptIndex or
-        Canonical == marshal.COptDouble)
-    {
-        std.debug.assert(@sizeOf(Canonical) == 16);
-        std.debug.assert(@offsetOf(Canonical, "value") == 8);
-        return DenseReturn;
-    }
-    if (Canonical == marshal.COptFloat) {
-        std.debug.assert(@sizeOf(Canonical) == 8);
-        std.debug.assert(@offsetOf(Canonical, "value") == 4);
-        return u64;
-    }
-    if (Canonical == marshal.COptColor or Canonical == marshal.COptTextDecoration) {
-        std.debug.assert(@alignOf(Canonical) == 1);
-        std.debug.assert(@offsetOf(Canonical, "value") == 1);
-        std.debug.assert(@sizeOf(Canonical) == if (Canonical == marshal.COptColor) 5 else 6);
-        return u64;
-    }
-    const Value = @FieldType(Canonical, "value");
-    if (Value == bool or @typeInfo(Value) == .@"enum") {
-        std.debug.assert(@sizeOf(Canonical) == 2);
-        std.debug.assert(@alignOf(Canonical) == 1);
-        std.debug.assert(@offsetOf(Canonical, "value") == 1);
-        return u16;
-    }
-    @compileError("unobserved optional C return representation");
-}
-
-fn colorReturnBits(color: Color) u64 {
-    return (@as(u64, color.red) << 24) | (@as(u64, color.green) << 16) |
-        (@as(u64, color.blue) << 8) | @as(u64, color.alpha);
-}
-
-fn optionalReturn(
-    comptime Canonical: type,
-    optional: ?@FieldType(Canonical, "value"),
-) OptionalReturn(Canonical) {
-    if (!dense_optional_return) {
-        if (optional) |held| return .{ .has_value = true, .value = held };
-        return .{ .has_value = false, .value = std.mem.zeroes(@FieldType(Canonical, "value")) };
-    }
-    const Return = OptionalReturn(Canonical);
-    // Pack the property's primitive fields directly: no canonical temporary,
-    // padding read, or access to an absent payload.
-    const held = optional orelse
-        return if (Return == DenseReturn) .{ .first = 0, .second = 0 } else 0;
-    if (Return == DenseReturn) {
-        const payload: u64 = if (Canonical == marshal.COptNodeId)
-            held.value
-        else if (Canonical == marshal.COptDouble)
-            @bitCast(held)
-        else
-            @intCast(held);
-        // The flag is the first byte in memory, not the low bit on big endian.
-        const flag: u64 = if (builtin.cpu.arch.endian() == .big) 1 << 56 else 1;
-        return .{ .first = flag, .second = payload };
-    }
-    if (Canonical == marshal.COptFloat) {
-        return (@as(u64, 1) << 56) | @as(u32, @bitCast(held));
-    }
-    if (Canonical == marshal.COptColor) {
-        return (@as(u64, 1) << 32) | colorReturnBits(held);
-    }
-    if (Canonical == marshal.COptTextDecoration) {
-        return (@as(u64, 1) << 40) | (@as(u64, @intFromEnum(held.style)) << 32) |
-            colorReturnBits(held.color);
-    }
-    const value: u16 = if (@FieldType(Canonical, "value") == bool)
-        @intFromBool(held)
-    else
-        @intFromEnum(held);
-    return (@as(u16, 1) << 8) | value;
-}
-
-// The same target also misclassifies Color/Decoration/TreeId arguments.
-// Independent C calls proved low scalar bits for four/five bytes and two dense
-// words for sixteen; the working HFA geometry and selection inputs stay native.
-fn TargetArg(comptime Canonical: type) type {
-    if (!dense_optional_return) return Canonical;
-    if (Canonical == Color or Canonical == TextDecoration) return u64;
-    if (Canonical == TreeId) return powerpc_abi.TreeIdValue;
-    return Canonical;
-}
-
-fn decodeArg(comptime Canonical: type, value: TargetArg(Canonical)) Canonical {
-    if (!dense_optional_return) return value;
-    if (Canonical == TreeId) return powerpc_abi.treeIdFromValue(value);
-    const color: Color = .{
-        .red = @truncate(value >> 24),
-        .green = @truncate(value >> 16),
-        .blue = @truncate(value >> 8),
-        .alpha = @truncate(value),
-    };
-    if (Canonical == Color) return color;
-    return .{
-        .style = @enumFromInt(@as(u8, @truncate(value >> 32))),
-        .color = color,
-    };
-}
-
 /// Clears the per-thread failure tag, which every export here does on entry.
 ///
-/// `include/zaccesskit.h:6502-6506` requires it: other functions clear both
-/// diagnostics on entry. Without it a getter that answers "absent" would
+/// `include/zaccesskit.h:6476-6484` requires it: the tag is valid only until the
+/// next call on this thread. Without it a getter that answers "absent" would
 /// inherit the tag of an earlier failing call, and a C caller could not tell the
 /// two apart. It is one thread-local store and nothing else.
 fn enter() void {
     allocation.clearError();
 }
 
-/// Records an out-of-memory failure in this module's diagnostic slot.
+/// Records that the call just made failed to allocate.
 ///
-/// The C error domain also has `ACCESSKIT_ERROR_OPERATION_FAILED`
-/// (`include/zaccesskit.h:1780-1784`); this module uses the OOM tag
-/// (`include/zaccesskit.h:1782`).
+/// The one failing member of `accesskit_error`
+/// (`include/zaccesskit.h:1761-1764`), and the tag every void setter here sets
+/// on its failing path for the reason this module's doc records.
 fn note_oom() void {
     allocation.failWith(.out_of_memory);
 }
@@ -958,11 +839,12 @@ export fn accesskit_node_owns(node: *const handles.accesskit_node) callconv(.c) 
 /// new list holding only `item`, which is upstream's 0.25.0 fix
 /// (`accesskit/src/lib.rs:1359-1365`).
 ///
-/// **A void pusher that can fail.** On failure the list is unchanged and the
-/// tag becomes `ACCESSKIT_ERROR_OUT_OF_MEMORY`. The pusher explicitly maps
-/// both error arms to that tag. `PropertyTagMismatch` is documented at
-/// `src/schema/props/vectors.zig:65-70` as unreachable through valid
-/// property-store paths.
+/// **A void pusher that can fail, for the reason every setter here gives.** On
+/// the failing path the list is unchanged and the tag becomes
+/// `ACCESSKIT_ERROR_OUT_OF_MEMORY`. The second arm of the pusher's error set,
+/// `PropertyTagMismatch`, is unreachable through any path the store can
+/// produce, and it is mapped to the same tag: a documented conflation, not a
+/// discarded error, because `accesskit_error` has one failing member.
 export fn accesskit_node_push_child(
     node: *handles.accesskit_node,
     item: NodeIdContent,
@@ -981,11 +863,12 @@ export fn accesskit_node_push_child(
 /// new list holding only `item`, which is upstream's 0.25.0 fix
 /// (`accesskit/src/lib.rs:1359-1365`).
 ///
-/// **A void pusher that can fail.** On failure the list is unchanged and the
-/// tag becomes `ACCESSKIT_ERROR_OUT_OF_MEMORY`. The pusher explicitly maps
-/// both error arms to that tag. `PropertyTagMismatch` is documented at
-/// `src/schema/props/vectors.zig:65-70` as unreachable through valid
-/// property-store paths.
+/// **A void pusher that can fail, for the reason every setter here gives.** On
+/// the failing path the list is unchanged and the tag becomes
+/// `ACCESSKIT_ERROR_OUT_OF_MEMORY`. The second arm of the pusher's error set,
+/// `PropertyTagMismatch`, is unreachable through any path the store can
+/// produce, and it is mapped to the same tag: a documented conflation, not a
+/// discarded error, because `accesskit_error` has one failing member.
 export fn accesskit_node_push_controlled(
     node: *handles.accesskit_node,
     item: NodeIdContent,
@@ -1004,11 +887,12 @@ export fn accesskit_node_push_controlled(
 /// new list holding only `item`, which is upstream's 0.25.0 fix
 /// (`accesskit/src/lib.rs:1359-1365`).
 ///
-/// **A void pusher that can fail.** On failure the list is unchanged and the
-/// tag becomes `ACCESSKIT_ERROR_OUT_OF_MEMORY`. The pusher explicitly maps
-/// both error arms to that tag. `PropertyTagMismatch` is documented at
-/// `src/schema/props/vectors.zig:65-70` as unreachable through valid
-/// property-store paths.
+/// **A void pusher that can fail, for the reason every setter here gives.** On
+/// the failing path the list is unchanged and the tag becomes
+/// `ACCESSKIT_ERROR_OUT_OF_MEMORY`. The second arm of the pusher's error set,
+/// `PropertyTagMismatch`, is unreachable through any path the store can
+/// produce, and it is mapped to the same tag: a documented conflation, not a
+/// discarded error, because `accesskit_error` has one failing member.
 export fn accesskit_node_push_described_by(
     node: *handles.accesskit_node,
     item: NodeIdContent,
@@ -1027,11 +911,12 @@ export fn accesskit_node_push_described_by(
 /// new list holding only `item`, which is upstream's 0.25.0 fix
 /// (`accesskit/src/lib.rs:1359-1365`).
 ///
-/// **A void pusher that can fail.** On failure the list is unchanged and the
-/// tag becomes `ACCESSKIT_ERROR_OUT_OF_MEMORY`. The pusher explicitly maps
-/// both error arms to that tag. `PropertyTagMismatch` is documented at
-/// `src/schema/props/vectors.zig:65-70` as unreachable through valid
-/// property-store paths.
+/// **A void pusher that can fail, for the reason every setter here gives.** On
+/// the failing path the list is unchanged and the tag becomes
+/// `ACCESSKIT_ERROR_OUT_OF_MEMORY`. The second arm of the pusher's error set,
+/// `PropertyTagMismatch`, is unreachable through any path the store can
+/// produce, and it is mapped to the same tag: a documented conflation, not a
+/// discarded error, because `accesskit_error` has one failing member.
 export fn accesskit_node_push_detail(
     node: *handles.accesskit_node,
     item: NodeIdContent,
@@ -1050,11 +935,12 @@ export fn accesskit_node_push_detail(
 /// new list holding only `item`, which is upstream's 0.25.0 fix
 /// (`accesskit/src/lib.rs:1359-1365`).
 ///
-/// **A void pusher that can fail.** On failure the list is unchanged and the
-/// tag becomes `ACCESSKIT_ERROR_OUT_OF_MEMORY`. The pusher explicitly maps
-/// both error arms to that tag. `PropertyTagMismatch` is documented at
-/// `src/schema/props/vectors.zig:65-70` as unreachable through valid
-/// property-store paths.
+/// **A void pusher that can fail, for the reason every setter here gives.** On
+/// the failing path the list is unchanged and the tag becomes
+/// `ACCESSKIT_ERROR_OUT_OF_MEMORY`. The second arm of the pusher's error set,
+/// `PropertyTagMismatch`, is unreachable through any path the store can
+/// produce, and it is mapped to the same tag: a documented conflation, not a
+/// discarded error, because `accesskit_error` has one failing member.
 export fn accesskit_node_push_flow_to(
     node: *handles.accesskit_node,
     item: NodeIdContent,
@@ -1073,11 +959,12 @@ export fn accesskit_node_push_flow_to(
 /// new list holding only `item`, which is upstream's 0.25.0 fix
 /// (`accesskit/src/lib.rs:1359-1365`).
 ///
-/// **A void pusher that can fail.** On failure the list is unchanged and the
-/// tag becomes `ACCESSKIT_ERROR_OUT_OF_MEMORY`. The pusher explicitly maps
-/// both error arms to that tag. `PropertyTagMismatch` is documented at
-/// `src/schema/props/vectors.zig:65-70` as unreachable through valid
-/// property-store paths.
+/// **A void pusher that can fail, for the reason every setter here gives.** On
+/// the failing path the list is unchanged and the tag becomes
+/// `ACCESSKIT_ERROR_OUT_OF_MEMORY`. The second arm of the pusher's error set,
+/// `PropertyTagMismatch`, is unreachable through any path the store can
+/// produce, and it is mapped to the same tag: a documented conflation, not a
+/// discarded error, because `accesskit_error` has one failing member.
 export fn accesskit_node_push_labelled_by(
     node: *handles.accesskit_node,
     item: NodeIdContent,
@@ -1096,11 +983,12 @@ export fn accesskit_node_push_labelled_by(
 /// new list holding only `item`, which is upstream's 0.25.0 fix
 /// (`accesskit/src/lib.rs:1359-1365`).
 ///
-/// **A void pusher that can fail.** On failure the list is unchanged and the
-/// tag becomes `ACCESSKIT_ERROR_OUT_OF_MEMORY`. The pusher explicitly maps
-/// both error arms to that tag. `PropertyTagMismatch` is documented at
-/// `src/schema/props/vectors.zig:65-70` as unreachable through valid
-/// property-store paths.
+/// **A void pusher that can fail, for the reason every setter here gives.** On
+/// the failing path the list is unchanged and the tag becomes
+/// `ACCESSKIT_ERROR_OUT_OF_MEMORY`. The second arm of the pusher's error set,
+/// `PropertyTagMismatch`, is unreachable through any path the store can
+/// produce, and it is mapped to the same tag: a documented conflation, not a
+/// discarded error, because `accesskit_error` has one failing member.
 export fn accesskit_node_push_owned(
     node: *handles.accesskit_node,
     item: NodeIdContent,
@@ -1119,11 +1007,12 @@ export fn accesskit_node_push_owned(
 /// new list holding only `item`, which is upstream's 0.25.0 fix
 /// (`accesskit/src/lib.rs:1359-1365`).
 ///
-/// **A void pusher that can fail.** On failure the list is unchanged and the
-/// tag becomes `ACCESSKIT_ERROR_OUT_OF_MEMORY`. The pusher explicitly maps
-/// both error arms to that tag. `PropertyTagMismatch` is documented at
-/// `src/schema/props/vectors.zig:65-70` as unreachable through valid
-/// property-store paths.
+/// **A void pusher that can fail, for the reason every setter here gives.** On
+/// the failing path the list is unchanged and the tag becomes
+/// `ACCESSKIT_ERROR_OUT_OF_MEMORY`. The second arm of the pusher's error set,
+/// `PropertyTagMismatch`, is unreachable through any path the store can
+/// produce, and it is mapped to the same tag: a documented conflation, not a
+/// discarded error, because `accesskit_error` has one failing member.
 export fn accesskit_node_push_to_radio_group(
     node: *handles.accesskit_node,
     item: NodeIdContent,
@@ -1158,7 +1047,7 @@ export fn accesskit_node_radio_group(
 /// `include/zaccesskit.h:2331`. Nothing is retained and the caller keeps the
 /// array. `values` may be null when `length` is 0 and must not be null
 /// otherwise, so a null pointer with a non-zero length is a caller precondition
-/// that `marshal.cArrayToSlice` asserts.
+/// this declaration does not check for.
 ///
 /// **A void setter that can fail, which is a port-specific divergence.** The
 /// header says "There is no failure path", and that holds upstream because
@@ -1171,11 +1060,10 @@ export fn accesskit_node_radio_group(
 export fn accesskit_node_set_children(
     node: *handles.accesskit_node,
     length: usize,
-    values: [*c]const NodeId,
+    values: [*]const NodeId,
 ) callconv(.c) void {
     enter();
-    const given = marshal.cArrayToSlice(NodeId, values, length);
-    props_ids.setChildren(mutable_properties(node), given) catch note_oom();
+    props_ids.setChildren(mutable_properties(node), values[0..length]) catch note_oom();
 }
 
 /// Copies `length` identifiers from `values` into the node's `controls`.
@@ -1183,7 +1071,7 @@ export fn accesskit_node_set_children(
 /// `include/zaccesskit.h:2370`. Nothing is retained and the caller keeps the
 /// array. `values` may be null when `length` is 0 and must not be null
 /// otherwise, so a null pointer with a non-zero length is a caller precondition
-/// that `marshal.cArrayToSlice` asserts.
+/// this declaration does not check for.
 ///
 /// **A void setter that can fail, which is a port-specific divergence.** The
 /// header says "There is no failure path", and that holds upstream because
@@ -1196,11 +1084,10 @@ export fn accesskit_node_set_children(
 export fn accesskit_node_set_controls(
     node: *handles.accesskit_node,
     length: usize,
-    values: [*c]const NodeId,
+    values: [*]const NodeId,
 ) callconv(.c) void {
     enter();
-    const given = marshal.cArrayToSlice(NodeId, values, length);
-    props_ids.setControls(mutable_properties(node), given) catch note_oom();
+    props_ids.setControls(mutable_properties(node), values[0..length]) catch note_oom();
 }
 
 /// Copies `length` identifiers from `values` into the node's `described_by`.
@@ -1208,7 +1095,7 @@ export fn accesskit_node_set_controls(
 /// `include/zaccesskit.h:2447`. Nothing is retained and the caller keeps the
 /// array. `values` may be null when `length` is 0 and must not be null
 /// otherwise, so a null pointer with a non-zero length is a caller precondition
-/// that `marshal.cArrayToSlice` asserts.
+/// this declaration does not check for.
 ///
 /// **A void setter that can fail, which is a port-specific divergence.** The
 /// header says "There is no failure path", and that holds upstream because
@@ -1221,11 +1108,10 @@ export fn accesskit_node_set_controls(
 export fn accesskit_node_set_described_by(
     node: *handles.accesskit_node,
     length: usize,
-    values: [*c]const NodeId,
+    values: [*]const NodeId,
 ) callconv(.c) void {
     enter();
-    const given = marshal.cArrayToSlice(NodeId, values, length);
-    props_ids.setDescribedBy(mutable_properties(node), given) catch note_oom();
+    props_ids.setDescribedBy(mutable_properties(node), values[0..length]) catch note_oom();
 }
 
 /// Copies `length` identifiers from `values` into the node's `details`.
@@ -1233,7 +1119,7 @@ export fn accesskit_node_set_described_by(
 /// `include/zaccesskit.h:2409`. Nothing is retained and the caller keeps the
 /// array. `values` may be null when `length` is 0 and must not be null
 /// otherwise, so a null pointer with a non-zero length is a caller precondition
-/// that `marshal.cArrayToSlice` asserts.
+/// this declaration does not check for.
 ///
 /// **A void setter that can fail, which is a port-specific divergence.** The
 /// header says "There is no failure path", and that holds upstream because
@@ -1246,11 +1132,10 @@ export fn accesskit_node_set_described_by(
 export fn accesskit_node_set_details(
     node: *handles.accesskit_node,
     length: usize,
-    values: [*c]const NodeId,
+    values: [*]const NodeId,
 ) callconv(.c) void {
     enter();
-    const given = marshal.cArrayToSlice(NodeId, values, length);
-    props_ids.setDetails(mutable_properties(node), given) catch note_oom();
+    props_ids.setDetails(mutable_properties(node), values[0..length]) catch note_oom();
 }
 
 /// Copies `length` identifiers from `values` into the node's `flow_to`.
@@ -1258,7 +1143,7 @@ export fn accesskit_node_set_details(
 /// `include/zaccesskit.h:2487`. Nothing is retained and the caller keeps the
 /// array. `values` may be null when `length` is 0 and must not be null
 /// otherwise, so a null pointer with a non-zero length is a caller precondition
-/// that `marshal.cArrayToSlice` asserts.
+/// this declaration does not check for.
 ///
 /// **A void setter that can fail, which is a port-specific divergence.** The
 /// header says "There is no failure path", and that holds upstream because
@@ -1271,11 +1156,10 @@ export fn accesskit_node_set_details(
 export fn accesskit_node_set_flow_to(
     node: *handles.accesskit_node,
     length: usize,
-    values: [*c]const NodeId,
+    values: [*]const NodeId,
 ) callconv(.c) void {
     enter();
-    const given = marshal.cArrayToSlice(NodeId, values, length);
-    props_ids.setFlowTo(mutable_properties(node), given) catch note_oom();
+    props_ids.setFlowTo(mutable_properties(node), values[0..length]) catch note_oom();
 }
 
 /// Copies `length` identifiers from `values` into the node's `labelled_by`.
@@ -1283,7 +1167,7 @@ export fn accesskit_node_set_flow_to(
 /// `include/zaccesskit.h:2525`. Nothing is retained and the caller keeps the
 /// array. `values` may be null when `length` is 0 and must not be null
 /// otherwise, so a null pointer with a non-zero length is a caller precondition
-/// that `marshal.cArrayToSlice` asserts.
+/// this declaration does not check for.
 ///
 /// **A void setter that can fail, which is a port-specific divergence.** The
 /// header says "There is no failure path", and that holds upstream because
@@ -1296,11 +1180,10 @@ export fn accesskit_node_set_flow_to(
 export fn accesskit_node_set_labelled_by(
     node: *handles.accesskit_node,
     length: usize,
-    values: [*c]const NodeId,
+    values: [*]const NodeId,
 ) callconv(.c) void {
     enter();
-    const given = marshal.cArrayToSlice(NodeId, values, length);
-    props_ids.setLabelledBy(mutable_properties(node), given) catch note_oom();
+    props_ids.setLabelledBy(mutable_properties(node), values[0..length]) catch note_oom();
 }
 
 /// Copies `length` identifiers from `values` into the node's `owns`.
@@ -1308,7 +1191,7 @@ export fn accesskit_node_set_labelled_by(
 /// `include/zaccesskit.h:2564`. Nothing is retained and the caller keeps the
 /// array. `values` may be null when `length` is 0 and must not be null
 /// otherwise, so a null pointer with a non-zero length is a caller precondition
-/// that `marshal.cArrayToSlice` asserts.
+/// this declaration does not check for.
 ///
 /// **A void setter that can fail, which is a port-specific divergence.** The
 /// header says "There is no failure path", and that holds upstream because
@@ -1321,11 +1204,10 @@ export fn accesskit_node_set_labelled_by(
 export fn accesskit_node_set_owns(
     node: *handles.accesskit_node,
     length: usize,
-    values: [*c]const NodeId,
+    values: [*]const NodeId,
 ) callconv(.c) void {
     enter();
-    const given = marshal.cArrayToSlice(NodeId, values, length);
-    props_ids.setOwns(mutable_properties(node), given) catch note_oom();
+    props_ids.setOwns(mutable_properties(node), values[0..length]) catch note_oom();
 }
 
 /// Copies `length` identifiers from `values` into the node's `radio_group`.
@@ -1333,7 +1215,7 @@ export fn accesskit_node_set_owns(
 /// `include/zaccesskit.h:2602`. Nothing is retained and the caller keeps the
 /// array. `values` may be null when `length` is 0 and must not be null
 /// otherwise, so a null pointer with a non-zero length is a caller precondition
-/// that `marshal.cArrayToSlice` asserts.
+/// this declaration does not check for.
 ///
 /// **A void setter that can fail, which is a port-specific divergence.** The
 /// header says "There is no failure path", and that holds upstream because
@@ -1346,11 +1228,10 @@ export fn accesskit_node_set_owns(
 export fn accesskit_node_set_radio_group(
     node: *handles.accesskit_node,
     length: usize,
-    values: [*c]const NodeId,
+    values: [*]const NodeId,
 ) callconv(.c) void {
     enter();
-    const given = marshal.cArrayToSlice(NodeId, values, length);
-    props_ids.setRadioGroup(mutable_properties(node), given) catch note_oom();
+    props_ids.setRadioGroup(mutable_properties(node), values[0..length]) catch note_oom();
 }
 
 // --- The single node identifiers and the tree identifier --------------------
@@ -1367,12 +1248,9 @@ export fn accesskit_node_set_radio_group(
 /// the tag `ACCESSKIT_ERROR_NONE`.
 export fn accesskit_node_active_descendant(
     node: *const handles.accesskit_node,
-) callconv(.c) OptionalReturn(marshal.COptNodeId) {
+) callconv(.c) marshal.COptNodeId {
     enter();
-    return optionalReturn(
-        marshal.COptNodeId,
-        props_ids.activeDescendant(properties_of(node)),
-    );
+    return marshal.opt_node_id_to_c(props_ids.activeDescendant(properties_of(node)));
 }
 
 /// Clears the `active_descendant` property, so the getter reports it as unset.
@@ -1453,12 +1331,9 @@ export fn accesskit_node_clear_previous_on_line(node: *handles.accesskit_node) c
 /// the tag `ACCESSKIT_ERROR_NONE`.
 export fn accesskit_node_error_message(
     node: *const handles.accesskit_node,
-) callconv(.c) OptionalReturn(marshal.COptNodeId) {
+) callconv(.c) marshal.COptNodeId {
     enter();
-    return optionalReturn(
-        marshal.COptNodeId,
-        props_ids.errorMessage(properties_of(node)),
-    );
+    return marshal.opt_node_id_to_c(props_ids.errorMessage(properties_of(node)));
 }
 
 /// The `in_page_link_target` property.
@@ -1473,12 +1348,9 @@ export fn accesskit_node_error_message(
 /// the tag `ACCESSKIT_ERROR_NONE`.
 export fn accesskit_node_in_page_link_target(
     node: *const handles.accesskit_node,
-) callconv(.c) OptionalReturn(marshal.COptNodeId) {
+) callconv(.c) marshal.COptNodeId {
     enter();
-    return optionalReturn(
-        marshal.COptNodeId,
-        props_ids.inPageLinkTarget(properties_of(node)),
-    );
+    return marshal.opt_node_id_to_c(props_ids.inPageLinkTarget(properties_of(node)));
 }
 
 /// The `member_of` property.
@@ -1493,12 +1365,9 @@ export fn accesskit_node_in_page_link_target(
 /// the tag `ACCESSKIT_ERROR_NONE`.
 export fn accesskit_node_member_of(
     node: *const handles.accesskit_node,
-) callconv(.c) OptionalReturn(marshal.COptNodeId) {
+) callconv(.c) marshal.COptNodeId {
     enter();
-    return optionalReturn(
-        marshal.COptNodeId,
-        props_ids.memberOf(properties_of(node)),
-    );
+    return marshal.opt_node_id_to_c(props_ids.memberOf(properties_of(node)));
 }
 
 /// The `next_on_line` property.
@@ -1513,12 +1382,9 @@ export fn accesskit_node_member_of(
 /// the tag `ACCESSKIT_ERROR_NONE`.
 export fn accesskit_node_next_on_line(
     node: *const handles.accesskit_node,
-) callconv(.c) OptionalReturn(marshal.COptNodeId) {
+) callconv(.c) marshal.COptNodeId {
     enter();
-    return optionalReturn(
-        marshal.COptNodeId,
-        props_ids.nextOnLine(properties_of(node)),
-    );
+    return marshal.opt_node_id_to_c(props_ids.nextOnLine(properties_of(node)));
 }
 
 /// The `popup_for` property.
@@ -1533,12 +1399,9 @@ export fn accesskit_node_next_on_line(
 /// the tag `ACCESSKIT_ERROR_NONE`.
 export fn accesskit_node_popup_for(
     node: *const handles.accesskit_node,
-) callconv(.c) OptionalReturn(marshal.COptNodeId) {
+) callconv(.c) marshal.COptNodeId {
     enter();
-    return optionalReturn(
-        marshal.COptNodeId,
-        props_ids.popupFor(properties_of(node)),
-    );
+    return marshal.opt_node_id_to_c(props_ids.popupFor(properties_of(node)));
 }
 
 /// The `previous_on_line` property.
@@ -1553,12 +1416,9 @@ export fn accesskit_node_popup_for(
 /// the tag `ACCESSKIT_ERROR_NONE`.
 export fn accesskit_node_previous_on_line(
     node: *const handles.accesskit_node,
-) callconv(.c) OptionalReturn(marshal.COptNodeId) {
+) callconv(.c) marshal.COptNodeId {
     enter();
-    return optionalReturn(
-        marshal.COptNodeId,
-        props_ids.previousOnLine(properties_of(node)),
-    );
+    return marshal.opt_node_id_to_c(props_ids.previousOnLine(properties_of(node)));
 }
 
 /// Sets the `active_descendant` property to `value`.
@@ -1734,10 +1594,10 @@ export fn accesskit_node_clear_tree_id(node: *handles.accesskit_node) callconv(.
 /// builds its replacement before it releases the value it displaces.
 export fn accesskit_node_set_tree_id(
     node: *handles.accesskit_node,
-    value: TargetArg(TreeId),
+    value: TreeId,
 ) callconv(.c) void {
     enter();
-    props_option.setTreeId(mutable_properties(node), decodeArg(TreeId, value)) catch note_oom();
+    props_option.setTreeId(mutable_properties(node), value) catch note_oom();
 }
 
 /// The `tree_id` property.
@@ -3839,12 +3699,9 @@ export fn accesskit_node_clear_size_of_set(node: *handles.accesskit_node) callco
 /// `ACCESSKIT_ERROR_NONE`.
 export fn accesskit_node_column_count(
     node: *const handles.accesskit_node,
-) callconv(.c) OptionalReturn(marshal.COptIndex) {
+) callconv(.c) marshal.COptIndex {
     enter();
-    return optionalReturn(
-        marshal.COptIndex,
-        props_numbers.columnCount(properties_of(node)),
-    );
+    return marshal.opt_index_to_c(props_numbers.columnCount(properties_of(node)));
 }
 
 /// The `column_index` property.
@@ -3860,12 +3717,9 @@ export fn accesskit_node_column_count(
 /// `ACCESSKIT_ERROR_NONE`.
 export fn accesskit_node_column_index(
     node: *const handles.accesskit_node,
-) callconv(.c) OptionalReturn(marshal.COptIndex) {
+) callconv(.c) marshal.COptIndex {
     enter();
-    return optionalReturn(
-        marshal.COptIndex,
-        props_numbers.columnIndex(properties_of(node)),
-    );
+    return marshal.opt_index_to_c(props_numbers.columnIndex(properties_of(node)));
 }
 
 /// The `column_span` property.
@@ -3881,12 +3735,9 @@ export fn accesskit_node_column_index(
 /// `ACCESSKIT_ERROR_NONE`.
 export fn accesskit_node_column_span(
     node: *const handles.accesskit_node,
-) callconv(.c) OptionalReturn(marshal.COptIndex) {
+) callconv(.c) marshal.COptIndex {
     enter();
-    return optionalReturn(
-        marshal.COptIndex,
-        props_numbers.columnSpan(properties_of(node)),
-    );
+    return marshal.opt_index_to_c(props_numbers.columnSpan(properties_of(node)));
 }
 
 /// The `font_size` property.
@@ -3901,12 +3752,9 @@ export fn accesskit_node_column_span(
 /// `ACCESSKIT_ERROR_NONE`.
 export fn accesskit_node_font_size(
     node: *const handles.accesskit_node,
-) callconv(.c) OptionalReturn(marshal.COptFloat) {
+) callconv(.c) marshal.COptFloat {
     enter();
-    return optionalReturn(
-        marshal.COptFloat,
-        props_numbers.fontSize(properties_of(node)),
-    );
+    return marshal.opt_float_to_c(props_numbers.fontSize(properties_of(node)));
 }
 
 /// The `font_weight` property.
@@ -3921,12 +3769,9 @@ export fn accesskit_node_font_size(
 /// `ACCESSKIT_ERROR_NONE`.
 export fn accesskit_node_font_weight(
     node: *const handles.accesskit_node,
-) callconv(.c) OptionalReturn(marshal.COptFloat) {
+) callconv(.c) marshal.COptFloat {
     enter();
-    return optionalReturn(
-        marshal.COptFloat,
-        props_numbers.fontWeight(properties_of(node)),
-    );
+    return marshal.opt_float_to_c(props_numbers.fontWeight(properties_of(node)));
 }
 
 /// The `level` property.
@@ -3940,14 +3785,9 @@ export fn accesskit_node_font_weight(
 /// The value is a `size_t`, a count and never an index into anything this
 /// library owns. The getter allocates nothing, cannot fail, and leaves the tag
 /// `ACCESSKIT_ERROR_NONE`.
-export fn accesskit_node_level(
-    node: *const handles.accesskit_node,
-) callconv(.c) OptionalReturn(marshal.COptIndex) {
+export fn accesskit_node_level(node: *const handles.accesskit_node) callconv(.c) marshal.COptIndex {
     enter();
-    return optionalReturn(
-        marshal.COptIndex,
-        props_numbers.level(properties_of(node)),
-    );
+    return marshal.opt_index_to_c(props_numbers.level(properties_of(node)));
 }
 
 /// The `max_numeric_value` property.
@@ -3962,12 +3802,9 @@ export fn accesskit_node_level(
 /// nothing, cannot fail, and leaves the tag `ACCESSKIT_ERROR_NONE`.
 export fn accesskit_node_max_numeric_value(
     node: *const handles.accesskit_node,
-) callconv(.c) OptionalReturn(marshal.COptDouble) {
+) callconv(.c) marshal.COptDouble {
     enter();
-    return optionalReturn(
-        marshal.COptDouble,
-        props_numbers.maxNumericValue(properties_of(node)),
-    );
+    return marshal.opt_double_to_c(props_numbers.maxNumericValue(properties_of(node)));
 }
 
 /// The `min_numeric_value` property.
@@ -3982,12 +3819,9 @@ export fn accesskit_node_max_numeric_value(
 /// nothing, cannot fail, and leaves the tag `ACCESSKIT_ERROR_NONE`.
 export fn accesskit_node_min_numeric_value(
     node: *const handles.accesskit_node,
-) callconv(.c) OptionalReturn(marshal.COptDouble) {
+) callconv(.c) marshal.COptDouble {
     enter();
-    return optionalReturn(
-        marshal.COptDouble,
-        props_numbers.minNumericValue(properties_of(node)),
-    );
+    return marshal.opt_double_to_c(props_numbers.minNumericValue(properties_of(node)));
 }
 
 /// The `numeric_value` property.
@@ -4002,12 +3836,9 @@ export fn accesskit_node_min_numeric_value(
 /// nothing, cannot fail, and leaves the tag `ACCESSKIT_ERROR_NONE`.
 export fn accesskit_node_numeric_value(
     node: *const handles.accesskit_node,
-) callconv(.c) OptionalReturn(marshal.COptDouble) {
+) callconv(.c) marshal.COptDouble {
     enter();
-    return optionalReturn(
-        marshal.COptDouble,
-        props_numbers.numericValue(properties_of(node)),
-    );
+    return marshal.opt_double_to_c(props_numbers.numericValue(properties_of(node)));
 }
 
 /// The `numeric_value_jump` property.
@@ -4022,12 +3853,9 @@ export fn accesskit_node_numeric_value(
 /// nothing, cannot fail, and leaves the tag `ACCESSKIT_ERROR_NONE`.
 export fn accesskit_node_numeric_value_jump(
     node: *const handles.accesskit_node,
-) callconv(.c) OptionalReturn(marshal.COptDouble) {
+) callconv(.c) marshal.COptDouble {
     enter();
-    return optionalReturn(
-        marshal.COptDouble,
-        props_numbers.numericValueJump(properties_of(node)),
-    );
+    return marshal.opt_double_to_c(props_numbers.numericValueJump(properties_of(node)));
 }
 
 /// The `numeric_value_step` property.
@@ -4042,12 +3870,9 @@ export fn accesskit_node_numeric_value_jump(
 /// nothing, cannot fail, and leaves the tag `ACCESSKIT_ERROR_NONE`.
 export fn accesskit_node_numeric_value_step(
     node: *const handles.accesskit_node,
-) callconv(.c) OptionalReturn(marshal.COptDouble) {
+) callconv(.c) marshal.COptDouble {
     enter();
-    return optionalReturn(
-        marshal.COptDouble,
-        props_numbers.numericValueStep(properties_of(node)),
-    );
+    return marshal.opt_double_to_c(props_numbers.numericValueStep(properties_of(node)));
 }
 
 /// The `position_in_set` property.
@@ -4063,12 +3888,9 @@ export fn accesskit_node_numeric_value_step(
 /// `ACCESSKIT_ERROR_NONE`.
 export fn accesskit_node_position_in_set(
     node: *const handles.accesskit_node,
-) callconv(.c) OptionalReturn(marshal.COptIndex) {
+) callconv(.c) marshal.COptIndex {
     enter();
-    return optionalReturn(
-        marshal.COptIndex,
-        props_numbers.positionInSet(properties_of(node)),
-    );
+    return marshal.opt_index_to_c(props_numbers.positionInSet(properties_of(node)));
 }
 
 /// The `row_count` property.
@@ -4084,12 +3906,9 @@ export fn accesskit_node_position_in_set(
 /// `ACCESSKIT_ERROR_NONE`.
 export fn accesskit_node_row_count(
     node: *const handles.accesskit_node,
-) callconv(.c) OptionalReturn(marshal.COptIndex) {
+) callconv(.c) marshal.COptIndex {
     enter();
-    return optionalReturn(
-        marshal.COptIndex,
-        props_numbers.rowCount(properties_of(node)),
-    );
+    return marshal.opt_index_to_c(props_numbers.rowCount(properties_of(node)));
 }
 
 /// The `row_index` property.
@@ -4105,12 +3924,9 @@ export fn accesskit_node_row_count(
 /// `ACCESSKIT_ERROR_NONE`.
 export fn accesskit_node_row_index(
     node: *const handles.accesskit_node,
-) callconv(.c) OptionalReturn(marshal.COptIndex) {
+) callconv(.c) marshal.COptIndex {
     enter();
-    return optionalReturn(
-        marshal.COptIndex,
-        props_numbers.rowIndex(properties_of(node)),
-    );
+    return marshal.opt_index_to_c(props_numbers.rowIndex(properties_of(node)));
 }
 
 /// The `row_span` property.
@@ -4126,12 +3942,9 @@ export fn accesskit_node_row_index(
 /// `ACCESSKIT_ERROR_NONE`.
 export fn accesskit_node_row_span(
     node: *const handles.accesskit_node,
-) callconv(.c) OptionalReturn(marshal.COptIndex) {
+) callconv(.c) marshal.COptIndex {
     enter();
-    return optionalReturn(
-        marshal.COptIndex,
-        props_numbers.rowSpan(properties_of(node)),
-    );
+    return marshal.opt_index_to_c(props_numbers.rowSpan(properties_of(node)));
 }
 
 /// The `scroll_x` property.
@@ -4146,12 +3959,9 @@ export fn accesskit_node_row_span(
 /// nothing, cannot fail, and leaves the tag `ACCESSKIT_ERROR_NONE`.
 export fn accesskit_node_scroll_x(
     node: *const handles.accesskit_node,
-) callconv(.c) OptionalReturn(marshal.COptDouble) {
+) callconv(.c) marshal.COptDouble {
     enter();
-    return optionalReturn(
-        marshal.COptDouble,
-        props_numbers.scrollX(properties_of(node)),
-    );
+    return marshal.opt_double_to_c(props_numbers.scrollX(properties_of(node)));
 }
 
 /// The `scroll_x_max` property.
@@ -4166,12 +3976,9 @@ export fn accesskit_node_scroll_x(
 /// nothing, cannot fail, and leaves the tag `ACCESSKIT_ERROR_NONE`.
 export fn accesskit_node_scroll_x_max(
     node: *const handles.accesskit_node,
-) callconv(.c) OptionalReturn(marshal.COptDouble) {
+) callconv(.c) marshal.COptDouble {
     enter();
-    return optionalReturn(
-        marshal.COptDouble,
-        props_numbers.scrollXMax(properties_of(node)),
-    );
+    return marshal.opt_double_to_c(props_numbers.scrollXMax(properties_of(node)));
 }
 
 /// The `scroll_x_min` property.
@@ -4186,12 +3993,9 @@ export fn accesskit_node_scroll_x_max(
 /// nothing, cannot fail, and leaves the tag `ACCESSKIT_ERROR_NONE`.
 export fn accesskit_node_scroll_x_min(
     node: *const handles.accesskit_node,
-) callconv(.c) OptionalReturn(marshal.COptDouble) {
+) callconv(.c) marshal.COptDouble {
     enter();
-    return optionalReturn(
-        marshal.COptDouble,
-        props_numbers.scrollXMin(properties_of(node)),
-    );
+    return marshal.opt_double_to_c(props_numbers.scrollXMin(properties_of(node)));
 }
 
 /// The `scroll_y` property.
@@ -4206,12 +4010,9 @@ export fn accesskit_node_scroll_x_min(
 /// nothing, cannot fail, and leaves the tag `ACCESSKIT_ERROR_NONE`.
 export fn accesskit_node_scroll_y(
     node: *const handles.accesskit_node,
-) callconv(.c) OptionalReturn(marshal.COptDouble) {
+) callconv(.c) marshal.COptDouble {
     enter();
-    return optionalReturn(
-        marshal.COptDouble,
-        props_numbers.scrollY(properties_of(node)),
-    );
+    return marshal.opt_double_to_c(props_numbers.scrollY(properties_of(node)));
 }
 
 /// The `scroll_y_max` property.
@@ -4226,12 +4027,9 @@ export fn accesskit_node_scroll_y(
 /// nothing, cannot fail, and leaves the tag `ACCESSKIT_ERROR_NONE`.
 export fn accesskit_node_scroll_y_max(
     node: *const handles.accesskit_node,
-) callconv(.c) OptionalReturn(marshal.COptDouble) {
+) callconv(.c) marshal.COptDouble {
     enter();
-    return optionalReturn(
-        marshal.COptDouble,
-        props_numbers.scrollYMax(properties_of(node)),
-    );
+    return marshal.opt_double_to_c(props_numbers.scrollYMax(properties_of(node)));
 }
 
 /// The `scroll_y_min` property.
@@ -4246,12 +4044,9 @@ export fn accesskit_node_scroll_y_max(
 /// nothing, cannot fail, and leaves the tag `ACCESSKIT_ERROR_NONE`.
 export fn accesskit_node_scroll_y_min(
     node: *const handles.accesskit_node,
-) callconv(.c) OptionalReturn(marshal.COptDouble) {
+) callconv(.c) marshal.COptDouble {
     enter();
-    return optionalReturn(
-        marshal.COptDouble,
-        props_numbers.scrollYMin(properties_of(node)),
-    );
+    return marshal.opt_double_to_c(props_numbers.scrollYMin(properties_of(node)));
 }
 
 /// Sets the `column_count` property to `value`.
@@ -4784,12 +4579,9 @@ export fn accesskit_node_set_size_of_set(
 /// `ACCESSKIT_ERROR_NONE`.
 export fn accesskit_node_size_of_set(
     node: *const handles.accesskit_node,
-) callconv(.c) OptionalReturn(marshal.COptIndex) {
+) callconv(.c) marshal.COptIndex {
     enter();
-    return optionalReturn(
-        marshal.COptIndex,
-        props_numbers.sizeOfSet(properties_of(node)),
-    );
+    return marshal.opt_index_to_c(props_numbers.sizeOfSet(properties_of(node)));
 }
 
 // --- The colours and the text decorations ------------------------------------
@@ -4806,12 +4598,9 @@ export fn accesskit_node_size_of_set(
 /// `ACCESSKIT_ERROR_NONE`.
 export fn accesskit_node_background_color(
     node: *const handles.accesskit_node,
-) callconv(.c) OptionalReturn(marshal.COptColor) {
+) callconv(.c) marshal.COptColor {
     enter();
-    return optionalReturn(
-        marshal.COptColor,
-        props_colors.backgroundColor(properties_of(node)),
-    );
+    return marshal.opt_color_to_c(props_colors.backgroundColor(properties_of(node)));
 }
 
 /// Clears the `background_color` property, so the getter reports it as unset.
@@ -4874,12 +4663,9 @@ export fn accesskit_node_clear_underline(node: *handles.accesskit_node) callconv
 /// `ACCESSKIT_ERROR_NONE`.
 export fn accesskit_node_color_value(
     node: *const handles.accesskit_node,
-) callconv(.c) OptionalReturn(marshal.COptColor) {
+) callconv(.c) marshal.COptColor {
     enter();
-    return optionalReturn(
-        marshal.COptColor,
-        props_colors.colorValue(properties_of(node)),
-    );
+    return marshal.opt_color_to_c(props_colors.colorValue(properties_of(node)));
 }
 
 /// The `foreground_color` property.
@@ -4894,12 +4680,9 @@ export fn accesskit_node_color_value(
 /// `ACCESSKIT_ERROR_NONE`.
 export fn accesskit_node_foreground_color(
     node: *const handles.accesskit_node,
-) callconv(.c) OptionalReturn(marshal.COptColor) {
+) callconv(.c) marshal.COptColor {
     enter();
-    return optionalReturn(
-        marshal.COptColor,
-        props_colors.foregroundColor(properties_of(node)),
-    );
+    return marshal.opt_color_to_c(props_colors.foregroundColor(properties_of(node)));
 }
 
 /// The `overline` property.
@@ -4914,12 +4697,9 @@ export fn accesskit_node_foreground_color(
 /// `ACCESSKIT_ERROR_NONE`.
 export fn accesskit_node_overline(
     node: *const handles.accesskit_node,
-) callconv(.c) OptionalReturn(marshal.COptTextDecoration) {
+) callconv(.c) marshal.COptTextDecoration {
     enter();
-    return optionalReturn(
-        marshal.COptTextDecoration,
-        props_colors.overline(properties_of(node)),
-    );
+    return marshal.opt_text_decoration_to_c(props_colors.overline(properties_of(node)));
 }
 
 /// Sets the `background_color` property to `value`.
@@ -4938,13 +4718,10 @@ export fn accesskit_node_overline(
 /// builds its replacement before it releases the value it displaces.
 export fn accesskit_node_set_background_color(
     node: *handles.accesskit_node,
-    value: TargetArg(Color),
+    value: Color,
 ) callconv(.c) void {
     enter();
-    props_colors.setBackgroundColor(
-        mutable_properties(node),
-        decodeArg(Color, value),
-    ) catch note_oom();
+    props_colors.setBackgroundColor(mutable_properties(node), value) catch note_oom();
 }
 
 /// Sets the `color_value` property to `value`.
@@ -4963,10 +4740,10 @@ export fn accesskit_node_set_background_color(
 /// builds its replacement before it releases the value it displaces.
 export fn accesskit_node_set_color_value(
     node: *handles.accesskit_node,
-    value: TargetArg(Color),
+    value: Color,
 ) callconv(.c) void {
     enter();
-    props_colors.setColorValue(mutable_properties(node), decodeArg(Color, value)) catch note_oom();
+    props_colors.setColorValue(mutable_properties(node), value) catch note_oom();
 }
 
 /// Sets the `foreground_color` property to `value`.
@@ -4985,13 +4762,10 @@ export fn accesskit_node_set_color_value(
 /// builds its replacement before it releases the value it displaces.
 export fn accesskit_node_set_foreground_color(
     node: *handles.accesskit_node,
-    value: TargetArg(Color),
+    value: Color,
 ) callconv(.c) void {
     enter();
-    props_colors.setForegroundColor(
-        mutable_properties(node),
-        decodeArg(Color, value),
-    ) catch note_oom();
+    props_colors.setForegroundColor(mutable_properties(node), value) catch note_oom();
 }
 
 /// Sets the `overline` property to `value`.
@@ -5008,13 +4782,10 @@ export fn accesskit_node_set_foreground_color(
 /// builds its replacement before it releases the value it displaces.
 export fn accesskit_node_set_overline(
     node: *handles.accesskit_node,
-    value: TargetArg(TextDecoration),
+    value: TextDecoration,
 ) callconv(.c) void {
     enter();
-    props_colors.setOverline(
-        mutable_properties(node),
-        decodeArg(TextDecoration, value),
-    ) catch note_oom();
+    props_colors.setOverline(mutable_properties(node), value) catch note_oom();
 }
 
 /// Sets the `strikethrough` property to `value`.
@@ -5031,13 +4802,10 @@ export fn accesskit_node_set_overline(
 /// builds its replacement before it releases the value it displaces.
 export fn accesskit_node_set_strikethrough(
     node: *handles.accesskit_node,
-    value: TargetArg(TextDecoration),
+    value: TextDecoration,
 ) callconv(.c) void {
     enter();
-    props_colors.setStrikethrough(
-        mutable_properties(node),
-        decodeArg(TextDecoration, value),
-    ) catch note_oom();
+    props_colors.setStrikethrough(mutable_properties(node), value) catch note_oom();
 }
 
 /// Sets the `underline` property to `value`.
@@ -5054,13 +4822,10 @@ export fn accesskit_node_set_strikethrough(
 /// builds its replacement before it releases the value it displaces.
 export fn accesskit_node_set_underline(
     node: *handles.accesskit_node,
-    value: TargetArg(TextDecoration),
+    value: TextDecoration,
 ) callconv(.c) void {
     enter();
-    props_colors.setUnderline(
-        mutable_properties(node),
-        decodeArg(TextDecoration, value),
-    ) catch note_oom();
+    props_colors.setUnderline(mutable_properties(node), value) catch note_oom();
 }
 
 /// The `strikethrough` property.
@@ -5075,12 +4840,9 @@ export fn accesskit_node_set_underline(
 /// `ACCESSKIT_ERROR_NONE`.
 export fn accesskit_node_strikethrough(
     node: *const handles.accesskit_node,
-) callconv(.c) OptionalReturn(marshal.COptTextDecoration) {
+) callconv(.c) marshal.COptTextDecoration {
     enter();
-    return optionalReturn(
-        marshal.COptTextDecoration,
-        props_colors.strikethrough(properties_of(node)),
-    );
+    return marshal.opt_text_decoration_to_c(props_colors.strikethrough(properties_of(node)));
 }
 
 /// The `underline` property.
@@ -5095,12 +4857,9 @@ export fn accesskit_node_strikethrough(
 /// `ACCESSKIT_ERROR_NONE`.
 export fn accesskit_node_underline(
     node: *const handles.accesskit_node,
-) callconv(.c) OptionalReturn(marshal.COptTextDecoration) {
+) callconv(.c) marshal.COptTextDecoration {
     enter();
-    return optionalReturn(
-        marshal.COptTextDecoration,
-        props_colors.underline(properties_of(node)),
-    );
+    return marshal.opt_text_decoration_to_c(props_colors.underline(properties_of(node)));
 }
 
 // --- The per-character lists -------------------------------------------------
@@ -5211,7 +4970,7 @@ export fn accesskit_node_clear_word_starts(node: *handles.accesskit_node) callco
 ///
 /// `include/zaccesskit.h:4456`. Nothing is retained. `values` may be null when
 /// `length` is 0 and must not be null otherwise, so a null pointer with a non-
-/// zero length is a caller precondition that `marshal.cArrayToSlice` asserts. On
+/// zero length is a caller precondition this declaration does not check for. On
 /// success `character_lengths` is exactly the copied values.
 ///
 /// **A void setter that can fail, which is a port-specific divergence.** The
@@ -5228,7 +4987,7 @@ export fn accesskit_node_set_character_lengths(
     values: [*c]const u8,
 ) callconv(.c) void {
     enter();
-    const given = marshal.cArrayToSlice(u8, values, length);
+    const given = values[0..length];
     props_vectors.setCharacterLengths(mutable_properties(node), given) catch note_oom();
 }
 
@@ -5254,7 +5013,7 @@ export fn accesskit_node_set_character_positions(
     values: [*c]const f32,
 ) callconv(.c) void {
     enter();
-    const given = marshal.cArrayToSlice(f32, values, length);
+    const given = values[0..length];
     props_vectors.setCharacterPositions(mutable_properties(node), given) catch note_oom();
 }
 
@@ -5280,7 +5039,7 @@ export fn accesskit_node_set_character_widths(
     values: [*c]const f32,
 ) callconv(.c) void {
     enter();
-    const given = marshal.cArrayToSlice(f32, values, length);
+    const given = values[0..length];
     props_vectors.setCharacterWidths(mutable_properties(node), given) catch note_oom();
 }
 
@@ -5288,7 +5047,7 @@ export fn accesskit_node_set_character_widths(
 ///
 /// `include/zaccesskit.h:4488`. Nothing is retained. `values` may be null when
 /// `length` is 0 and must not be null otherwise, so a null pointer with a non-
-/// zero length is a caller precondition that `marshal.cArrayToSlice` asserts. On
+/// zero length is a caller precondition this declaration does not check for. On
 /// success `word_starts` is exactly the copied values.
 ///
 /// **A void setter that can fail, which is a port-specific divergence.** The
@@ -5305,7 +5064,7 @@ export fn accesskit_node_set_word_starts(
     values: [*c]const u8,
 ) callconv(.c) void {
     enter();
-    const given = marshal.cArrayToSlice(u8, values, length);
+    const given = values[0..length];
     props_vectors.setWordStarts(mutable_properties(node), given) catch note_oom();
 }
 
@@ -5373,12 +5132,9 @@ export fn accesskit_node_clear_selected(node: *handles.accesskit_node) callconv(
 /// `ACCESSKIT_ERROR_NONE`.
 export fn accesskit_node_is_expanded(
     node: *const handles.accesskit_node,
-) callconv(.c) OptionalReturn(marshal.COptBool) {
+) callconv(.c) marshal.COptBool {
     enter();
-    return optionalReturn(
-        marshal.COptBool,
-        props_enums.isExpanded(properties_of(node)),
-    );
+    return marshal.opt_bool_to_c(props_enums.isExpanded(properties_of(node)));
 }
 
 /// The `selected` property.
@@ -5400,12 +5156,9 @@ export fn accesskit_node_is_expanded(
 /// `ACCESSKIT_ERROR_NONE`.
 export fn accesskit_node_is_selected(
     node: *const handles.accesskit_node,
-) callconv(.c) OptionalReturn(marshal.COptBool) {
+) callconv(.c) marshal.COptBool {
     enter();
-    return optionalReturn(
-        marshal.COptBool,
-        props_enums.isSelected(properties_of(node)),
-    );
+    return marshal.opt_bool_to_c(props_enums.isSelected(properties_of(node)));
 }
 
 /// Sets the `expanded` property to `value`.
@@ -5470,12 +5223,9 @@ export fn accesskit_node_set_selected(
 /// `ACCESSKIT_ERROR_NONE`.
 export fn accesskit_node_aria_current(
     node: *const handles.accesskit_node,
-) callconv(.c) OptionalReturn(marshal.COptAriaCurrent) {
+) callconv(.c) marshal.COptAriaCurrent {
     enter();
-    return optionalReturn(
-        marshal.COptAriaCurrent,
-        props_enums.ariaCurrent(properties_of(node)),
-    );
+    return marshal.opt_aria_current_to_c(props_enums.ariaCurrent(properties_of(node)));
 }
 
 /// The `auto_complete` property.
@@ -5492,12 +5242,9 @@ export fn accesskit_node_aria_current(
 /// `ACCESSKIT_ERROR_NONE`.
 export fn accesskit_node_auto_complete(
     node: *const handles.accesskit_node,
-) callconv(.c) OptionalReturn(marshal.COptAutoComplete) {
+) callconv(.c) marshal.COptAutoComplete {
     enter();
-    return optionalReturn(
-        marshal.COptAutoComplete,
-        props_enums.autoComplete(properties_of(node)),
-    );
+    return marshal.opt_auto_complete_to_c(props_enums.autoComplete(properties_of(node)));
 }
 
 /// Clears the `aria_current` property, so the getter reports it as unset.
@@ -5646,12 +5393,9 @@ export fn accesskit_node_clear_vertical_offset(node: *handles.accesskit_node) ca
 /// `ACCESSKIT_ERROR_NONE`.
 export fn accesskit_node_has_popup(
     node: *const handles.accesskit_node,
-) callconv(.c) OptionalReturn(marshal.COptHasPopup) {
+) callconv(.c) marshal.COptHasPopup {
     enter();
-    return optionalReturn(
-        marshal.COptHasPopup,
-        props_enums.hasPopup(properties_of(node)),
-    );
+    return marshal.opt_has_popup_to_c(props_enums.hasPopup(properties_of(node)));
 }
 
 /// The `invalid` property.
@@ -5668,12 +5412,9 @@ export fn accesskit_node_has_popup(
 /// `ACCESSKIT_ERROR_NONE`.
 export fn accesskit_node_invalid(
     node: *const handles.accesskit_node,
-) callconv(.c) OptionalReturn(marshal.COptInvalid) {
+) callconv(.c) marshal.COptInvalid {
     enter();
-    return optionalReturn(
-        marshal.COptInvalid,
-        props_enums.invalid(properties_of(node)),
-    );
+    return marshal.opt_invalid_to_c(props_enums.invalid(properties_of(node)));
 }
 
 /// The `list_style` property.
@@ -5690,12 +5431,9 @@ export fn accesskit_node_invalid(
 /// `ACCESSKIT_ERROR_NONE`.
 export fn accesskit_node_list_style(
     node: *const handles.accesskit_node,
-) callconv(.c) OptionalReturn(marshal.COptListStyle) {
+) callconv(.c) marshal.COptListStyle {
     enter();
-    return optionalReturn(
-        marshal.COptListStyle,
-        props_enums.listStyle(properties_of(node)),
-    );
+    return marshal.opt_list_style_to_c(props_enums.listStyle(properties_of(node)));
 }
 
 /// The `live` property.
@@ -5710,14 +5448,9 @@ export fn accesskit_node_list_style(
 /// The value is a copy of one byte, so it stays valid after a later write. The
 /// getter allocates nothing, cannot fail, and leaves the tag
 /// `ACCESSKIT_ERROR_NONE`.
-export fn accesskit_node_live(
-    node: *const handles.accesskit_node,
-) callconv(.c) OptionalReturn(marshal.COptLive) {
+export fn accesskit_node_live(node: *const handles.accesskit_node) callconv(.c) marshal.COptLive {
     enter();
-    return optionalReturn(
-        marshal.COptLive,
-        props_enums.live(properties_of(node)),
-    );
+    return marshal.opt_live_to_c(props_enums.live(properties_of(node)));
 }
 
 /// The `orientation` property.
@@ -5734,12 +5467,9 @@ export fn accesskit_node_live(
 /// `ACCESSKIT_ERROR_NONE`.
 export fn accesskit_node_orientation(
     node: *const handles.accesskit_node,
-) callconv(.c) OptionalReturn(marshal.COptOrientation) {
+) callconv(.c) marshal.COptOrientation {
     enter();
-    return optionalReturn(
-        marshal.COptOrientation,
-        props_enums.orientation(properties_of(node)),
-    );
+    return marshal.opt_orientation_to_c(props_enums.orientation(properties_of(node)));
 }
 
 /// Sets the `aria_current` property to `value`.
@@ -6077,12 +5807,9 @@ export fn accesskit_node_set_vertical_offset(
 /// `ACCESSKIT_ERROR_NONE`.
 export fn accesskit_node_sort_direction(
     node: *const handles.accesskit_node,
-) callconv(.c) OptionalReturn(marshal.COptSortDirection) {
+) callconv(.c) marshal.COptSortDirection {
     enter();
-    return optionalReturn(
-        marshal.COptSortDirection,
-        props_enums.sortDirection(properties_of(node)),
-    );
+    return marshal.opt_sort_direction_to_c(props_enums.sortDirection(properties_of(node)));
 }
 
 /// The `text_align` property.
@@ -6099,12 +5826,9 @@ export fn accesskit_node_sort_direction(
 /// `ACCESSKIT_ERROR_NONE`.
 export fn accesskit_node_text_align(
     node: *const handles.accesskit_node,
-) callconv(.c) OptionalReturn(marshal.COptTextAlign) {
+) callconv(.c) marshal.COptTextAlign {
     enter();
-    return optionalReturn(
-        marshal.COptTextAlign,
-        props_enums.textAlign(properties_of(node)),
-    );
+    return marshal.opt_text_align_to_c(props_enums.textAlign(properties_of(node)));
 }
 
 /// The `text_direction` property.
@@ -6121,12 +5845,9 @@ export fn accesskit_node_text_align(
 /// `ACCESSKIT_ERROR_NONE`.
 export fn accesskit_node_text_direction(
     node: *const handles.accesskit_node,
-) callconv(.c) OptionalReturn(marshal.COptTextDirection) {
+) callconv(.c) marshal.COptTextDirection {
     enter();
-    return optionalReturn(
-        marshal.COptTextDirection,
-        props_enums.textDirection(properties_of(node)),
-    );
+    return marshal.opt_text_direction_to_c(props_enums.textDirection(properties_of(node)));
 }
 
 /// The `toggled` property.
@@ -6143,12 +5864,9 @@ export fn accesskit_node_text_direction(
 /// `ACCESSKIT_ERROR_NONE`.
 export fn accesskit_node_toggled(
     node: *const handles.accesskit_node,
-) callconv(.c) OptionalReturn(marshal.COptToggled) {
+) callconv(.c) marshal.COptToggled {
     enter();
-    return optionalReturn(
-        marshal.COptToggled,
-        props_enums.toggled(properties_of(node)),
-    );
+    return marshal.opt_toggled_to_c(props_enums.toggled(properties_of(node)));
 }
 
 /// The `vertical_offset` property.
@@ -6165,12 +5883,9 @@ export fn accesskit_node_toggled(
 /// `ACCESSKIT_ERROR_NONE`.
 export fn accesskit_node_vertical_offset(
     node: *const handles.accesskit_node,
-) callconv(.c) OptionalReturn(marshal.COptVerticalOffset) {
+) callconv(.c) marshal.COptVerticalOffset {
     enter();
-    return optionalReturn(
-        marshal.COptVerticalOffset,
-        props_enums.verticalOffset(properties_of(node)),
-    );
+    return marshal.opt_vertical_offset_to_c(props_enums.verticalOffset(properties_of(node)));
 }
 
 // --- The text selection, the bounds and the transform -------------------------
@@ -6375,11 +6090,12 @@ export fn accesskit_node_custom_actions(
 /// back before the append, because the append owns the value and nothing else
 /// may release it after that.
 ///
-/// **A void pusher that can fail.** On failure the list is unchanged and the
-/// tag becomes `ACCESSKIT_ERROR_OUT_OF_MEMORY`. The pusher explicitly maps
-/// both error arms to that tag. `PropertyTagMismatch` is documented at
-/// `src/schema/props/vectors.zig:65-70` as unreachable through valid
-/// property-store paths.
+/// **A void pusher that can fail, for the reason every setter here gives.** On
+/// the failing path the list is unchanged and the tag becomes
+/// `ACCESSKIT_ERROR_OUT_OF_MEMORY`. The second arm of the pusher's error set,
+/// `PropertyTagMismatch`, is unreachable through any path the store can
+/// produce, and it is mapped to the same tag: a documented conflation, not a
+/// discarded error, because `accesskit_error` has one failing member.
 export fn accesskit_node_push_custom_action(
     node: *handles.accesskit_node,
     action: marshal.CustomActionHandle,
@@ -6431,7 +6147,7 @@ export fn accesskit_node_set_custom_actions(
     // adopting it, so what it stores is never one of these description buffers
     // and none of them moves to the property.
     defer releaseActionCopies(gpa, &copies);
-    for (marshal.cArrayToSlice(?*CustomAction, values, length)) |slot| {
+    for (values[0..length]) |slot| {
         const handle = slot orelse return;
         var fresh = action_request.customActionClone(gpa, handle) catch {
             note_oom();
@@ -6547,7 +6263,7 @@ const export_signatures = .{
         fn (
             node: *handles.accesskit_node,
             length: usize,
-            values: [*c]const NodeId,
+            values: [*]const NodeId,
         ) callconv(.c) void,
     },
     .{
@@ -6555,7 +6271,7 @@ const export_signatures = .{
         fn (
             node: *handles.accesskit_node,
             length: usize,
-            values: [*c]const NodeId,
+            values: [*]const NodeId,
         ) callconv(.c) void,
     },
     .{
@@ -6563,7 +6279,7 @@ const export_signatures = .{
         fn (
             node: *handles.accesskit_node,
             length: usize,
-            values: [*c]const NodeId,
+            values: [*]const NodeId,
         ) callconv(.c) void,
     },
     .{
@@ -6571,7 +6287,7 @@ const export_signatures = .{
         fn (
             node: *handles.accesskit_node,
             length: usize,
-            values: [*c]const NodeId,
+            values: [*]const NodeId,
         ) callconv(.c) void,
     },
     .{
@@ -6579,7 +6295,7 @@ const export_signatures = .{
         fn (
             node: *handles.accesskit_node,
             length: usize,
-            values: [*c]const NodeId,
+            values: [*]const NodeId,
         ) callconv(.c) void,
     },
     .{
@@ -6587,7 +6303,7 @@ const export_signatures = .{
         fn (
             node: *handles.accesskit_node,
             length: usize,
-            values: [*c]const NodeId,
+            values: [*]const NodeId,
         ) callconv(.c) void,
     },
     .{
@@ -6595,7 +6311,7 @@ const export_signatures = .{
         fn (
             node: *handles.accesskit_node,
             length: usize,
-            values: [*c]const NodeId,
+            values: [*]const NodeId,
         ) callconv(.c) void,
     },
     .{
@@ -6603,12 +6319,12 @@ const export_signatures = .{
         fn (
             node: *handles.accesskit_node,
             length: usize,
-            values: [*c]const NodeId,
+            values: [*]const NodeId,
         ) callconv(.c) void,
     },
     .{
         accesskit_node_active_descendant,
-        fn (node: *const handles.accesskit_node) callconv(.c) OptionalReturn(marshal.COptNodeId),
+        fn (node: *const handles.accesskit_node) callconv(.c) marshal.COptNodeId,
     },
     .{
         accesskit_node_clear_active_descendant,
@@ -6628,27 +6344,27 @@ const export_signatures = .{
     },
     .{
         accesskit_node_error_message,
-        fn (node: *const handles.accesskit_node) callconv(.c) OptionalReturn(marshal.COptNodeId),
+        fn (node: *const handles.accesskit_node) callconv(.c) marshal.COptNodeId,
     },
     .{
         accesskit_node_in_page_link_target,
-        fn (node: *const handles.accesskit_node) callconv(.c) OptionalReturn(marshal.COptNodeId),
+        fn (node: *const handles.accesskit_node) callconv(.c) marshal.COptNodeId,
     },
     .{
         accesskit_node_member_of,
-        fn (node: *const handles.accesskit_node) callconv(.c) OptionalReturn(marshal.COptNodeId),
+        fn (node: *const handles.accesskit_node) callconv(.c) marshal.COptNodeId,
     },
     .{
         accesskit_node_next_on_line,
-        fn (node: *const handles.accesskit_node) callconv(.c) OptionalReturn(marshal.COptNodeId),
+        fn (node: *const handles.accesskit_node) callconv(.c) marshal.COptNodeId,
     },
     .{
         accesskit_node_popup_for,
-        fn (node: *const handles.accesskit_node) callconv(.c) OptionalReturn(marshal.COptNodeId),
+        fn (node: *const handles.accesskit_node) callconv(.c) marshal.COptNodeId,
     },
     .{
         accesskit_node_previous_on_line,
-        fn (node: *const handles.accesskit_node) callconv(.c) OptionalReturn(marshal.COptNodeId),
+        fn (node: *const handles.accesskit_node) callconv(.c) marshal.COptNodeId,
     },
     .{
         accesskit_node_set_active_descendant,
@@ -6681,7 +6397,7 @@ const export_signatures = .{
     .{ accesskit_node_clear_tree_id, fn (node: *handles.accesskit_node) callconv(.c) void },
     .{
         accesskit_node_set_tree_id,
-        fn (node: *handles.accesskit_node, value: TargetArg(TreeId)) callconv(.c) void,
+        fn (node: *handles.accesskit_node, value: TreeId) callconv(.c) void,
     },
     .{
         accesskit_node_tree_id,
@@ -6969,87 +6685,87 @@ const export_signatures = .{
     .{ accesskit_node_clear_size_of_set, fn (node: *handles.accesskit_node) callconv(.c) void },
     .{
         accesskit_node_column_count,
-        fn (node: *const handles.accesskit_node) callconv(.c) OptionalReturn(marshal.COptIndex),
+        fn (node: *const handles.accesskit_node) callconv(.c) marshal.COptIndex,
     },
     .{
         accesskit_node_column_index,
-        fn (node: *const handles.accesskit_node) callconv(.c) OptionalReturn(marshal.COptIndex),
+        fn (node: *const handles.accesskit_node) callconv(.c) marshal.COptIndex,
     },
     .{
         accesskit_node_column_span,
-        fn (node: *const handles.accesskit_node) callconv(.c) OptionalReturn(marshal.COptIndex),
+        fn (node: *const handles.accesskit_node) callconv(.c) marshal.COptIndex,
     },
     .{
         accesskit_node_font_size,
-        fn (node: *const handles.accesskit_node) callconv(.c) OptionalReturn(marshal.COptFloat),
+        fn (node: *const handles.accesskit_node) callconv(.c) marshal.COptFloat,
     },
     .{
         accesskit_node_font_weight,
-        fn (node: *const handles.accesskit_node) callconv(.c) OptionalReturn(marshal.COptFloat),
+        fn (node: *const handles.accesskit_node) callconv(.c) marshal.COptFloat,
     },
     .{
         accesskit_node_level,
-        fn (node: *const handles.accesskit_node) callconv(.c) OptionalReturn(marshal.COptIndex),
+        fn (node: *const handles.accesskit_node) callconv(.c) marshal.COptIndex,
     },
     .{
         accesskit_node_max_numeric_value,
-        fn (node: *const handles.accesskit_node) callconv(.c) OptionalReturn(marshal.COptDouble),
+        fn (node: *const handles.accesskit_node) callconv(.c) marshal.COptDouble,
     },
     .{
         accesskit_node_min_numeric_value,
-        fn (node: *const handles.accesskit_node) callconv(.c) OptionalReturn(marshal.COptDouble),
+        fn (node: *const handles.accesskit_node) callconv(.c) marshal.COptDouble,
     },
     .{
         accesskit_node_numeric_value,
-        fn (node: *const handles.accesskit_node) callconv(.c) OptionalReturn(marshal.COptDouble),
+        fn (node: *const handles.accesskit_node) callconv(.c) marshal.COptDouble,
     },
     .{
         accesskit_node_numeric_value_jump,
-        fn (node: *const handles.accesskit_node) callconv(.c) OptionalReturn(marshal.COptDouble),
+        fn (node: *const handles.accesskit_node) callconv(.c) marshal.COptDouble,
     },
     .{
         accesskit_node_numeric_value_step,
-        fn (node: *const handles.accesskit_node) callconv(.c) OptionalReturn(marshal.COptDouble),
+        fn (node: *const handles.accesskit_node) callconv(.c) marshal.COptDouble,
     },
     .{
         accesskit_node_position_in_set,
-        fn (node: *const handles.accesskit_node) callconv(.c) OptionalReturn(marshal.COptIndex),
+        fn (node: *const handles.accesskit_node) callconv(.c) marshal.COptIndex,
     },
     .{
         accesskit_node_row_count,
-        fn (node: *const handles.accesskit_node) callconv(.c) OptionalReturn(marshal.COptIndex),
+        fn (node: *const handles.accesskit_node) callconv(.c) marshal.COptIndex,
     },
     .{
         accesskit_node_row_index,
-        fn (node: *const handles.accesskit_node) callconv(.c) OptionalReturn(marshal.COptIndex),
+        fn (node: *const handles.accesskit_node) callconv(.c) marshal.COptIndex,
     },
     .{
         accesskit_node_row_span,
-        fn (node: *const handles.accesskit_node) callconv(.c) OptionalReturn(marshal.COptIndex),
+        fn (node: *const handles.accesskit_node) callconv(.c) marshal.COptIndex,
     },
     .{
         accesskit_node_scroll_x,
-        fn (node: *const handles.accesskit_node) callconv(.c) OptionalReturn(marshal.COptDouble),
+        fn (node: *const handles.accesskit_node) callconv(.c) marshal.COptDouble,
     },
     .{
         accesskit_node_scroll_x_max,
-        fn (node: *const handles.accesskit_node) callconv(.c) OptionalReturn(marshal.COptDouble),
+        fn (node: *const handles.accesskit_node) callconv(.c) marshal.COptDouble,
     },
     .{
         accesskit_node_scroll_x_min,
-        fn (node: *const handles.accesskit_node) callconv(.c) OptionalReturn(marshal.COptDouble),
+        fn (node: *const handles.accesskit_node) callconv(.c) marshal.COptDouble,
     },
     .{
         accesskit_node_scroll_y,
-        fn (node: *const handles.accesskit_node) callconv(.c) OptionalReturn(marshal.COptDouble),
+        fn (node: *const handles.accesskit_node) callconv(.c) marshal.COptDouble,
     },
     .{
         accesskit_node_scroll_y_max,
-        fn (node: *const handles.accesskit_node) callconv(.c) OptionalReturn(marshal.COptDouble),
+        fn (node: *const handles.accesskit_node) callconv(.c) marshal.COptDouble,
     },
     .{
         accesskit_node_scroll_y_min,
-        fn (node: *const handles.accesskit_node) callconv(.c) OptionalReturn(marshal.COptDouble),
+        fn (node: *const handles.accesskit_node) callconv(.c) marshal.COptDouble,
     },
     .{
         accesskit_node_set_column_count,
@@ -7141,11 +6857,11 @@ const export_signatures = .{
     },
     .{
         accesskit_node_size_of_set,
-        fn (node: *const handles.accesskit_node) callconv(.c) OptionalReturn(marshal.COptIndex),
+        fn (node: *const handles.accesskit_node) callconv(.c) marshal.COptIndex,
     },
     .{
         accesskit_node_background_color,
-        fn (node: *const handles.accesskit_node) callconv(.c) OptionalReturn(marshal.COptColor),
+        fn (node: *const handles.accesskit_node) callconv(.c) marshal.COptColor,
     },
     .{
         accesskit_node_clear_background_color,
@@ -7161,47 +6877,47 @@ const export_signatures = .{
     .{ accesskit_node_clear_underline, fn (node: *handles.accesskit_node) callconv(.c) void },
     .{
         accesskit_node_color_value,
-        fn (node: *const handles.accesskit_node) callconv(.c) OptionalReturn(marshal.COptColor),
+        fn (node: *const handles.accesskit_node) callconv(.c) marshal.COptColor,
     },
     .{
         accesskit_node_foreground_color,
-        fn (node: *const handles.accesskit_node) callconv(.c) OptionalReturn(marshal.COptColor),
+        fn (node: *const handles.accesskit_node) callconv(.c) marshal.COptColor,
     },
     .{
         accesskit_node_overline,
-        fn (node: *const handles.accesskit_node) callconv(.c) OptionalReturn(marshal.COptTextDecoration),
+        fn (node: *const handles.accesskit_node) callconv(.c) marshal.COptTextDecoration,
     },
     .{
         accesskit_node_set_background_color,
-        fn (node: *handles.accesskit_node, value: TargetArg(Color)) callconv(.c) void,
+        fn (node: *handles.accesskit_node, value: Color) callconv(.c) void,
     },
     .{
         accesskit_node_set_color_value,
-        fn (node: *handles.accesskit_node, value: TargetArg(Color)) callconv(.c) void,
+        fn (node: *handles.accesskit_node, value: Color) callconv(.c) void,
     },
     .{
         accesskit_node_set_foreground_color,
-        fn (node: *handles.accesskit_node, value: TargetArg(Color)) callconv(.c) void,
+        fn (node: *handles.accesskit_node, value: Color) callconv(.c) void,
     },
     .{
         accesskit_node_set_overline,
-        fn (node: *handles.accesskit_node, value: TargetArg(TextDecoration)) callconv(.c) void,
+        fn (node: *handles.accesskit_node, value: TextDecoration) callconv(.c) void,
     },
     .{
         accesskit_node_set_strikethrough,
-        fn (node: *handles.accesskit_node, value: TargetArg(TextDecoration)) callconv(.c) void,
+        fn (node: *handles.accesskit_node, value: TextDecoration) callconv(.c) void,
     },
     .{
         accesskit_node_set_underline,
-        fn (node: *handles.accesskit_node, value: TargetArg(TextDecoration)) callconv(.c) void,
+        fn (node: *handles.accesskit_node, value: TextDecoration) callconv(.c) void,
     },
     .{
         accesskit_node_strikethrough,
-        fn (node: *const handles.accesskit_node) callconv(.c) OptionalReturn(marshal.COptTextDecoration),
+        fn (node: *const handles.accesskit_node) callconv(.c) marshal.COptTextDecoration,
     },
     .{
         accesskit_node_underline,
-        fn (node: *const handles.accesskit_node) callconv(.c) OptionalReturn(marshal.COptTextDecoration),
+        fn (node: *const handles.accesskit_node) callconv(.c) marshal.COptTextDecoration,
     },
     .{
         accesskit_node_character_lengths,
@@ -7252,11 +6968,11 @@ const export_signatures = .{
     .{ accesskit_node_clear_selected, fn (node: *handles.accesskit_node) callconv(.c) void },
     .{
         accesskit_node_is_expanded,
-        fn (node: *const handles.accesskit_node) callconv(.c) OptionalReturn(marshal.COptBool),
+        fn (node: *const handles.accesskit_node) callconv(.c) marshal.COptBool,
     },
     .{
         accesskit_node_is_selected,
-        fn (node: *const handles.accesskit_node) callconv(.c) OptionalReturn(marshal.COptBool),
+        fn (node: *const handles.accesskit_node) callconv(.c) marshal.COptBool,
     },
     .{
         accesskit_node_set_expanded,
@@ -7268,11 +6984,11 @@ const export_signatures = .{
     },
     .{
         accesskit_node_aria_current,
-        fn (node: *const handles.accesskit_node) callconv(.c) OptionalReturn(marshal.COptAriaCurrent),
+        fn (node: *const handles.accesskit_node) callconv(.c) marshal.COptAriaCurrent,
     },
     .{
         accesskit_node_auto_complete,
-        fn (node: *const handles.accesskit_node) callconv(.c) OptionalReturn(marshal.COptAutoComplete),
+        fn (node: *const handles.accesskit_node) callconv(.c) marshal.COptAutoComplete,
     },
     .{ accesskit_node_clear_aria_current, fn (node: *handles.accesskit_node) callconv(.c) void },
     .{ accesskit_node_clear_auto_complete, fn (node: *handles.accesskit_node) callconv(.c) void },
@@ -7288,23 +7004,23 @@ const export_signatures = .{
     .{ accesskit_node_clear_vertical_offset, fn (node: *handles.accesskit_node) callconv(.c) void },
     .{
         accesskit_node_has_popup,
-        fn (node: *const handles.accesskit_node) callconv(.c) OptionalReturn(marshal.COptHasPopup),
+        fn (node: *const handles.accesskit_node) callconv(.c) marshal.COptHasPopup,
     },
     .{
         accesskit_node_invalid,
-        fn (node: *const handles.accesskit_node) callconv(.c) OptionalReturn(marshal.COptInvalid),
+        fn (node: *const handles.accesskit_node) callconv(.c) marshal.COptInvalid,
     },
     .{
         accesskit_node_list_style,
-        fn (node: *const handles.accesskit_node) callconv(.c) OptionalReturn(marshal.COptListStyle),
+        fn (node: *const handles.accesskit_node) callconv(.c) marshal.COptListStyle,
     },
     .{
         accesskit_node_live,
-        fn (node: *const handles.accesskit_node) callconv(.c) OptionalReturn(marshal.COptLive),
+        fn (node: *const handles.accesskit_node) callconv(.c) marshal.COptLive,
     },
     .{
         accesskit_node_orientation,
-        fn (node: *const handles.accesskit_node) callconv(.c) OptionalReturn(marshal.COptOrientation),
+        fn (node: *const handles.accesskit_node) callconv(.c) marshal.COptOrientation,
     },
     .{
         accesskit_node_set_aria_current,
@@ -7353,23 +7069,23 @@ const export_signatures = .{
     },
     .{
         accesskit_node_sort_direction,
-        fn (node: *const handles.accesskit_node) callconv(.c) OptionalReturn(marshal.COptSortDirection),
+        fn (node: *const handles.accesskit_node) callconv(.c) marshal.COptSortDirection,
     },
     .{
         accesskit_node_text_align,
-        fn (node: *const handles.accesskit_node) callconv(.c) OptionalReturn(marshal.COptTextAlign),
+        fn (node: *const handles.accesskit_node) callconv(.c) marshal.COptTextAlign,
     },
     .{
         accesskit_node_text_direction,
-        fn (node: *const handles.accesskit_node) callconv(.c) OptionalReturn(marshal.COptTextDirection),
+        fn (node: *const handles.accesskit_node) callconv(.c) marshal.COptTextDirection,
     },
     .{
         accesskit_node_toggled,
-        fn (node: *const handles.accesskit_node) callconv(.c) OptionalReturn(marshal.COptToggled),
+        fn (node: *const handles.accesskit_node) callconv(.c) marshal.COptToggled,
     },
     .{
         accesskit_node_vertical_offset,
-        fn (node: *const handles.accesskit_node) callconv(.c) OptionalReturn(marshal.COptVerticalOffset),
+        fn (node: *const handles.accesskit_node) callconv(.c) marshal.COptVerticalOffset,
     },
     .{
         accesskit_node_bounds,
@@ -8410,79 +8126,6 @@ test "the signature table names all 294 node declarations by family" {
     try testing.expectEqual(@as(usize, 108), countFamily("accesskit_node_set_"));
 }
 
-// Test callers encode the canonical logical input independently of decodeArg.
-fn optionalTestSet(comptime setter: anytype, handle: *handles.accesskit_node, value: anytype) void {
-    const Value = @TypeOf(value);
-    if (dense_optional_return and Value == TreeId) {
-        const words: powerpc_abi.TreeIdValue = .{
-            .first = std.mem.readInt(u64, value.bytes[0..8], .big),
-            .second = std.mem.readInt(u64, value.bytes[8..16], .big),
-        };
-        setter(handle, words);
-    } else if (dense_optional_return and (Value == Color or Value == TextDecoration)) {
-        const color = if (Value == Color) value else value.color;
-        const bytes = [4]u8{ color.red, color.green, color.blue, color.alpha };
-        const payload: u64 = std.mem.readInt(u32, &bytes, .big);
-        const encoded = if (Value == Color) payload else (@as(u64, @intFromEnum(value.style)) << 32) | payload;
-        setter(handle, encoded);
-    } else {
-        setter(handle, value);
-    }
-}
-
-// Decode the getter's actual return, using the row's independently declared
-// logical value type rather than the implementation's canonical conversion.
-fn optionalTestRead(comptime Value: type, answer: anytype) struct {
-    has_value: bool,
-    value: Value,
-} {
-    if (@TypeOf(answer) == DenseReturn) {
-        return .{
-            .has_value = answer.first != 0,
-            .value = if (Value == NodeId)
-                .{ .value = answer.second }
-            else if (Value == f64)
-                @bitCast(answer.second)
-            else
-                @intCast(answer.second),
-        };
-    }
-    if (@TypeOf(answer) == u16) {
-        const byte: u8 = @truncate(answer);
-        return .{
-            .has_value = answer >> 8 != 0,
-            .value = if (Value == bool) byte != 0 else @enumFromInt(byte),
-        };
-    }
-    if (@TypeOf(answer) == u64) {
-        if (Value == f32) {
-            return .{ .has_value = answer >> 56 != 0, .value = @bitCast(@as(u32, @truncate(answer))) };
-        }
-        const color: Color = .{
-            .red = @truncate(answer >> 24),
-            .green = @truncate(answer >> 16),
-            .blue = @truncate(answer >> 8),
-            .alpha = @truncate(answer),
-        };
-        if (Value == Color) return .{ .has_value = answer >> 32 != 0, .value = color };
-        return .{
-            .has_value = answer >> 40 != 0,
-            .value = .{ .style = @enumFromInt(@as(u8, @truncate(answer >> 32))), .color = color },
-        };
-    }
-    return .{ .has_value = answer.has_value, .value = answer.value };
-}
-
-fn optionalTestBytes(comptime Value: type, answer: anytype) []const u8 {
-    const bytes = std.mem.asBytes(answer);
-    if (@TypeOf(answer.*) == u64) {
-        // C right-justifies the five/six-byte aggregate inside the register.
-        if (Value == Color) return bytes[3..8];
-        if (Value == TextDecoration) return bytes[2..8];
-    }
-    return bytes;
-}
-
 test "an unset optional reads as a flag byte over a zero, and a set zero is one byte from it" {
     // The absence convention, for all 52. A getter for a property nothing set
     // reports `has_value` false, its setter writes the zero and the getter then
@@ -8500,29 +8143,14 @@ test "an unset optional reads as a flag byte over a zero, and a set zero is one 
         defer fixture.deinit(gpa);
 
         const absent = row[0](fixture.handle);
-        try testing.expect(!optionalTestRead(@TypeOf(row[5]), absent).has_value);
+        try testing.expect(!absent.has_value);
 
-        optionalTestSet(row[1], fixture.handle, row[3]);
+        row[1](fixture.handle, row[3]);
         const present = row[0](fixture.handle);
-        try testing.expect(optionalTestRead(@TypeOf(row[5]), present).has_value);
-        if (answer_type == DenseReturn) {
-            // Independent C-layout metadata: bool byte 0, payload byte 8.
-            try testing.expectEqual(@as(u64, 0), absent.first);
-            try testing.expectEqual(@as(u64, 0), absent.second);
-            try testing.expectEqual(@as(u64, 0x0100000000000000), present.first);
-        }
-        if (answer_type == u16) {
-            try testing.expectEqual(@as(u16, 0), absent);
-            try testing.expectEqual(@as(u16, 0x0100), present);
-        }
-        if (answer_type == u64) {
-            const shift = if (@TypeOf(row[5]) == f32) 56 else if (@TypeOf(row[5]) == Color) 32 else 40;
-            try testing.expectEqual(@as(u64, 0), absent);
-            try testing.expectEqual(@as(u64, 1) << shift, present);
-        }
+        try testing.expect(present.has_value);
 
-        const before = optionalTestBytes(@TypeOf(row[5]), &absent);
-        const after = optionalTestBytes(@TypeOf(row[5]), &present);
+        const before = std.mem.asBytes(&absent);
+        const after = std.mem.asBytes(&present);
         testing.expect(before[0] != after[0]) catch {
             std.debug.print("{s} reads the same either way\n", .{name});
             return error.ZeroEqualsAbsent;
@@ -8535,15 +8163,8 @@ test "an unset optional reads as a flag byte over a zero, and a set zero is one 
         // `include/zaccesskit.h:1069-1072` declares `bool has_value` then
         // `accesskit_node_id value`, and C puts the value at offset 8. Comparing
         // the whole struct would compare storage no reader is told to read.
-        const payload_start = if (answer_type == DenseReturn)
-            8
-        else if (answer_type == u16)
-            1
-        else if (answer_type == u64)
-            (if (@TypeOf(row[5]) == f32) 4 else 1)
-        else
-            @offsetOf(answer_type, "value");
-        const payload_len = @sizeOf(@TypeOf(row[5]));
+        const payload_start = @offsetOf(answer_type, "value");
+        const payload_len = @sizeOf(@FieldType(answer_type, "value"));
         try testing.expect(payload_start > 0);
         testing.expectEqualSlices(
             u8,
@@ -8554,129 +8175,6 @@ test "an unset optional reads as a flag byte over a zero, and a set zero is one 
             return error.ZeroEqualsAbsent;
         };
 
-        try testing.expect(allocation.lastError() == .none);
-    }
-}
-
-test "eight-byte optional getters preserve high integers and exact floating-point bits" {
-    // Exercise actual setters and exports, not only the return conversion.
-    const gpa = testing.allocator;
-    const fixture = try Fixture.init(gpa, .button);
-    defer fixture.deinit(gpa);
-    const double_bits = [_]u64{
-        0x0000000000000000,
-        0x8000000000000000,
-        0x7ff0000000000000,
-        0xfff0000000000000,
-        0x7ff8123456789abc,
-        0xfff8123456789abc,
-        0x0000000000000001,
-        0x7fefffffffffffff,
-    };
-    inline for (optional_rows) |row| {
-        const Value = @TypeOf(row[5]);
-        if (Value == f64) {
-            for (double_bits) |bits| {
-                optionalTestSet(row[1], fixture.handle, @as(f64, @bitCast(bits)));
-                const answer = row[0](fixture.handle);
-                const logical = optionalTestRead(Value, answer);
-                try testing.expect(logical.has_value);
-                try testing.expectEqual(bits, @as(u64, @bitCast(logical.value)));
-                if (@TypeOf(answer) == DenseReturn) {
-                    try testing.expectEqual(@as(u64, 0x0100000000000000), answer.first);
-                    try testing.expectEqual(bits, answer.second);
-                }
-            }
-        } else if (Value == NodeId or Value == usize) {
-            const Input = @TypeOf(row[4]);
-            const maximum = std.math.maxInt(Input);
-            optionalTestSet(row[1], fixture.handle, maximum);
-            const answer = row[0](fixture.handle);
-            const logical = optionalTestRead(Value, answer);
-            try testing.expect(logical.has_value);
-            const content = if (Value == NodeId) logical.value.value else logical.value;
-            try testing.expectEqual(maximum, content);
-            if (@TypeOf(answer) == DenseReturn) {
-                try testing.expectEqual(@as(u64, 0x0100000000000000), answer.first);
-                try testing.expectEqual(@as(u64, maximum), answer.second);
-            }
-        }
-        try testing.expect(allocation.lastError() == .none);
-    }
-}
-
-test "optional exports retain all tags, byte order and exact float bits" {
-    // Every row reaches its actual setter/getter pair. The expected values come
-    // from the schema domain and input vectors, not the private return encoder.
-    const gpa = testing.allocator;
-    const fixture = try Fixture.init(gpa, .button);
-    defer fixture.deinit(gpa);
-    const float_bits = [_]u32{
-        0x00000000, 0x80000000, 0x7f800000, 0xff800000,
-        0x7fc12345, 0xffc12345, 0x00000001, 0x7f7fffff,
-    };
-    const colors = [_]Color{
-        .{ .red = 0, .green = 0, .blue = 0, .alpha = 0 },
-        .{ .red = 255, .green = 255, .blue = 255, .alpha = 255 },
-        .{ .red = 1, .green = 2, .blue = 3, .alpha = 4 },
-        .{ .red = 255, .green = 128, .blue = 64, .alpha = 32 },
-    };
-    inline for (optional_rows) |row| {
-        const Value = @TypeOf(row[5]);
-        if (Value == f32) {
-            for (float_bits) |bits| {
-                optionalTestSet(row[1], fixture.handle, @as(f32, @bitCast(bits)));
-                const logical = optionalTestRead(Value, row[0](fixture.handle));
-                try testing.expect(logical.has_value);
-                try testing.expectEqual(bits, @as(u32, @bitCast(logical.value)));
-            }
-        } else if (Value == Color) {
-            for (colors) |color| {
-                optionalTestSet(row[1], fixture.handle, color);
-                const logical = optionalTestRead(Value, row[0](fixture.handle));
-                try testing.expect(logical.has_value);
-                try testing.expectEqual(color, logical.value);
-            }
-        } else if (Value == TextDecoration) {
-            inline for (@typeInfo(schema.TextDecorationStyle).@"enum".fields) |style| {
-                for (colors) |color| {
-                    const expected: TextDecoration = .{
-                        .style = @enumFromInt(style.value),
-                        .color = color,
-                    };
-                    optionalTestSet(row[1], fixture.handle, expected);
-                    const logical = optionalTestRead(Value, row[0](fixture.handle));
-                    try testing.expect(logical.has_value);
-                    try testing.expectEqual(expected, logical.value);
-                }
-            }
-        } else if (Value == TreeId) {
-            for ([_]u8{ 0, 1, 0x80, 0xff }) |seed| {
-                const expected: TreeId = .{
-                    .bytes = .{ seed, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, seed ^ 0xff },
-                };
-                optionalTestSet(row[1], fixture.handle, expected);
-                const logical = optionalTestRead(Value, row[0](fixture.handle));
-                try testing.expect(logical.has_value);
-                try testing.expectEqualSlices(u8, &expected.bytes, &logical.value.bytes);
-            }
-        } else if (Value == bool) {
-            for ([_]bool{ false, true }) |value| {
-                optionalTestSet(row[1], fixture.handle, value);
-                const logical = optionalTestRead(Value, row[0](fixture.handle));
-                try testing.expect(logical.has_value);
-                try testing.expectEqual(value, logical.value);
-            }
-        } else if (@typeInfo(Value) == .@"enum") {
-            inline for (@typeInfo(Value).@"enum".fields) |tag| {
-                optionalTestSet(row[1], fixture.handle, @as(u8, @intCast(tag.value)));
-                const logical = optionalTestRead(Value, row[0](fixture.handle));
-                try testing.expect(logical.has_value);
-                try testing.expectEqual(@as(Value, @enumFromInt(tag.value)), logical.value);
-            }
-        }
-        row[2](fixture.handle);
-        try testing.expect(!optionalTestRead(Value, row[0](fixture.handle)).has_value);
         try testing.expect(allocation.lastError() == .none);
     }
 }
@@ -8692,10 +8190,10 @@ test "every optional getter reads the property its own setter wrote" {
     defer fixture.deinit(gpa);
 
     inline for (optional_rows) |row| {
-        optionalTestSet(row[1], fixture.handle, row[4]);
+        row[1](fixture.handle, row[4]);
     }
     inline for (optional_rows) |row| {
-        const read = optionalTestRead(@TypeOf(row[5]), row[0](fixture.handle));
+        const read = row[0](fixture.handle);
         try testing.expect(read.has_value);
         try testing.expectEqual(row[5], read.value);
     }
@@ -8711,11 +8209,11 @@ test "a cleared property reads absent again, for all 52 optionals" {
         const fixture = try Fixture.init(gpa, .button);
         defer fixture.deinit(gpa);
 
-        optionalTestSet(row[1], fixture.handle, row[3]);
-        try testing.expect(optionalTestRead(@TypeOf(row[5]), row[0](fixture.handle)).has_value);
+        row[1](fixture.handle, row[3]);
+        try testing.expect(row[0](fixture.handle).has_value);
 
         row[2](fixture.handle);
-        try testing.expect(!optionalTestRead(@TypeOf(row[5]), row[0](fixture.handle)).has_value);
+        try testing.expect(!row[0](fixture.handle).has_value);
         try testing.expect(allocation.lastError() == .none);
     }
 }
@@ -9059,12 +8557,11 @@ test "an out-of-range enumeration byte and an out-of-range role byte change noth
     defer fixture.deinit(gpa);
 
     accesskit_node_set_invalid(fixture.handle, lastTagByte(schema.Invalid));
-    const held = optionalTestRead(schema.Invalid, accesskit_node_invalid(fixture.handle));
+    const held = accesskit_node_invalid(fixture.handle);
     try testing.expect(held.has_value);
 
     accesskit_node_set_invalid(fixture.handle, 200);
-    const next = optionalTestRead(schema.Invalid, accesskit_node_invalid(fixture.handle));
-    try testing.expectEqual(held.value, next.value);
+    try testing.expectEqual(held.value, accesskit_node_invalid(fixture.handle).value);
     try testing.expect(allocation.lastError() == .none);
 
     // 200 is past the last of the 182 role tags, so `accesskit_node_new` with it
@@ -9158,11 +8655,10 @@ test "a setter that cannot copy changes nothing and sets the failure tag" {
     try testing.expectEqual(@as(usize, 1), children.length);
     try testing.expectEqual(@as(NodeIdContent, 11), children.values[0].value);
     try testing.expect(accesskit_node_description(handle) == null);
-    const expanded = optionalTestRead(bool, accesskit_node_is_expanded(handle));
-    try testing.expect(expanded.has_value);
-    try testing.expect(expanded.value);
-    try testing.expect(!optionalTestRead(bool, accesskit_node_is_selected(handle)).has_value);
-    try testing.expect(!optionalTestRead(schema.Invalid, accesskit_node_invalid(handle)).has_value);
+    try testing.expect(accesskit_node_is_expanded(handle).has_value);
+    try testing.expect(accesskit_node_is_expanded(handle).value);
+    try testing.expect(!accesskit_node_is_selected(handle).has_value);
+    try testing.expect(!accesskit_node_invalid(handle).has_value);
     const listed = accesskit_node_custom_actions(handle) orelse return error.GetterAnsweredNull;
     try testing.expectEqual(@as(usize, 0), listed.length);
     marshal.custom_actions_deinit(gpa, listed);
@@ -9188,7 +8684,7 @@ test "a fresh node carries no property, so every getter answers its absent form"
     defer accesskit_node_free(handle);
 
     inline for (optional_rows) |row| {
-        try testing.expect(!optionalTestRead(@TypeOf(row[5]), row[0](handle)).has_value);
+        try testing.expect(!row[0](handle).has_value);
     }
     inline for (node_list_rows) |row| {
         try testing.expectEqual(@as(usize, 0), row[0](handle).length);
@@ -9212,7 +8708,7 @@ test "a fresh node carries no property, so every getter answers its absent form"
     // And the node still carries none of them, so nothing above depended on a
     // read that answered from the handle rather than the store.
     inline for (optional_rows) |row| {
-        try testing.expect(!optionalTestRead(@TypeOf(row[5]), row[0](handle)).has_value);
+        try testing.expect(!row[0](handle).has_value);
     }
     try testing.expect(allocation.lastError() == .none);
 }

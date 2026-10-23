@@ -197,10 +197,10 @@ pub const Node = struct {
     /// Copies every field of `source` into `out`, keeping `out`'s buffers where
     /// the value shapes match.
     ///
-    /// This is upstream's `Clone::clone_from`. Consumer update application
-    /// reuses it in the private working state. Atomic commit preparation
-    /// instead clones changed payloads before callbacks, so publication has
-    /// no fallible property-copy step.
+    /// This is upstream's `Clone::clone_from`, and it is the path
+    /// `process_changes` takes for every updated and added node, because
+    /// replacing a node outright is what upstream calls a cost "in processing
+    /// these nodes and replacing the previous instances".
     ///
     /// `out` must already own a live store, and that store's allocator is the
     /// one every write goes through, so this takes none: `docs/30` section 4.3
