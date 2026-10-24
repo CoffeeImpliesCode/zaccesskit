@@ -308,8 +308,8 @@ pub fn toScreenRect(view: Object, rect: schema.Rect) RuntimeError!objc.NSRect {
 
 test "nativeMac SDK text constant getters refuse unsupported hosts" {
     if (comptime objc.native_supported) return error.SkipZigTest;
-    inline for (std.meta.fields(AccessibilityTextConstant)) |field| {
-        try std.testing.expectError(error.NativeUnsupported, accessibilityTextConstant(@enumFromInt(field.value)));
+    inline for (@typeInfo(AccessibilityTextConstant).@"enum".field_values) |field_value| {
+        try std.testing.expectError(error.NativeUnsupported, accessibilityTextConstant(@fromBackingInt(@intCast(field_value))));
     }
 }
 
@@ -318,13 +318,13 @@ test "nativeMac SDK text constants are distinct borrowed NSString dictionary key
     var pool = try objc.AutoreleasePool.init();
     defer pool.deinit();
     const ns_string = objc.getClass("NSString") orelse return error.ObjectiveCUnavailable;
-    const count = std.meta.fields(AccessibilityTextConstant).len;
+    const count = @typeInfo(AccessibilityTextConstant).@"enum".field_names.len;
     var keys: [count]Object = undefined;
     {
         var getter_pool = try objc.AutoreleasePool.init();
         defer getter_pool.deinit();
-        inline for (std.meta.fields(AccessibilityTextConstant), 0..) |field, i| {
-            keys[i] = try accessibilityTextConstant(@enumFromInt(field.value));
+        inline for (@typeInfo(AccessibilityTextConstant).@"enum".field_values, 0..) |field_value, i| {
+            keys[i] = try accessibilityTextConstant(@fromBackingInt(@intCast(field_value)));
         }
     }
     // SDK constants remain usable after the getter's temporary autorelease scope.

@@ -1256,8 +1256,8 @@ test "every handler error is recorded without changing its exact tag" {
     defer handler.deinit();
 
     // Include newly added provider and automation tags without duplicating the error set.
-    inline for (@typeInfo(HandlerError).error_set.?) |member| {
-        const tag: HandlerError = @field(HandlerError, member.name);
+    inline for (@typeInfo(HandlerError).error_set.error_names.?) |member| {
+        const tag: HandlerError = @field(HandlerError, member);
         handler.record(tag);
         const recorded = handler.takeFailure() orelse return error.NoFailureRecorded;
         try testing.expectEqual(@as(?HandlerError, tag), recorded.first_error);
@@ -1402,18 +1402,18 @@ test "no role outside the upstream match supports the selection item pattern" {
     // domain, so a role added to `schema.Role` is named here without an edit.
     // Every node carries a selection state and a pressed state, because the
     // old predicate answered true for all of them and this one must not.
-    const fields = @typeInfo(schema.Role).@"enum".fields;
+    const fields = @typeInfo(schema.Role).@"enum";
     const gpa = testing.allocator;
     var child_ids: std.ArrayList(u64) = .empty;
     defer child_ids.deinit(gpa);
     var specs: std.ArrayList(NodeSpec) = .empty;
     defer specs.deinit(gpa);
-    inline for (fields, 0..) |field, index| {
+    inline for (fields.field_values, 0..) |field_value, index| {
         const local: u64 = @intCast(2 + index);
         try child_ids.append(gpa, local);
         try specs.append(gpa, .{
             .local = local,
-            .role = @enumFromInt(field.value),
+            .role = @fromBackingInt(@intCast(field_value)),
             .toggled = .true_,
             .is_selected = true,
         });
@@ -1423,11 +1423,11 @@ test "no role outside the upstream match supports the selection item pattern" {
     defer tree.deinit();
 
     const state = tree.stateOf();
-    inline for (fields, 0..) |field, index| {
+    inline for (fields.field_values, 0..) |field_value, index| {
         const local: u64 = @intCast(2 + index);
         const node = state.nodeById(state.rootId().withSameTree(.{ .value = local })) orelse
             return error.MissingNode;
-        const role: schema.Role = @enumFromInt(field.value);
+        const role: schema.Role = @fromBackingInt(@intCast(field_value));
         var wanted = false;
         for (upstream_pattern_roles) |candidate| {
             if (candidate == role) wanted = true;

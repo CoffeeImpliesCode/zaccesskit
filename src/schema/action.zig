@@ -88,7 +88,7 @@ pub const Action = enum(u8) {
 
 /// The number of `Action` variants, and so the bit count of a full mask and the
 /// bound on every walk over the domain.
-pub const actionCount = @typeInfo(Action).@"enum".fields.len;
+pub const actionCount = @typeInfo(Action).@"enum".field_names.len;
 
 comptime {
     // Upstream declares 22 members between `lib.rs:289` and `lib.rs:350`, and
@@ -121,7 +121,7 @@ pub fn actionFromInt(value: u8) ?Action {
 
 /// The one-bit `u32` mask that carries `value`.
 pub fn actionMask(value: Action) u32 {
-    return @as(u32, 1) << @as(u5, @intCast(@intFromEnum(value)));
+    return @as(u32, 1) << @as(u5, @intCast(@backingInt(value)));
 }
 
 /// True when `action_set` carries the bit for `action`.
@@ -165,21 +165,21 @@ test "Action carries the 22 members of accesskit/src/lib.rs:289-350" {
     try std.testing.expectEqual(actionCount, std.enums.values(Action).len);
     try std.testing.expectEqual(@as(usize, 1), @sizeOf(Action));
     try std.testing.expectEqual(@as(usize, 1), @alignOf(Action));
-    try std.testing.expectEqual(@as(u8, 0), @intFromEnum(Action.click));
-    try std.testing.expectEqual(@as(u8, 21), @intFromEnum(Action.show_context_menu));
+    try std.testing.expectEqual(@as(u8, 0), @backingInt(Action.click));
+    try std.testing.expectEqual(@as(u8, 21), @backingInt(Action.show_context_menu));
 }
 
 test "every Action discriminant is its index in upstream declaration order" {
     // A member moved or renumbered changes the wire number and the C header.
     // The sweep covers the whole domain, so a new member is covered too.
     inline for (std.enums.values(Action), 0..) |member, index| {
-        try std.testing.expectEqual(@as(u8, @intCast(index)), @intFromEnum(member));
+        try std.testing.expectEqual(@as(u8, @intCast(index)), @backingInt(member));
     }
 }
 
 test "actionFromInt names a variant only where a variant has that discriminant" {
     inline for (std.enums.values(Action)) |member| {
-        const value: u8 = @intCast(@intFromEnum(member));
+        const value: u8 = @intCast(@backingInt(member));
         try std.testing.expectEqual(member, actionFromInt(value));
         try std.testing.expectEqual(@as(u32, 1), @popCount(actionMask(member)));
     }

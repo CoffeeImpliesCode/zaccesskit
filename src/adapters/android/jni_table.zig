@@ -20,15 +20,8 @@
 //! a host with no Android. `JniTable.real` builds the binding that reaches an
 //! actual VM.
 //!
-//! **Where the slot numbers come from, and what is unverified.** The slots were
-//! read in order from `struct JNINativeInterface_` in a JDK 7 `jni.h` on this
-//! host, at
-//! `/vol/tmp/spectra/spectra-2020/jdk1.7.0_79/include/jni.h:214-768`. That
-//! struct declares `reserved0` through `reserved3` first, so a name at
-//! position `n` of the declaration sits at slot `n + 4`.
-//! `docs/42-native-adapter-build-map.md` section 2.4 records that the header the
-//! port needs is the **NDK** header, that no NDK is installed on this host, and
-//! that a JDK 7 header is what the earlier `translate-c` probe read.
+//! Slot numbers follow `struct JNINativeInterface_` in the JDK 7 `jni.h`.
+//! The four reserved entries precede the function slots.
 //! **Unverified against the NDK header.** The JNI table is append-only and the
 //! slots this module names all sit inside the first 216, which every
 //! implementation must keep, but this host cannot show that the NDK header

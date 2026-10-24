@@ -2316,7 +2316,7 @@ fn ReturnTypeOf(comptime callable: anytype) type {
 fn CacheMapperErrorSet(comptime cacheMapperErrorSet_callback: anytype) type {
     const mapper_error: type =
         @typeInfo(ReturnTypeOf(cacheMapperErrorSet_callback)).error_union.error_set;
-    if (@typeInfo(mapper_error).error_set == null) {
+    if (@typeInfo(mapper_error).error_set.error_names == null) {
         @compileError("mapDescendantCacheNodes mapper must return a closed error set, not anyerror");
     }
     return mapper_error;
@@ -2550,7 +2550,7 @@ fn notifyPropertyChanges(
                 .kind = .object,
                 .member = events.member_announcement,
                 .id = id,
-                .detail2 = @intFromEnum(live),
+                .detail2 = @backingInt(live),
                 .any_data = .{ .text = name.items },
             });
         }
@@ -2589,7 +2589,7 @@ fn notifyPropertyChanges(
             .member = member_property_change,
             .id = id,
             .detail1 = key_accessible_role,
-            .any_data = .{ .unsigned_integer = @intFromEnum(role) },
+            .any_data = .{ .unsigned_integer = @backingInt(role) },
         });
     }
 
@@ -3455,7 +3455,7 @@ test "role property notification carries the unsigned protocol variant" {
         if (!std.mem.eql(u8, emitted.detail1, key_accessible_role)) continue;
         found = true;
         try std.testing.expectEqualStrings(member_property_change, emitted.member);
-        try std.testing.expectEqual(@as(u32, @intFromEnum(wire.Role.button)), emitted.any_data.unsigned_integer);
+        try std.testing.expectEqual(@as(u32, @backingInt(wire.Role.button)), emitted.any_data.unsigned_integer);
         try std.testing.expectEqualStrings("u", emitted.any_data.signature());
         try std.testing.expect(std.meta.eql(nodeObjectId(fixtureId(2), 7), emitted.id));
     }

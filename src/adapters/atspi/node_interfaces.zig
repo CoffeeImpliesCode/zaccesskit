@@ -704,7 +704,7 @@ test "an action list holds at most the one action the reference names" {
     // `action_slots` is the whole domain of `nActions`, so a list that reached
     // two would be reporting an action the reference does not define.
     try testing.expectEqual(@as(usize, 1), action_slots);
-    try testing.expectEqual(@as(usize, 0), @typeInfo(wire_action.Action).@"struct".fields.len - 3);
+    try testing.expectEqual(@as(usize, 0), @typeInfo(wire_action.Action).@"struct".field_names.len - 3);
 }
 
 test "the live region priorities map onto the announcement priorities" {

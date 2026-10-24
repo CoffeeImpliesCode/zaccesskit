@@ -274,7 +274,7 @@ pub fn failWithError(err: anytype) void {
     comptime {
         switch (@typeInfo(@TypeOf(err))) {
             .error_set => |members| {
-                if (members == null) {
+                if (members.error_names == null) {
                     @compileError("failWithError requires a finite named error set, not anyerror");
                 }
             },
@@ -665,7 +665,7 @@ test "every free releases once and refuses the second release" {
         defer installAllocator(null, null, null);
 
         const block = try create(Fixture);
-        block.* = .{ .owner = index, .bytes = [_]u8{1} ** 8 };
+        block.* = .{ .owner = index, .bytes = @as([8]u8, @splat(1)) };
         try testing.expectEqual(@as(usize, 1), counters.allocs);
 
         release(block);
@@ -767,19 +767,19 @@ test "the error slot is per thread, not one global" {
 }
 
 test "the tag values are the ones the C enum names" {
-    try testing.expectEqual(@as(c_int, 0), @intFromEnum(Tag.none));
-    try testing.expectEqual(@as(c_int, 1), @intFromEnum(Tag.out_of_memory));
-    try testing.expectEqual(@as(c_int, 2), @intFromEnum(Tag.operation_failed));
+    try testing.expectEqual(@as(c_int, 0), @backingInt(Tag.none));
+    try testing.expectEqual(@as(c_int, 1), @backingInt(Tag.out_of_memory));
+    try testing.expectEqual(@as(c_int, 2), @backingInt(Tag.operation_failed));
 }
 
 test "the enumerable domains are swept at compile time" {
     // `AGENTS.md` requires every enumerable domain to be named by a test rather
     // than sampled.
-    inline for (@typeInfo(Tag).@"enum".fields) |field| {
-        _ = std.meta.stringToEnum(Tag, field.name) orelse return error.UnknownTag;
+    inline for (@typeInfo(Tag).@"enum".field_names) |field_name| {
+        _ = std.meta.stringToEnum(Tag, field_name) orelse return error.UnknownTag;
     }
-    inline for (@typeInfo(Refusal).@"enum".fields) |field| {
-        _ = std.meta.stringToEnum(Refusal, field.name) orelse return error.UnknownRefusal;
+    inline for (@typeInfo(Refusal).@"enum".field_names) |field_name| {
+        _ = std.meta.stringToEnum(Refusal, field_name) orelse return error.UnknownRefusal;
     }
 }
 
@@ -993,11 +993,11 @@ test "the installed allocator preserves raw ordinary blocks and C strings" {
     try testing.expectEqual(@intFromPtr(pair.blocks[0].returned.?), @intFromPtr(bytes.ptr));
     try testing.expectEqual(@as(usize, 17), pair.blocks[0].requested_bytes);
     @memset(bytes, 0x37);
-    try testing.expectEqualSlices(u8, &([_]u8{0x37} ** 17), bytes);
+    try testing.expectEqualSlices(u8, &(@as([17]u8, @splat(0x37))), bytes);
     gpa.free(bytes);
     try pair.expectEmpty();
 
-    const text = try gpa.dupeZ(u8, "raw string");
+    const text = try gpa.dupeSentinel(u8, "raw string", 0);
     try testing.expectEqual(@intFromPtr(pair.blocks[0].returned.?), @intFromPtr(text.ptr));
     try testing.expectEqual(@as(usize, 11), pair.blocks[0].requested_bytes);
     try testing.expectEqualStrings("raw string", text);
@@ -1046,7 +1046,7 @@ test "the installed allocator cannot resize or remap a live aligned block in pla
     try testing.expect(gpa.remap(bytes, 129) == null);
     try testing.expectEqual(calls, pair.calls);
     try testing.expectEqual(raw_pointer, pair.blocks[0].returned.?);
-    try testing.expectEqualSlices(u8, &([_]u8{0x5a} ** 65), bytes);
+    try testing.expectEqualSlices(u8, &(@as([65]u8, @splat(0x5a))), bytes);
 }
 
 test "the installed allocator frees aligned partial work at every allocation failure" {
@@ -1062,15 +1062,15 @@ fn alignedAllocationFailures(backing: std.mem.Allocator) !void {
     defer gpa.free(bytes);
     @memset(bytes, 0x6c);
     bytes = gpa.realloc(bytes, 257) catch |err| {
-        try testing.expectEqualSlices(u8, &([_]u8{0x6c} ** 65), bytes);
+        try testing.expectEqualSlices(u8, &(@as([65]u8, @splat(0x6c))), bytes);
         try testing.expect(pair.blocks[0].backing != null);
         try testing.expect(pair.blocks[1].backing == null);
         return err;
     };
     try testing.expectEqual(@as(usize, 0), @intFromPtr(bytes.ptr) % 64);
-    try testing.expectEqualSlices(u8, &([_]u8{0x6c} ** 65), bytes[0..65]);
+    try testing.expectEqualSlices(u8, &(@as([65]u8, @splat(0x6c))), bytes[0..65]);
     @memset(bytes[65..], 0x73);
-    try testing.expectEqualSlices(u8, &([_]u8{0x73} ** 192), bytes[65..]);
+    try testing.expectEqualSlices(u8, &(@as([192]u8, @splat(0x73))), bytes[65..]);
 }
 
 test "the installed allocator rejects aligned size overflow before calling C" {

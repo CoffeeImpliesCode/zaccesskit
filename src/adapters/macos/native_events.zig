@@ -231,7 +231,7 @@ pub const NativeNotifications = struct {
         name: [:0]const u8,
     ) NotificationError!void {
         errdefer objc.release(target);
-        const owned_name = try self.gpa.dupeZ(u8, name);
+        const owned_name = try self.gpa.dupeSentinel(u8, name, 0);
         self.items.appendAssumeCapacity(.{ .notification = .{
             .target = target,
             .name = owned_name,
@@ -247,7 +247,7 @@ pub const NativeNotifications = struct {
 // SDK mirror blob d46725739a34f180d2d7913e0ca96a50c783a72d defines high=90, medium=50.
 // Only the generator's high/medium semantic tags are supported here.
 fn nativePriority(priority: literals.PriorityLevel) i32 {
-    return @intFromEnum(priority);
+    return @backingInt(priority);
 }
 
 test "native announcement priorities use SDK integer levels" {
@@ -471,9 +471,10 @@ test "native consuming raise refuses background thread without spending owned qu
     defer providers.deinit();
     const id = testId(3);
     try providers.put(id, view);
-    const source_name = try std.testing.allocator.dupeZ(
+    const source_name = try std.testing.allocator.dupeSentinel(
         u8,
         events.notificationFor(.value_changed).?,
+        0,
     );
     defer std.testing.allocator.free(source_name);
     var owned_targets: Targets = .{
@@ -524,7 +525,7 @@ fn backgroundConsumingRaise(queue: *NativeNotifications, refusal: *?Notification
 }
 
 fn testId(value: u64) FullNodeId {
-    return .{ .local = .{ .value = value }, .tree_index = @enumFromInt(0) };
+    return .{ .local = .{ .value = value }, .tree_index = @fromBackingInt(@intCast(0)) };
 }
 
 const TestProviders = struct {

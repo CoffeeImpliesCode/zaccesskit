@@ -228,13 +228,13 @@ fn optionalReturn(
         return (@as(u64, 1) << 32) | colorReturnBits(held);
     }
     if (Canonical == marshal.COptTextDecoration) {
-        return (@as(u64, 1) << 40) | (@as(u64, @intFromEnum(held.style)) << 32) |
+        return (@as(u64, 1) << 40) | (@as(u64, @backingInt(held.style)) << 32) |
             colorReturnBits(held.color);
     }
     const value: u16 = if (@FieldType(Canonical, "value") == bool)
         @intFromBool(held)
     else
-        @intFromEnum(held);
+        @backingInt(held);
     return (@as(u16, 1) << 8) | value;
 }
 
@@ -259,7 +259,7 @@ fn decodeArg(comptime Canonical: type, value: TargetArg(Canonical)) Canonical {
     };
     if (Canonical == Color) return color;
     return .{
-        .style = @enumFromInt(@as(u8, @truncate(value >> 32))),
+        .style = @fromBackingInt(@intCast(@as(u8, @truncate(value >> 32)))),
         .color = color,
     };
 }
@@ -7427,7 +7427,7 @@ comptime {
         "the header declares twelve property enumerations and one role enumeration",
     );
     for (enum_gates) |row| {
-        if (@typeInfo(row.zig_type).@"enum".fields.len > 256) @compileError(
+        if (@typeInfo(row.zig_type).@"enum".field_names.len > 256) @compileError(
             "a u8 argument cannot carry every tag of this enumeration",
         );
     }
@@ -7490,8 +7490,8 @@ const Fixture = struct {
 /// The first tag byte of a wire enumeration, which is the zero every setter row
 /// writes.
 fn firstTagByte(comptime T: type) u8 {
-    const fields = @typeInfo(T).@"enum".fields;
-    return @intCast(fields[0].value);
+    const fields = @typeInfo(T).@"enum";
+    return @intCast(fields.field_values[0]);
 }
 
 /// The last tag byte of a wire enumeration.
@@ -7499,8 +7499,8 @@ fn firstTagByte(comptime T: type) u8 {
 /// Every enumeration this file decodes has at least two tags, so this differs
 /// from `firstTagByte` and a sample built from it can never collide with a zero.
 fn lastTagByte(comptime T: type) u8 {
-    const fields = @typeInfo(T).@"enum".fields;
-    return @intCast(fields[fields.len - 1].value);
+    const fields = @typeInfo(T).@"enum";
+    return @intCast(fields.field_values[fields.field_names.len - 1]);
 }
 
 /// The text selection the selection row writes as its zero: a caret at the very
@@ -7552,12 +7552,12 @@ fn sampleDecoration(channel: u8) TextDecoration {
 /// `firstTagByte` answers the byte a setter takes; this answers the value a
 /// struct field holds, and `TextDecoration.style` is one of those.
 fn firstTag(comptime T: type) T {
-    return @enumFromInt(firstTagByte(T));
+    return @fromBackingInt(@intCast(firstTagByte(T)));
 }
 
 /// The last tag of a wire enumeration, as the enum.
 fn lastTag(comptime T: type) T {
-    return @enumFromInt(lastTagByte(T));
+    return @fromBackingInt(@intCast(lastTagByte(T)));
 }
 
 /// A compile-time literal as the `[*:0]const u8` a `const char *` parameter is.
@@ -8125,8 +8125,8 @@ const optional_rows = .{
         accesskit_node_set_tree_id,
         accesskit_node_clear_tree_id,
         schema.tree_id_root,
-        TreeId{ .bytes = .{1} ** 16 },
-        TreeId{ .bytes = .{1} ** 16 },
+        TreeId{ .bytes = @splat(1) },
+        TreeId{ .bytes = @splat(1) },
     },
     .{
         accesskit_node_underline,
@@ -8423,7 +8423,7 @@ fn optionalTestSet(comptime setter: anytype, handle: *handles.accesskit_node, va
         const color = if (Value == Color) value else value.color;
         const bytes = [4]u8{ color.red, color.green, color.blue, color.alpha };
         const payload: u64 = std.mem.readInt(u32, &bytes, .big);
-        const encoded = if (Value == Color) payload else (@as(u64, @intFromEnum(value.style)) << 32) | payload;
+        const encoded = if (Value == Color) payload else (@as(u64, @backingInt(value.style)) << 32) | payload;
         setter(handle, encoded);
     } else {
         setter(handle, value);
@@ -8451,7 +8451,7 @@ fn optionalTestRead(comptime Value: type, answer: anytype) struct {
         const byte: u8 = @truncate(answer);
         return .{
             .has_value = answer >> 8 != 0,
-            .value = if (Value == bool) byte != 0 else @enumFromInt(byte),
+            .value = if (Value == bool) byte != 0 else @fromBackingInt(@intCast(byte)),
         };
     }
     if (@TypeOf(answer) == u64) {
@@ -8467,7 +8467,7 @@ fn optionalTestRead(comptime Value: type, answer: anytype) struct {
         if (Value == Color) return .{ .has_value = answer >> 32 != 0, .value = color };
         return .{
             .has_value = answer >> 40 != 0,
-            .value = .{ .style = @enumFromInt(@as(u8, @truncate(answer >> 32))), .color = color },
+            .value = .{ .style = @fromBackingInt(@intCast(@as(u8, @truncate(answer >> 32)))), .color = color },
         };
     }
     return .{ .has_value = answer.has_value, .value = answer.value };
@@ -8638,10 +8638,10 @@ test "optional exports retain all tags, byte order and exact float bits" {
                 try testing.expectEqual(color, logical.value);
             }
         } else if (Value == TextDecoration) {
-            inline for (@typeInfo(schema.TextDecorationStyle).@"enum".fields) |style| {
+            inline for (@typeInfo(schema.TextDecorationStyle).@"enum".field_values) |style_value| {
                 for (colors) |color| {
                     const expected: TextDecoration = .{
-                        .style = @enumFromInt(style.value),
+                        .style = @fromBackingInt(@intCast(style_value)),
                         .color = color,
                     };
                     optionalTestSet(row[1], fixture.handle, expected);
@@ -8668,11 +8668,11 @@ test "optional exports retain all tags, byte order and exact float bits" {
                 try testing.expectEqual(value, logical.value);
             }
         } else if (@typeInfo(Value) == .@"enum") {
-            inline for (@typeInfo(Value).@"enum".fields) |tag| {
-                optionalTestSet(row[1], fixture.handle, @as(u8, @intCast(tag.value)));
+            inline for (@typeInfo(Value).@"enum".field_values) |tag_value| {
+                optionalTestSet(row[1], fixture.handle, @as(u8, @intCast(tag_value)));
                 const logical = optionalTestRead(Value, row[0](fixture.handle));
                 try testing.expect(logical.has_value);
-                try testing.expectEqual(@as(Value, @enumFromInt(tag.value)), logical.value);
+                try testing.expectEqual(@as(Value, @fromBackingInt(@intCast(tag_value))), logical.value);
             }
         }
         row[2](fixture.handle);

@@ -223,7 +223,7 @@ pub const Register = struct {
         if (added.bits == 0 and removed.bits == 0) return;
         if (self.changes.items.len > max_changes) return error.RegisterLimit;
         if (delta.items.len >= max_changes - self.changes.items.len) return error.RegisterLimit;
-        const owned_path = try self.gpa.dupeZ(u8, path);
+        const owned_path = try self.gpa.dupeSentinel(u8, path, 0);
         errdefer self.gpa.free(owned_path);
         try delta.append(self.gpa, .{
             .path = owned_path,

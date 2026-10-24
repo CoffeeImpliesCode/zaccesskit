@@ -326,8 +326,8 @@ comptime {
     // checked statement rather than prose: a sixth field carrying a handle would
     // let a byte copy own something of its own, and nothing else in the port
     // would notice.
-    const fields = @typeInfo(Node).@"struct".fields;
-    assert(fields.len == 5);
+    const fields = @typeInfo(Node).@"struct";
+    assert(fields.field_names.len == 5);
 
     const wanted = [_]struct { name: []const u8, ty: type }{
         .{ .name = "role", .ty = Role },
@@ -338,9 +338,9 @@ comptime {
     };
     // A `comptime` block already unrolls this loop, and Zig 0.16 rejects the
     // `inline` keyword there as redundant.
-    for (wanted, fields) |want, got| {
-        assert(std.mem.eql(u8, got.name, want.name));
-        assert(got.type == want.ty);
+    for (wanted, fields.field_names, fields.field_types) |want, got_name, got_type| {
+        assert(std.mem.eql(u8, got_name, want.name));
+        assert(got_type == want.ty);
     }
 }
 

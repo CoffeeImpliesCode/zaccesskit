@@ -92,7 +92,7 @@ const Role = schema.Role;
 /// discriminant is its declaration index, which is what makes the range check
 /// in `role_from_c` sufficient. This constant only reads the count, so it
 /// cannot drift from that assertion without the assertion failing first.
-const role_tag_count = @typeInfo(Role).@"enum".fields.len;
+const role_tag_count = @typeInfo(Role).@"enum".field_names.len;
 
 /// Clears the per-thread failure tag, which every export does on entry.
 ///
@@ -149,7 +149,7 @@ pub fn mutable_node(handle: *handles.accesskit_node) *Node {
 /// second decode. It is `pub` here so that owner can import it today.
 pub fn role_from_c(value: u8) ?Role {
     if (value >= role_tag_count) return null;
-    return @enumFromInt(value);
+    return @fromBackingInt(@intCast(value));
 }
 
 /// The `hidden` property, read through `is_hidden`.
@@ -558,7 +558,7 @@ pub export fn accesskit_node_clear_is_suggestion(node: *handles.accesskit_node) 
 /// (`src/schema/node.zig:51-53`, `:99-101`), so the read is the field.
 pub export fn accesskit_node_role(node: *const handles.accesskit_node) callconv(.c) u8 {
     enter();
-    return @intFromEnum(node_of(node).role);
+    return @backingInt(node_of(node).role);
 }
 
 /// Replaces the role.
@@ -977,13 +977,13 @@ test "the role gate accepts every tag and rejects every byte past the last" {
     // rather than the sampled checks the two role tests above are. Every
     // declared tag goes in and every byte at or past the count is rejected. The
     // bound is the tag count, read from the type rather than written down.
-    const fields = @typeInfo(Role).@"enum".fields;
+    const fields = @typeInfo(Role).@"enum";
     const every = std.enums.values(Role);
-    inline for (fields, 0..) |_, index| {
+    inline for (fields.field_names, 0..) |_, index| {
         const wire: u8 = @intCast(index);
         try std.testing.expectEqual(every[index], role_from_c(wire).?);
     }
-    var byte: usize = fields.len;
+    var byte: usize = fields.field_names.len;
     while (byte < 256) : (byte += 1) {
         try std.testing.expect(role_from_c(@intCast(byte)) == null);
     }

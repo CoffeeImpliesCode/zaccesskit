@@ -251,14 +251,14 @@ pub fn main(init: std.process.Init) !u8 {
             var out = Io.File.stdout().writer(io, &buffer);
             try usage(&out.interface);
             try out.interface.flush();
-            return @intFromEnum(Exit.match);
+            return @backingInt(Exit.match);
         },
         else => {
             var buffer: [4096]u8 = undefined;
             var err_writer = Io.File.stderr().writer(io, &buffer);
             try usage(&err_writer.interface);
             try err_writer.interface.flush();
-            return @intFromEnum(Exit.usage);
+            return @backingInt(Exit.usage);
         },
     };
 
@@ -272,7 +272,7 @@ pub fn main(init: std.process.Init) !u8 {
         .tree = scan.scanTree(gpa, io, options.src_dir) catch |err| {
             try w.print("cannot read {s}: {t}\n", .{ options.src_dir, err });
             try w.flush();
-            return @intFromEnum(Exit.unreadable);
+            return @backingInt(Exit.unreadable);
         },
     };
 
@@ -307,7 +307,7 @@ pub fn main(init: std.process.Init) !u8 {
     ) catch |err| {
         try w.print("cannot read {s}: {t}\n", .{ options.doc_path, err });
         try w.flush();
-        return @intFromEnum(Exit.unreadable);
+        return @backingInt(Exit.unreadable);
     };
 
     var doc_report = try document.parse(gpa, source);
@@ -380,12 +380,12 @@ pub fn main(init: std.process.Init) !u8 {
     try w.flush();
 
     if (run.has(.unreadable_source) or run.has(.bad_marker) or run.has(.unresolved_name)) {
-        return @intFromEnum(Exit.unreadable);
+        return @backingInt(Exit.unreadable);
     }
     // A run that wrote the tables has left the document matching the source, so
     // it is a pass. A run that only reported the difference is not.
-    if (drifting != 0 and !options.write) return @intFromEnum(Exit.drift);
-    return @intFromEnum(Exit.match);
+    if (drifting != 0 and !options.write) return @backingInt(Exit.drift);
+    return @backingInt(Exit.match);
 }
 
 fn usage(w: *Io.Writer) !void {

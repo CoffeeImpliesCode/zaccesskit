@@ -69,8 +69,8 @@ test "AT-SPI fuzz signature and address seeds exercise real boundaries" {
         "",
         "unix:path=%2ftmp/a%2Cb%3Bc%3Dd",
         "tcp:host=localhost;unix:path=/a%GG;unix:abstract=ok",
-        "unix:abstract=" ++ ("%61" ** 107),
-        "unix:abstract=" ++ ("a" ** 108),
+        "unix:abstract=" ++ (@as([(107) * 3]u8, @bitCast(@as([107][3]u8, @splat("%61".*))))),
+        "unix:abstract=" ++ (@as([108]u8, @splat('a'))),
     };
     for (seeds) |seed| try fuzzAddress(seed);
     var iterator = address.Iterator.init(seeds[1]);

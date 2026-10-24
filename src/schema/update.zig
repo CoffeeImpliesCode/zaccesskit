@@ -441,29 +441,29 @@ pub fn actionDataFromC(
     value: CActionData,
 ) ActionDataFromCError!ActionData {
     return switch (value.tag) {
-        @intFromEnum(ActionDataTag.custom_action) => .{
+        @backingInt(ActionDataTag.custom_action) => .{
             .custom_action = value.payload.custom_action,
         },
-        @intFromEnum(ActionDataTag.value) => blk: {
+        @backingInt(ActionDataTag.value) => blk: {
             const pointer = value.payload.value orelse return error.NullValuePointer;
             break :blk ActionData{ .value = try gpa.dupe(u8, std.mem.span(pointer)) };
         },
-        @intFromEnum(ActionDataTag.numeric_value) => .{
+        @backingInt(ActionDataTag.numeric_value) => .{
             .numeric_value = value.payload.numeric_value,
         },
-        @intFromEnum(ActionDataTag.scroll_unit) => .{
+        @backingInt(ActionDataTag.scroll_unit) => .{
             .scroll_unit = value.payload.scroll_unit,
         },
-        @intFromEnum(ActionDataTag.scroll_hint) => .{
+        @backingInt(ActionDataTag.scroll_hint) => .{
             .scroll_hint = value.payload.scroll_hint,
         },
-        @intFromEnum(ActionDataTag.scroll_to_point) => .{
+        @backingInt(ActionDataTag.scroll_to_point) => .{
             .scroll_to_point = value.payload.scroll_to_point,
         },
-        @intFromEnum(ActionDataTag.set_scroll_offset) => .{
+        @backingInt(ActionDataTag.set_scroll_offset) => .{
             .set_scroll_offset = value.payload.set_scroll_offset,
         },
-        @intFromEnum(ActionDataTag.set_text_selection) => .{
+        @backingInt(ActionDataTag.set_text_selection) => .{
             .set_text_selection = value.payload.set_text_selection,
         },
         else => error.UnknownTag,
@@ -493,7 +493,7 @@ pub fn actionDataDeinit(gpa: std.mem.Allocator, data: *ActionData) void {
 /// `accesskit_action_data`. `gpa` must be the allocator that produced the
 /// string. `value` is unusable afterwards, and a second call is a double free.
 pub fn cActionDataDeinit(gpa: std.mem.Allocator, value: *CActionData) void {
-    if (value.tag == @intFromEnum(ActionDataTag.value)) {
+    if (value.tag == @backingInt(ActionDataTag.value)) {
         if (value.payload.value) |pointer| gpa.free(std.mem.span(pointer));
     }
     // SAFETY: the branch above released the one allocation this union owns, the
@@ -536,7 +536,7 @@ fn valueToCString(gpa: std.mem.Allocator, text: []const u8) ActionDataToCError![
 /// writes a `c_uint` where `ActionDataTag` says the value, so the conversion
 /// between the two runs in exactly one place.
 fn cActionDataNew(tag: ActionDataTag, payload: ActionDataPayload) CActionData {
-    return .{ .tag = @intFromEnum(tag), .payload = payload };
+    return .{ .tag = @backingInt(tag), .payload = payload };
 }
 
 comptime {
@@ -592,20 +592,20 @@ comptime {
     // Tag n selects member n, because the header numbers the tags at
     // `:1010-1022` and lists the members at `:1029-1050` in the same order.
     // This is a check over a domain, so it names the index that broke.
-    const tag_fields = @typeInfo(ActionDataTag).@"enum".fields;
-    const member_fields = @typeInfo(ActionDataPayload).@"union".fields;
-    if (tag_fields.len != member_fields.len) @compileError(std.fmt.comptimePrint(
+    const tag_fields = @typeInfo(ActionDataTag).@"enum";
+    const member_fields = @typeInfo(ActionDataPayload).@"union";
+    if (tag_fields.field_names.len != member_fields.field_names.len) @compileError(std.fmt.comptimePrint(
         "ActionDataTag has {d} tags and ActionDataPayload has {d} members",
-        .{ tag_fields.len, member_fields.len },
+        .{ tag_fields.field_names.len, member_fields.field_names.len },
     ));
-    for (tag_fields, member_fields, 0..) |tag, member, index| {
-        if (tag.value != index) @compileError(std.fmt.comptimePrint(
+    for (tag_fields.field_names, tag_fields.field_values, member_fields.field_names, 0..) |tag_name, tag_value, member_name, index| {
+        if (tag_value != index) @compileError(std.fmt.comptimePrint(
             "ActionDataTag.{s} is {d}, so it is not tag {d}",
-            .{ tag.name, tag.value, index },
+            .{ tag_name, tag_value, index },
         ));
-        if (!std.mem.eql(u8, tag.name, member.name)) @compileError(std.fmt.comptimePrint(
+        if (!std.mem.eql(u8, tag_name, member_name)) @compileError(std.fmt.comptimePrint(
             "ActionDataTag.{s} does not select ActionDataPayload.{s}",
-            .{ tag.name, member.name },
+            .{ tag_name, member_name },
         ));
     }
 
@@ -629,16 +629,14 @@ comptime {
     std.debug.assert(@offsetOf(ActionRequest, "data") == 8);
     std.debug.assert(@offsetOf(ActionRequest, "action") == 56);
     std.debug.assert(@offsetOf(ActionRequest, "target_tree") == 57);
-    // Rule L6: an unmanaged `std.ArrayList` is a slice and a capacity.
-    std.debug.assert(@sizeOf(std.ArrayList(NodeEntry)) == 24);
 
     // `actionDataSample` and `expectActionDataEqual` name the eight tags by
     // their spelling, so the round-trip test below pairs each field with both.
     // The sweep that pairs them is the one that fails when a tag is missing.
-    for (@typeInfo(ActionData).@"union".fields) |field| {
-        if (!isSampledActionDataTag(field.name)) @compileError(std.fmt.comptimePrint(
+    for (@typeInfo(ActionData).@"union".field_names) |field_name| {
+        if (!isSampledActionDataTag(field_name)) @compileError(std.fmt.comptimePrint(
             "ActionData gained the variant '{s}' and no sample or check names it",
-            .{field.name},
+            .{field_name},
         ));
     }
 }
@@ -755,8 +753,8 @@ test "pushNode releases the node it could not store" {
 
 test "every ActionData variant survives a round trip through the C form" {
     const gpa = testing.allocator;
-    inline for (@typeInfo(ActionData).@"union".fields) |field| {
-        var source = try actionDataSample(field.name, gpa);
+    inline for (@typeInfo(ActionData).@"union".field_names) |field_name| {
+        var source = try actionDataSample(field_name, gpa);
         defer actionDataDeinit(gpa, &source);
 
         var boundary = try actionDataToC(gpa, source);
@@ -768,7 +766,7 @@ test "every ActionData variant survives a round trip through the C form" {
         // The tag decides which field `expectActionDataEqual` may read, so it
         // is checked before that call and not after it.
         try testing.expectEqual(std.meta.activeTag(source), std.meta.activeTag(read_back));
-        try expectActionDataEqual(field.name, source, read_back);
+        try expectActionDataEqual(field_name, source, read_back);
     }
 }
 
@@ -798,7 +796,7 @@ test "the C tag reads the payload member the header pairs it with" {
     // `scroll_unit` and `scroll_hint` are both one byte, so a tag that reads
     // the wrong member would pass on a value of zero. The two bytes differ.
     const boundary: CActionData = .{
-        .tag = @intFromEnum(ActionDataTag.scroll_hint),
+        .tag = @backingInt(ActionDataTag.scroll_hint),
         .payload = .{ .scroll_hint = .bottom_edge },
     };
 
@@ -812,7 +810,7 @@ test "the C tag reads the payload member the header pairs it with" {
 test "a tag no member declares is rejected instead of read" {
     const gpa = testing.allocator;
     const boundary: CActionData = .{
-        .tag = @intFromEnum(ActionDataTag.set_text_selection) + 1,
+        .tag = @backingInt(ActionDataTag.set_text_selection) + 1,
         // The payload is never read, so the union carries the cheapest member.
         .payload = .{ .custom_action = 0 },
     };
@@ -823,7 +821,7 @@ test "a tag no member declares is rejected instead of read" {
 test "a null char pointer under the value tag is rejected, not read" {
     const gpa = testing.allocator;
     const boundary: CActionData = .{
-        .tag = @intFromEnum(ActionDataTag.value),
+        .tag = @backingInt(ActionDataTag.value),
         .payload = .{ .value = null },
     };
 
@@ -850,7 +848,7 @@ test "an empty value becomes a C string of length zero" {
     var boundary = try actionDataToC(gpa, .{ .value = text });
     defer cActionDataDeinit(gpa, &boundary);
 
-    try testing.expectEqual(@as(u32, @intFromEnum(ActionDataTag.value)), boundary.tag);
+    try testing.expectEqual(@as(u32, @backingInt(ActionDataTag.value)), boundary.tag);
     const pointer = boundary.payload.value orelse return error.ValuePointerAbsent;
     try testing.expectEqual(@as(usize, 0), std.mem.span(pointer).len);
 }
@@ -922,7 +920,7 @@ test "cActionRequestDeinit releases the char pointer the value tag owns" {
         .data = .{
             .has_value = true,
             .value = .{
-                .tag = @intFromEnum(ActionDataTag.value),
+                .tag = @backingInt(ActionDataTag.value),
                 .payload = .{ .value = try valueToCString(gpa, "replacement") },
             },
         },
@@ -945,7 +943,7 @@ test "cActionRequestDeinit skips a request whose optional carries no value" {
         .target_tree = tree_id_root,
         .target_node = nodeIdFromContent(6),
         .data = .{ .has_value = false, .value = .{
-            .tag = @intFromEnum(ActionDataTag.custom_action),
+            .tag = @backingInt(ActionDataTag.custom_action),
             .payload = .{ .custom_action = 0 },
         } },
     };

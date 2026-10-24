@@ -686,8 +686,8 @@ test "the announcement publishes two keys and one of two priorities" {
     try testing.expectEqualStrings("NSAccessibilityAnnouncementKey", announcement_keys[0]);
     try testing.expectEqualStrings("NSAccessibilityPriorityKey", announcement_keys[1]);
     // `AK/macos/src/event.rs:35-43` picks between exactly two levels.
-    try testing.expectEqual(@as(i32, 90), @intFromEnum(PriorityLevel.high));
-    try testing.expectEqual(@as(i32, 50), @intFromEnum(PriorityLevel.medium));
+    try testing.expectEqual(@as(i32, 90), @backingInt(PriorityLevel.high));
+    try testing.expectEqual(@as(i32, 50), @backingInt(PriorityLevel.medium));
 }
 
 test "every string in this module is declared sentinel-terminated" {

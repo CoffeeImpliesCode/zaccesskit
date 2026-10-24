@@ -523,8 +523,8 @@ test "all provider factory errors preserve exact tags without publishing slots" 
     );
     defer owner.deinit();
     const platform = adapter.testPlatform();
-    inline for (@typeInfo(context.ProviderError).error_set.?) |error_info| {
-        const expected: context.ProviderError = @field(anyerror, error_info.name);
+    inline for (@typeInfo(context.ProviderError).error_set.error_names.?) |error_info| {
+        const expected: context.ProviderError = @field(anyerror, error_info);
         const control = try context.Context.create(
             testing.allocator,
             runtime.io(),

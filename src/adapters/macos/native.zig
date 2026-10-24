@@ -429,7 +429,7 @@ pub const NativeAdapter = struct {
         }};
         defer entry[0].node.deinit();
         const placeholder: schema.TreeUpdate = .{
-            .nodes = .{ .items = &entry, .capacity = 0 },
+            .nodes = .{ .items = &entry, .capacity = 0, .pointer_stability = .{} },
             .tree = schema.TreeInfo.init(.{ .value = 0 }),
             .focus = .{ .value = 0 },
         };

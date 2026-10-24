@@ -82,12 +82,12 @@ fn callNode(ctx: *Context, member: []const u8, args: []const Value) Error!Value 
         const targets = try ctx.arena.alloc(Value, controlled.len);
         for (controlled, 0..) |id, index| targets[index] = try ctx.nodeObject(id);
         const relation = try ctx.structure(&.{
-            .{ .uint32 = @intFromEnum(wire.RelationType.controller_for) },
+            .{ .uint32 = @backingInt(wire.RelationType.controller_for) },
             try ctx.array("(so)", targets),
         });
         return ctx.array("(ua(so))", &.{relation});
     }
-    if (std.mem.eql(u8, member, "GetRole")) return .{ .uint32 = @intFromEnum(try node.role()) };
+    if (std.mem.eql(u8, member, "GetRole")) return .{ .uint32 = @backingInt(try node.role()) };
     if (std.mem.eql(u8, member, "GetInterfaces")) return ctx.interfaces(try node.interfaces());
     if (std.mem.eql(u8, member, "GetLocalizedRoleName")) {
         return ctx.string(try node.localizedRoleName());
@@ -121,7 +121,7 @@ fn callRoot(ctx: *Context, member: []const u8, args: []const Value) Error!Value 
     }
     if (std.mem.eql(u8, member, "GetIndexInParent")) return .{ .int32 = root.indexInParent() };
     if (std.mem.eql(u8, member, "GetRelationSet")) return ctx.array("(ua(so))", &.{});
-    if (std.mem.eql(u8, member, "GetRole")) return .{ .uint32 = @intFromEnum(root.role()) };
+    if (std.mem.eql(u8, member, "GetRole")) return .{ .uint32 = @backingInt(root.role()) };
     if (std.mem.eql(u8, member, "GetState")) return ctx.states(root.state());
     if (std.mem.eql(u8, member, "GetApplication")) return ctx.object(.root);
     if (std.mem.eql(u8, member, "GetInterfaces")) return ctx.interfaces(root.interfaces());

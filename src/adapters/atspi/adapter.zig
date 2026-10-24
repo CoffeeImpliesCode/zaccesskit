@@ -1917,8 +1917,10 @@ fn propertiesWireAllocationCase(gpa: std.mem.Allocator) !void {
 }
 
 test "native property Set getter signal byte consumer and fail N owned cleanup" {
+    // SafeAllocator remapping can change the allocation count between runs.
+    var backing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .resize_fail_index = 0 });
     try std.testing.checkAllAllocationFailures(
-        std.testing.allocator,
+        backing.allocator(),
         propertiesWireAllocationCase,
         .{},
     );

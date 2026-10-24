@@ -70,7 +70,7 @@ const GeometryCase = struct {
     rect_expected: [4]f64 = .{ 0, 0, 0, 0 },
     points: []const [2]f64 = &.{},
     contains_expected: []const bool = &.{},
-    nan_expected: [6]bool = .{false} ** 6,
+    nan_expected: [6]bool = @splat(false),
 };
 const GeometryFixture = struct { cases: []const GeometryCase };
 const Run = struct { id: u64, value: []const u8, character_lengths: []const u8 };
@@ -160,7 +160,14 @@ pub fn testCaseBound(gpa: std.mem.Allocator) VerificationError!void {
         "{\"name\":\"x\",\"source_commit\":\"x\"," ++
         "\"source\":\"x\",\"oracle_kind\":\"x\"," ++
         "\"claim\":\"x\",\"operation\":\"compose\"}";
-    const body = "{\"cases\":[" ++ (item ++ ",") ** max_fixture_cases ++ item ++ "]}";
+    const body = "{\"cases\":[" ++ repeated: {
+        var items: [max_fixture_cases * (item.len + 1)]u8 = undefined;
+        for (0..max_fixture_cases) |index| {
+            @memcpy(items[index * (item.len + 1) ..][0..item.len], item);
+            items[index * (item.len + 1) + item.len] = ',';
+        }
+        break :repeated items;
+    } ++ item ++ "]}";
     const parsed = try parseFixture(GeometryFixture, gpa, body);
     defer parsed.deinit();
 }

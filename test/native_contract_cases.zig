@@ -657,7 +657,7 @@ test "native-contract every emitted source role reaches an exact live AT SPI rol
         var reply = try fixture.call(7, atspi.wire.interface_accessible, "GetRole", "", &.{});
         defer reply.body.deinit();
         try expectSuccess(reply, "u");
-        try testing.expectEqual(@as(u32, @intFromEnum(case.expected)), reply.body.values[0].uint32);
+        try testing.expectEqual(@as(u32, @backingInt(case.expected)), reply.body.values[0].uint32);
     }
 }
 

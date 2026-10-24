@@ -99,12 +99,12 @@ comptime {
     // `(iiii)` names four signed 32-bit members. A struct that grew a fifth
     // member, or changed one of them, would still print a signature no peer can
     // decode, so the arity and the type of each member are checked here.
-    const fields = @typeInfo(Rect).@"struct".fields;
-    if (fields.len != 4) {
+    const fields = @typeInfo(Rect).@"struct";
+    if (fields.field_names.len != 4) {
         @compileError("the (iiii) signature names exactly four members");
     }
-    for (fields) |field| {
-        if (!isI32(field.type)) {
+    for (fields.field_types) |field_type| {
+        if (!isI32(field_type)) {
             @compileError("every (iiii) member is an i32");
         }
     }

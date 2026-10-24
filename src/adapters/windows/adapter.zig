@@ -1805,7 +1805,7 @@ test "holder cleanup retries retain all authority after adapter close without re
             raw: *native.Variant,
         ) native.Hresult {
             const self: *Self = @ptrCast(@alignCast(userdata.?));
-            if (@intFromEnum(raw.Anonymous.Anonymous.vt) == 3) {
+            if (@backingInt(raw.Anonymous.Anonymous.vt) == 3) {
                 if (self.locked and raw.Anonymous.Anonymous.Anonymous.lVal == 7) {
                     return @bitCast(@as(u32, 0x8002000d));
                 }

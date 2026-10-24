@@ -415,7 +415,7 @@ pub const MacosQueuedEvents = struct {
                         window,
                         name,
                         announcement.text,
-                        @intFromEnum(announcement.priority),
+                        @backingInt(announcement.priority),
                     );
                 },
             }
@@ -1461,7 +1461,7 @@ pub fn macosAddFocusForwarderToWindowClassWithLength(
         return;
     }
     const gpa = heap();
-    const name = gpa.dupeZ(u8, bytes) catch |err| {
+    const name = gpa.dupeSentinel(u8, bytes, 0) catch |err| {
         allocation.failWithError(err);
         return;
     };
@@ -1495,7 +1495,7 @@ fn renderDebug(adapter: *const MacosAdapter, allocator: Allocator) ![*:0]u8 {
             "NativeAdapter {{ state: {s}, nodes: {d} }}",
             .{ @tagName(snapshot.state), snapshot.provider_count },
         );
-        return (try allocator.dupeZ(u8, text)).ptr;
+        return (try allocator.dupeSentinel(u8, text, 0)).ptr;
     }
     // SAFETY: `bufPrint` below is the only writer and it writes exactly the
     // bytes it returns, so `rendered` never names a byte this buffer did not
@@ -1520,7 +1520,7 @@ fn renderDebug(adapter: *const MacosAdapter, allocator: Allocator) ![*:0]u8 {
         "MacosAdapter {{ state: {s}, nodes: {d} }}",
         .{ state_name, nodes },
     ) catch return error.NoRoom;
-    const owned = try allocator.dupeZ(u8, rendered);
+    const owned = try allocator.dupeSentinel(u8, rendered, 0);
     return owned.ptr;
 }
 
@@ -1603,7 +1603,7 @@ comptime {
         if (info != .pointer) @compileError("an entry point must be a pointer");
         _ = i;
     }
-    if (@typeInfo(State).@"union".fields.len != 4) {
+    if (@typeInfo(State).@"union".field_names.len != 4) {
         @compileError("the adapter has three pure states and one native owner");
     }
 }
@@ -2128,7 +2128,7 @@ test "a payload crosses as the value tag and the text it carries" {
     try testing.expectEqual(schema.Action.set_value, probe.action);
     try testing.expect(probe.has_value);
     try testing.expectEqual(
-        @as(c_uint, @intFromEnum(schema.ActionDataTag.value)),
+        @as(c_uint, @backingInt(schema.ActionDataTag.value)),
         probe.value_tag,
     );
     try testing.expectEqualStrings("typed", probe.text());

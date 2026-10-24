@@ -679,8 +679,8 @@ fn sizeFromC(value: CSize) Size {
 /// The tests pass a comptime offset inside a slice they sized, so the read is in
 /// range by construction and the byte order cancels out.
 fn readF64At(comptime offset: usize, bytes: []const u8) f64 {
-    const chunk: *const [@sizeOf(f64)]u8 = @ptrCast(bytes[offset..].ptr);
-    return @bitCast(chunk.*);
+    const chunk: *align(1) const f64 = @ptrCast(bytes[offset..].ptr);
+    return chunk.*;
 }
 
 const testing = std.testing;

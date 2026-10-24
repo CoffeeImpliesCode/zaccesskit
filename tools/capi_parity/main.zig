@@ -245,13 +245,13 @@ pub fn main(init: std.process.Init) !u8 {
     const io = init.io;
 
     const options = parseArgs(arena, init.minimal.args) catch |err| switch (err) {
-        error.Help => return @intFromEnum(Exit.parity),
+        error.Help => return @backingInt(Exit.parity),
         else => {
             var buf: [4096]u8 = undefined;
             var stderr = Io.File.stderr().writer(io, &buf);
             try usage(&stderr.interface);
             try stderr.interface.flush();
-            return @intFromEnum(Exit.usage);
+            return @backingInt(Exit.usage);
         },
     };
 
@@ -292,9 +292,9 @@ pub fn main(init: std.process.Init) !u8 {
     try stdout.interface.writeAll(report.written());
     try stdout.interface.flush();
 
-    if (sweep.hasKind(.unreadable)) return @intFromEnum(Exit.unreadable);
-    if (sweep.findings.items.len != 0) return @intFromEnum(Exit.mismatch);
-    return @intFromEnum(Exit.parity);
+    if (sweep.hasKind(.unreadable)) return @backingInt(Exit.unreadable);
+    if (sweep.findings.items.len != 0) return @backingInt(Exit.mismatch);
+    return @backingInt(Exit.parity);
 }
 
 fn usage(w: *Io.Writer) !void {
@@ -343,8 +343,8 @@ fn parseArgs(arena: Allocator, args: std.process.Args) !Options {
 }
 
 fn parseTarget(name: []const u8) ?header.Target {
-    inline for (@typeInfo(header.Target).@"enum".fields) |f| {
-        if (std.mem.eql(u8, name, f.name)) return @enumFromInt(f.value);
+    inline for (@typeInfo(header.Target).@"enum".field_names, @typeInfo(header.Target).@"enum".field_values) |field_name, field_value| {
+        if (std.mem.eql(u8, name, field_name)) return @fromBackingInt(@intCast(field_value));
     }
     return null;
 }
@@ -359,9 +359,9 @@ fn reportCensus(w: *Io.Writer, sweep: *Sweep) !void {
         sweep.options.source_dir,
     });
 
-    var declared_by_guard = [_]usize{0} ** GuardClass.all.len;
+    var declared_by_guard = @as([GuardClass.all.len]usize, @splat(0));
     for (doc.functions) |f| {
-        declared_by_guard[@intFromEnum(GuardClass.of(f.guard.platform))] += 1;
+        declared_by_guard[@backingInt(GuardClass.of(f.guard.platform))] += 1;
     }
 
     var variants: usize = 0;

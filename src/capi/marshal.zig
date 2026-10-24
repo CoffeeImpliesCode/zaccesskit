@@ -1485,7 +1485,7 @@ test "the list-shaped optional is the one optional with no value field" {
 
     // Every optional this table does hold has exactly two fields.
     inline for (optional_rows) |row| {
-        try testing.expectEqual(@as(usize, 2), @typeInfo(row.c_type).@"struct".fields.len);
+        try testing.expectEqual(@as(usize, 2), @typeInfo(row.c_type).@"struct".field_names.len);
     }
 }
 
@@ -1538,7 +1538,7 @@ test "accesskit_opt_node_id matches the header in both directions" {
 test "accesskit_opt_tree_id matches the header in both directions" {
     // The one optional whose payload has an alignment below its own: 17 bytes
     // at alignment 1, payload at offset 1.
-    const id = schema.treeIdFromBytes(.{ 1, 2, 3, 4 } ** 4);
+    const id = schema.treeIdFromBytes(.{ 1, 2, 3, 4, 1, 2, 3, 4, 1, 2, 3, 4, 1, 2, 3, 4 });
     const present = opt_tree_id_to_c(id);
     try testing.expect(present.has_value);
     try testing.expectEqualSlices(u8, &id.bytes, &present.value.bytes);
@@ -1555,7 +1555,7 @@ test "accesskit_opt_tree_id matches the header in both directions" {
 
     const absent = opt_tree_id_to_c(null);
     try testing.expect(!absent.has_value);
-    try testing.expectEqualSlices(u8, &[_]u8{0} ** 16, &absent.value.bytes);
+    try testing.expectEqualSlices(u8, &@as([16]u8, @splat(0)), &absent.value.bytes);
 }
 
 test "accesskit_opt_double matches the header in both directions" {
@@ -1669,7 +1669,7 @@ test "accesskit_opt_text_decoration matches the header in both directions" {
     var written: COptTextDecoration = undefined;
     const bytes = cBytesOf(COptTextDecoration, &written);
     writeBits(bool, bytes, 0, true);
-    writeBits(u8, bytes, 1, @intFromEnum(schema.TextDecorationStyle.dotted));
+    writeBits(u8, bytes, 1, @backingInt(schema.TextDecorationStyle.dotted));
     writeBits(u8, bytes, 5, 0x5a);
     try testing.expect(written.has_value);
     try testing.expectEqual(schema.TextDecorationStyle.dotted, written.value.style);

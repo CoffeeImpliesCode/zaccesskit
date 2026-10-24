@@ -1118,7 +1118,7 @@ fn standardDiscoveryRoundtrip(gpa: std.mem.Allocator) !void {
                 try std.testing.expectEqualStrings("Unknown property 'P'", missing.body.values[0].string);
             }
         }
-        var long_name = [_]u8{'a'} ** 256;
+        var long_name = @as([256]u8, @splat('a'));
         long_name[1] = '.';
         const invalid_names = [_][]const u8{
             "",          "Undotted", ".org.Name", "org.Name.", "org..Name", "org.1Name",
@@ -1218,9 +1218,11 @@ test "AT-SPI positioned edit capability refuses disabled and read only consumer 
 }
 
 test "AT-SPI optional positioned wire edits release every allocation under fail N" {
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, positionedEditingRoundtrip, .{});
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, positionedDeferredPublicationRoundtrip, .{});
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, positionedEditabilityRoundtrip, .{});
+    // SafeAllocator remapping can change the allocation count between runs.
+    var backing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .resize_fail_index = 0 });
+    try std.testing.checkAllAllocationFailures(backing.allocator(), positionedEditingRoundtrip, .{});
+    try std.testing.checkAllAllocationFailures(backing.allocator(), positionedDeferredPublicationRoundtrip, .{});
+    try std.testing.checkAllAllocationFailures(backing.allocator(), positionedEditabilityRoundtrip, .{});
 }
 
 const PositionedEditingHost = struct {

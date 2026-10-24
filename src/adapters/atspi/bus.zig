@@ -152,7 +152,7 @@ test "authentication transcript sends BEGIN without FD negotiation and leaves bi
 }
 
 test "authentication bounds line bytes and propagates truncated transcript" {
-    var oversized: AuthTranscript = .{ .input = "x" ** auth_line_bytes_max };
+    var oversized: AuthTranscript = .{ .input = &@as([auth_line_bytes_max]u8, @splat('x')) };
     try std.testing.expectError(error.AuthenticationLineTooLong, authenticateTransport(&oversized, 1));
     var truncated: AuthTranscript = .{ .input = "OK 0123" };
     try std.testing.expectError(error.EndOfStream, authenticateTransport(&truncated, 1));
@@ -167,7 +167,7 @@ test "serial exhaustion never reuses a serial or produces zero" {
 }
 
 test "Unix address preserves all 107 abstract name bytes including prefix" {
-    var name = [_]u8{'x'} ** 107;
+    var name = @as([107]u8, @splat('x'));
     const endpoint = try unixAddress(.{ .kind = .abstract, .name = &name });
     try std.testing.expectEqual(@as(u8, 0), endpoint.un.path[0]);
     try std.testing.expectEqualSlices(u8, &name, endpoint.un.path[1..]);
@@ -472,15 +472,15 @@ fn requestRelayForwarding(comptime Relay: type) !void {
     try std.testing.expect(probe.exact_connection);
     try std.testing.expect(probe.exact_message);
     try std.testing.expectEqual(@as(usize, 1), probe.calls);
-    inline for (@typeInfo(Error).error_set.?) |failure| {
-        const err: Error = @field(Error, failure.name);
+    inline for (@typeInfo(Error).error_set.error_names.?) |failure| {
+        const err: Error = @field(Error, failure);
         probe.failure = err;
         try std.testing.expectError(err, hook.dispatch(hook.context, &connection, message));
         try std.testing.expect(probe.exact_bus);
         try std.testing.expect(probe.exact_connection);
         try std.testing.expect(probe.exact_message);
     }
-    try std.testing.expectEqual(@as(usize, 1 + @typeInfo(Error).error_set.?.len), probe.calls);
+    try std.testing.expectEqual(@as(usize, 1 + @typeInfo(Error).error_set.error_names.?.len), probe.calls);
 }
 
 test "session startup relay forwards the exact local Bus and every request error" {

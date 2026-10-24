@@ -377,7 +377,7 @@ test "every consumer role reaches a role the wire declares" {
     inline for (comptime std.enums.values(schema.Role)) |accesskit_role| {
         for ([_]bool{ false, true }) |toggled| {
             const reported = roleFor(accesskit_role, toggled, false);
-            try testing.expect(wire.roleFromInt(@intFromEnum(reported)) != null);
+            try testing.expect(wire.roleFromInt(@backingInt(reported)) != null);
         }
     }
 }
@@ -395,11 +395,11 @@ test "the map produces no more roles than the reference names" {
     // not fit a `u64` and a `u64` shift amount cannot reach the high tags
     // either. The marks are one `bool` per tag in an array the widest tag
     // sizes.
-    var reached = [_]bool{false} ** (widestTag(wire.Role) + 1);
+    var reached: [widestTag(wire.Role) + 1]bool = @splat(false);
     var distinct: usize = 0;
     inline for (comptime std.enums.values(schema.Role)) |accesskit_role| {
         for ([_]bool{ false, true }) |toggled| {
-            const tag = @intFromEnum(roleFor(accesskit_role, toggled, false));
+            const tag = @backingInt(roleFor(accesskit_role, toggled, false));
             if (!reached[tag]) {
                 reached[tag] = true;
                 distinct += 1;
@@ -409,7 +409,7 @@ test "the map produces no more roles than the reference names" {
     // The bound the name states: the switch reaches no more distinct roles
     // than the reference names. An arm answering a tag nothing else reaches
     // would push the count over.
-    try testing.expect(distinct <= @typeInfo(wire.Role).@"enum".fields.len);
+    try testing.expect(distinct <= @typeInfo(wire.Role).@"enum".field_names.len);
 }
 
 /// The largest tag `T` declares, which is how many slots a mark per tag needs.
@@ -420,7 +420,7 @@ fn widestTag(comptime T: type) usize {
     return tag: {
         var widest: usize = 0;
         for (std.enums.values(T)) |member| {
-            widest = @max(widest, @intFromEnum(member));
+            widest = @max(widest, @backingInt(member));
         }
         break :tag widest;
     };

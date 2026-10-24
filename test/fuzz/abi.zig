@@ -271,4 +271,4 @@ pub fn tagProjection(tag: PropertyValueTag) ?[]const u8 {
 }
 
 /// How many members `PropertyValueTag` has, read from the type itself.
-pub const tag_count: usize = @typeInfo(PropertyValueTag).@"enum".fields.len;
+pub const tag_count: usize = @typeInfo(PropertyValueTag).@"enum".field_names.len;

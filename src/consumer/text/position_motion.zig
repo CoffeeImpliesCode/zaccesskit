@@ -472,8 +472,8 @@ comptime {
     const reachable = [_][]const u8{ "TreeCycle", "LineChainCycle", "NoSuchNode" };
     for (reachable) |wanted| {
         var found = false;
-        for (@typeInfo(QueryError).error_set.?) |member| {
-            if (std.mem.eql(u8, member.name, wanted)) found = true;
+        for (@typeInfo(QueryError).error_set.error_names.?) |member| {
+            if (std.mem.eql(u8, member, wanted)) found = true;
         }
         assert(found);
     }

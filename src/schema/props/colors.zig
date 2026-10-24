@@ -362,19 +362,19 @@ test "underline is absent, round-trips a dotted black line, and clears back to a
 }
 
 test "a color reads back as the four bytes a C caller sees, in declaration order" {
-    const bytes: [4]u8 = @bitCast(opaque_white);
+    const bytes = std.mem.asBytes(&opaque_white).*;
     try testing.expectEqualSlices(u8, &.{ 255, 255, 255, 255 }, &bytes);
 
     const mixed: Color = .{ .red = 1, .green = 2, .blue = 3, .alpha = 4 };
-    const mixed_bytes: [4]u8 = @bitCast(mixed);
+    const mixed_bytes = std.mem.asBytes(&mixed).*;
     try testing.expectEqualSlices(u8, &.{ 1, 2, 3, 4 }, &mixed_bytes);
 
-    const clear_bytes: [4]u8 = @bitCast(transparent_black);
+    const clear_bytes = std.mem.asBytes(&transparent_black).*;
     try testing.expectEqualSlices(u8, &.{ 0, 0, 0, 0 }, &clear_bytes);
 }
 
 test "a decoration reads back as one style byte then the four color bytes" {
-    const bytes: [5]u8 = @bitCast(test_decoration);
+    const bytes = std.mem.asBytes(&test_decoration).*;
     // `ACCESSKIT_TEXT_DECORATION_STYLE_DOTTED` is 1 in
     // `accesskit-c/include/accesskit.h:565`, so the style occupies byte 0.
     try testing.expectEqualSlices(u8, &.{ 1, 0, 0, 0, 255 }, &bytes);
@@ -420,7 +420,7 @@ test "every decoration style round-trips with its own discriminant" {
         const read = underline(&properties);
         try testing.expect(read != null);
         try testing.expect(read.?.style == style);
-        try testing.expect(@intFromEnum(read.?.style) == discriminant);
+        try testing.expect(@backingInt(read.?.style) == discriminant);
 
         clearUnderline(&properties);
         try testing.expect(underline(&properties) == null);

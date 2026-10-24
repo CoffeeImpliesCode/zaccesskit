@@ -204,7 +204,7 @@ test "NodeId formats as hash then decimal content" {
 
 test "tree_id_root is sixteen zero bytes" {
     const root = tree_id_root;
-    const zero_bytes = [_]u8{0} ** @sizeOf(TreeId);
+    const zero_bytes = @as([@sizeOf(TreeId)]u8, @splat(0));
 
     try testing.expectEqualSlices(u8, &zero_bytes, &root.bytes);
     try testing.expect(root.eql(treeIdFromBytes(zero_bytes)));
@@ -218,7 +218,7 @@ test "TreeId is exactly the sixteen bytes the header declares" {
 test "every byte of a TreeId is significant" {
     const byte_count = tree_id_root.bytes.len;
     for (0..byte_count) |index| {
-        var bytes = [_]u8{0} ** byte_count;
+        var bytes = @as([byte_count]u8, @splat(0));
         bytes[index] = 1;
         const id = treeIdFromBytes(bytes);
 
@@ -253,7 +253,7 @@ test "TreeId byte order is preserved, not reversed" {
 }
 
 test "TreeId orders by its bytes, most significant first" {
-    const low = treeIdFromBytes([_]u8{0} ** 16);
+    const low = treeIdFromBytes(@as([16]u8, @splat(0)));
     const high = treeIdFromBytes(.{ 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 });
 
     try testing.expect(low.lessThan(high));
@@ -262,7 +262,7 @@ test "TreeId orders by its bytes, most significant first" {
 }
 
 test "equal TreeIds digest equal and the bytes reach the hasher" {
-    const bytes: [16]u8 = .{0xaa} ** 16;
+    const bytes: [16]u8 = @splat(0xaa);
 
     var first = std.hash.Wyhash.init(0);
     treeIdFromBytes(bytes).hash(&first);

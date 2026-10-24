@@ -48,7 +48,7 @@ pub const NodeWrapper = struct {
     node: NodeRef,
 
     pub fn controlType(self: NodeWrapper) bindings.ControlTypeId {
-        comptime std.debug.assert(@typeInfo(schema.Role).@"enum".fields.len == 182);
+        comptime std.debug.assert(@typeInfo(schema.Role).@"enum".field_names.len == 182);
         return switch (properties.role(self.node)) {
             .unknown, .text_run, .pdf_actionable_highlight => uia.UIA_CustomControlTypeId,
             .cell,
@@ -606,7 +606,7 @@ fn patternSupported(wrapper: NodeWrapper, id: bindings.PatternId) ProviderError!
 
 fn propertyValue(wrapper: NodeWrapper, gpa: std.mem.Allocator, id: bindings.PropertyId) ProviderError!DecodedValue {
     return switch (id) {
-        .ControlTypePropertyId => .{ .value = .{ .integer = @intCast(@intFromEnum(wrapper.controlType())) } },
+        .ControlTypePropertyId => .{ .value = .{ .integer = @intCast(@backingInt(wrapper.controlType())) } },
         .LocalizedControlTypePropertyId => DecodedValue.borrowed(wrapper.localizedControlType()),
         .AriaRolePropertyId => DecodedValue.borrowed(wrapper.ariaRole()),
         .NamePropertyId => DecodedValue.buffer(try wrapper.name(gpa)),
@@ -622,10 +622,10 @@ fn propertyValue(wrapper: NodeWrapper, gpa: std.mem.Allocator, id: bindings.Prop
         .IsEnabledPropertyId => .{ .value = .{ .boolean = wrapper.isEnabled() } },
         .IsKeyboardFocusablePropertyId => .{ .value = .{ .boolean = try wrapper.isFocusable() } },
         .HasKeyboardFocusPropertyId => .{ .value = .{ .boolean = wrapper.isFocused() } },
-        .LiveSettingPropertyId => .{ .value = .{ .integer = @intFromEnum(try wrapper.liveSetting()) } },
+        .LiveSettingPropertyId => .{ .value = .{ .integer = @backingInt(try wrapper.liveSetting()) } },
         .AutomationIdPropertyId => DecodedValue.borrowed(wrapper.automationId()),
         .ClassNamePropertyId => DecodedValue.borrowed(wrapper.className()),
-        .OrientationPropertyId => .{ .value = .{ .integer = @intFromEnum(wrapper.orientation()) } },
+        .OrientationPropertyId => .{ .value = .{ .integer = @backingInt(wrapper.orientation()) } },
         .IsRequiredForFormPropertyId => .{ .value = .{ .boolean = wrapper.isRequired() } },
         .IsPasswordPropertyId => .{ .value = .{ .boolean = wrapper.isPassword() } },
         .LevelPropertyId => DecodedValue.optionalInteger(wrapper.level()),
@@ -633,7 +633,7 @@ fn propertyValue(wrapper: NodeWrapper, gpa: std.mem.Allocator, id: bindings.Prop
         .SizeOfSetPropertyId => DecodedValue.optionalInteger(try wrapper.sizeOfSet()),
         .AriaPropertiesPropertyId => DecodedValue.buffer(try wrapper.ariaProperties(gpa)),
         .IsDialogPropertyId => .{ .value = .{ .boolean = wrapper.isDialog() } },
-        .ToggleToggleStatePropertyId => .{ .value = .{ .integer = @intFromEnum(try wrapper.toggleState()) } },
+        .ToggleToggleStatePropertyId => .{ .value = .{ .integer = @backingInt(try wrapper.toggleState()) } },
         .ValueValuePropertyId => DecodedValue.buffer(try wrapper.value(gpa)),
         .ValueIsReadOnlyPropertyId,
         .RangeValueIsReadOnlyPropertyId,
@@ -650,7 +650,7 @@ fn propertyValue(wrapper: NodeWrapper, gpa: std.mem.Allocator, id: bindings.Prop
         .SelectionIsSelectionRequiredPropertyId => .{ .value = .{ .boolean = wrapper.isRequired() } },
         .SelectionItemIsSelectedPropertyId => .{ .value = .{ .boolean = wrapper.isSelected() } },
         .ExpandCollapseExpandCollapseStatePropertyId,
-        => .{ .value = .{ .integer = @intFromEnum(wrapper.expandCollapseState()) } },
+        => .{ .value = .{ .integer = @backingInt(wrapper.expandCollapseState()) } },
         .WindowIsModalPropertyId => .{ .value = .{ .boolean = wrapper.isModal() } },
         else => .{ .value = .empty },
     };
@@ -707,7 +707,7 @@ fn enqueueProperty(
     defer current.deinit(gpa);
     if (DecodedValue.equal(previous, current)) return;
     const slot = try registry.slotFor(platform, new.node.id());
-    const change = try queue.beginProperty(slot, @enumFromInt(@intFromEnum(id)));
+    const change = try queue.beginProperty(slot, @fromBackingInt(@intCast(@backingInt(id))));
     change.old = try previous.toVariant(gpa, queue.automation);
     change.new = try current.toVariant(gpa, queue.automation);
 }
@@ -867,7 +867,7 @@ fn getter(
             } else if (T == bindings.Bool) {
                 result.* = @intFromBool(value.value.boolean);
             } else {
-                result.* = @enumFromInt(value.value.integer);
+                result.* = @fromBackingInt(@intCast(value.value.integer));
             }
             return errors.ok();
         }
@@ -1061,8 +1061,8 @@ const Fragment = struct {
     ) callconv(.winapi) Hresult {
         const result = out orelse return errors.invalidArg();
         result.* = null;
-        if (@intFromEnum(direction) < 0 or
-            @intFromEnum(direction) > @intFromEnum(bindings.NavigateDirection.LastChild)) return errors.invalidArg();
+        if (@backingInt(direction) < 0 or
+            @backingInt(direction) > @backingInt(bindings.NavigateDirection.LastChild)) return errors.invalidArg();
         const object = objectFrom(bindings.IRawElementProviderFragment, pointer);
         var lease = object.state.weak.lease() catch |err| return status(err);
         defer lease.deinit();
@@ -1425,8 +1425,8 @@ const Text = struct {
 
 const Window = struct {
     fn visual(_: *const bindings.IWindowProvider, state: uia.WindowVisualState) callconv(.winapi) Hresult {
-        if (@intFromEnum(state) < 0 or
-            @intFromEnum(state) > @intFromEnum(uia.WindowVisualState.Minimized)) return errors.invalidArg();
+        if (@backingInt(state) < 0 or
+            @backingInt(state) > @backingInt(uia.WindowVisualState.Minimized)) return errors.invalidArg();
         return errors.invalidOperation();
     }
     fn close(_: *const bindings.IWindowProvider) callconv(.winapi) Hresult {
@@ -1907,7 +1907,7 @@ test "node calculator owns old VARIANT when new UTF8 conversion and clear fail t
     ));
     try std.testing.expectEqual(@as(usize, 1), queue.len());
     const event = queue.events.items[0].property_changed;
-    try std.testing.expectEqual(@intFromEnum(bindings.PropertyId.NamePropertyId), @intFromEnum(event.property_id));
+    try std.testing.expectEqual(@backingInt(bindings.PropertyId.NamePropertyId), @backingInt(event.property_id));
     try std.testing.expectEqual(@as(u16, 8), util.variantType(&event.old.raw));
     try std.testing.expectEqual(@as(u16, 0), util.variantType(&event.new.raw));
     try std.testing.expectEqualSlices(
@@ -1960,8 +1960,8 @@ test "node controller added-only event contains the entire filtered new provider
     try std.testing.expectEqual(@as(usize, 1), queue.len());
     const event = queue.events.items[0].property_changed;
     try std.testing.expectEqual(
-        @intFromEnum(bindings.PropertyId.ControllerForPropertyId),
-        @intFromEnum(event.property_id),
+        @backingInt(bindings.PropertyId.ControllerForPropertyId),
+        @backingInt(event.property_id),
     );
     try std.testing.expectEqual(@as(u16, 0), util.variantType(&event.old.raw));
     try std.testing.expectEqual(@as(u16, 0x200d), util.variantType(&event.new.raw));
@@ -2265,8 +2265,8 @@ test "node common-pattern property events carry typed old new numeric values onl
     try std.testing.expectEqual(@as(usize, 1), queue.len());
     const event = queue.events.items[0].property_changed;
     try std.testing.expectEqual(
-        @intFromEnum(bindings.PropertyId.RangeValueValuePropertyId),
-        @intFromEnum(event.property_id),
+        @backingInt(bindings.PropertyId.RangeValueValuePropertyId),
+        @backingInt(event.property_id),
     );
     try std.testing.expectEqual(@as(u16, 5), util.variantType(&event.old.raw));
     try std.testing.expectEqual(@as(u16, 5), util.variantType(&event.new.raw));

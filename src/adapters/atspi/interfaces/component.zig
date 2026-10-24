@@ -52,7 +52,7 @@ pub fn call(ctx: *Context, member: []const u8, args: []const Value) Error![]cons
             return ctx.values(&.{try ctx.rect(try node.extents(coord))});
         }
         if (std.mem.eql(u8, member, "GetLayer")) {
-            return ctx.values(&.{.{ .uint32 = @intFromEnum(try node.layer()) }});
+            return ctx.values(&.{.{ .uint32 = @backingInt(try node.layer()) }});
         }
         if (std.mem.eql(u8, member, "GrabFocus")) {
             return ctx.values(&.{.{ .boolean = try node.grabFocus() }});

@@ -1132,9 +1132,9 @@ fn postNotificationOf(
     notification: u64,
     argument: ?*runtime.AnyObject,
 ) void {
-    const tag: uikit.Notifications = @enumFromInt(
+    const tag: uikit.Notifications = @fromBackingInt(@intCast(
         @as(c_int, @bitCast(@as(u32, @truncate(notification)))),
-    );
+    ));
     current.post_notification(tag, argument);
 }
 
@@ -1529,7 +1529,7 @@ fn raiseAnnouncement(ctx: ?*anyopaque, text: []const u8, assertive: bool) void {
     // The sentinel type is written out because the free below needs it. `dupeZ`
     // takes `text.len + 1` bytes, and only a `[:0]u8` tells `free` so. A `[]u8`
     // binding would release one byte short of the block.
-    const terminated: [:0]u8 = current.gpa.dupeZ(u8, text) catch return;
+    const terminated: [:0]u8 = current.gpa.dupeSentinel(u8, text, 0) catch return;
     defer current.gpa.free(terminated);
     const text_object = sendCString(
         current,
@@ -2243,12 +2243,11 @@ test "the two default image paths are the strings the module doc names" {
 }
 
 test "ResolveError has exactly the two members" {
-    const members = @typeInfo(ResolveError).error_set orelse
-        &[_]builtin.Type.Error{};
+    const members = @typeInfo(ResolveError).error_set.error_names.?;
     try testing.expectEqual(@as(usize, 2), members.len);
     inline for (members, 0..) |member, i| {
         const expected = [_][:0]const u8{ "ImageUnavailable", "MissingSymbol" };
-        try testing.expectEqualStrings(expected[i], member.name);
+        try testing.expectEqualStrings(expected[i], member);
     }
 }
 
@@ -2307,16 +2306,16 @@ test "Platform carries the frozen field names in the frozen order" {
 
 test "every Platform entry point takes the context as its first parameter" {
     var entry_points: usize = 0;
-    inline for (@typeInfo(Platform).@"struct".fields) |field| {
-        const info = @typeInfo(field.type);
+    inline for (@typeInfo(Platform).@"struct".field_types) |field_type| {
+        const info = @typeInfo(field_type);
         if (info != .pointer) continue;
         switch (@typeInfo(info.pointer.child)) {
             .@"fn" => |function| {
                 entry_points += 1;
-                try testing.expect(function.params.len >= 1);
+                try testing.expect(function.param_types.len >= 1);
                 try testing.expectEqualStrings(
                     "?*anyopaque",
-                    @typeName(function.params[0].type.?),
+                    @typeName(function.param_types[0].?),
                 );
             },
             else => {},
@@ -2327,7 +2326,7 @@ test "every Platform entry point takes the context as its first parameter" {
     // `context` and `notification_tags` are the other two fields, and neither
     // is a pointer to a function.
     try testing.expectEqual(@as(usize, 26), entry_points);
-    try testing.expectEqual(@as(usize, 28), @typeInfo(Platform).@"struct".fields.len);
+    try testing.expectEqual(@as(usize, 28), @typeInfo(Platform).@"struct".field_names.len);
 }
 
 test "Owner carries the two fields the installed implementations read" {
@@ -2573,9 +2572,9 @@ fn hasInstalledSelector(name: []const u8) bool {
 
 /// Checks that the fields of `T` are exactly `expected`, in order.
 fn expectFieldNames(comptime T: type, comptime expected: []const [:0]const u8) !void {
-    const fields = @typeInfo(T).@"struct".fields;
-    try testing.expectEqual(expected.len, fields.len);
-    inline for (fields, 0..) |field, i| {
-        if (i < expected.len) try testing.expectEqualStrings(expected[i], field.name);
+    const fields = @typeInfo(T).@"struct";
+    try testing.expectEqual(expected.len, fields.field_names.len);
+    inline for (fields.field_names, 0..) |field_name, i| {
+        if (i < expected.len) try testing.expectEqualStrings(expected[i], field_name);
     }
 }

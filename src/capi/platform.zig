@@ -2423,15 +2423,9 @@ test "no two guards claim the same target, and every guard and record is claimed
 }
 
 test "every record names a declaration this module holds, under its own guard" {
-    // `@hasDecl` answers "does this module declare it", not "does this build
-    // emit it". The `comptime` blocks above remove the `@export` call and leave
-    // the Zig declaration in place, so all 58 are here on every target and
-    // tying `@hasDecl` to the guard would fail on the first Android row. What
-    // is checkable, and what the five `comptime` blocks themselves rely on, is
-    // that a row names a declaration this file holds and that the declaration
-    // belongs to the family its guard is.
+    // Private C entry points remain declared even when their target guard omits the export.
     inline for (export_records) |record| {
-        try testing.expect(@hasDecl(Self, record.symbol));
+        _ = @field(Self, record.symbol);
         try testing.expect(std.mem.startsWith(u8, record.symbol, guardPrefix(record.guard)));
     }
 }
@@ -2457,9 +2451,9 @@ test "every declared export is a C-callconv function" {
             try testing.expect(declaration == .@"fn");
             try testing.expectEqual(
                 std.builtin.CallingConvention.c,
-                declaration.@"fn".calling_convention,
+                declaration.@"fn".attrs.@"callconv",
             );
-            try testing.expect(!declaration.@"fn".is_var_args);
+            try testing.expect(!declaration.@"fn".attrs.varargs);
         }
     }
 }
@@ -2566,19 +2560,19 @@ test "the four callback types have the shapes the header declares" {
     // wrapping it a second time would name a pointer to a null.
     try testing.expectEqual(
         std.builtin.CallingConvention.c,
-        childFn(TreeUpdateFactory).@"fn".calling_convention,
+        childFn(TreeUpdateFactory).@"fn".attrs.@"callconv",
     );
-    try testing.expectEqual(@as(usize, 1), childFn(TreeUpdateFactory).@"fn".params.len);
-    try testing.expectEqual(?*anyopaque, childFn(TreeUpdateFactory).@"fn".params[0].type.?);
+    try testing.expectEqual(@as(usize, 1), childFn(TreeUpdateFactory).@"fn".param_types.len);
+    try testing.expectEqual(?*anyopaque, childFn(TreeUpdateFactory).@"fn".param_types[0].?);
     try testing.expectEqual(?*CTreeUpdate, childFn(TreeUpdateFactory).@"fn".return_type.?);
 
-    try testing.expectEqual(@as(usize, 2), childFn(ActionHandler).@"fn".params.len);
-    try testing.expectEqual(*CActionRequest, childFn(ActionHandler).@"fn".params[0].type.?);
-    try testing.expectEqual(?*anyopaque, childFn(ActionHandler).@"fn".params[1].type.?);
+    try testing.expectEqual(@as(usize, 2), childFn(ActionHandler).@"fn".param_types.len);
+    try testing.expectEqual(*CActionRequest, childFn(ActionHandler).@"fn".param_types[0].?);
+    try testing.expectEqual(?*anyopaque, childFn(ActionHandler).@"fn".param_types[1].?);
     try testing.expectEqual(void, childFn(ActionHandler).@"fn".return_type.?);
 
-    try testing.expectEqual(@as(usize, 1), childFn(DeactivationHandler).@"fn".params.len);
-    try testing.expectEqual(?*anyopaque, childFn(DeactivationHandler).@"fn".params[0].type.?);
+    try testing.expectEqual(@as(usize, 1), childFn(DeactivationHandler).@"fn".param_types.len);
+    try testing.expectEqual(?*anyopaque, childFn(DeactivationHandler).@"fn".param_types[0].?);
     try testing.expectEqual(void, childFn(DeactivationHandler).@"fn".return_type.?);
 
     // The activation handler and the tree-update factory are textually

@@ -44,7 +44,7 @@ const flagMask = table.flagMask;
 
 /// The number of `Flag` members, which is also the bit count of a full mask and
 /// the bound on every walk over the domain.
-const flagCount = @typeInfo(Flag).@"enum".fields.len;
+const flagCount = @typeInfo(Flag).@"enum".field_names.len;
 
 comptime {
     // Upstream declares 18 members between `lib.rs:802` and `lib.rs:819`, and a
@@ -65,7 +65,7 @@ comptime {
     // count is wrong.
     var seen: u32 = 0;
     for (std.enums.values(Flag)) |member| {
-        if (@intFromEnum(member) >= 32) {
+        if (@backingInt(member) >= 32) {
             @compileError("a Flag member number does not fit one bit of the u32 mask");
         }
         const bit = flagMask(member);

@@ -254,7 +254,7 @@ test "a byte at or past the last property names no property and never a default"
         const decoded = propertyIdFromByte(value);
         if (value < table.propertyIdCount) {
             try testing.expect(decoded != null);
-            try testing.expectEqual(value, @intFromEnum(decoded.?));
+            try testing.expectEqual(value, @backingInt(decoded.?));
         } else {
             // The refusal is the whole point: a byte at or past the last
             // property must not come back as the first property.
@@ -293,7 +293,7 @@ test "a byte at or past the last action names no action" {
         const decoded = action_mod.actionFromInt(value);
         if (value < action_mod.actionCount) {
             try testing.expect(decoded != null);
-            try testing.expectEqual(value, @intFromEnum(decoded.?));
+            try testing.expectEqual(value, @backingInt(decoded.?));
         } else {
             try testing.expect(decoded == null);
         }
@@ -314,7 +314,7 @@ test "a byte at or past the last decoration style names no style" {
         const decoded = node_enums.textDecorationStyleFromInt(value);
         if (value < node_enums.TextDecorationStyle.count) {
             try testing.expect(decoded != null);
-            try testing.expectEqual(value, @intFromEnum(decoded.?));
+            try testing.expectEqual(value, @backingInt(decoded.?));
         } else {
             try testing.expect(decoded == null);
         }
@@ -362,7 +362,7 @@ fn checkActionMask(mask: u32) !void {
     try testing.expect(members.len <= action_mod.actionCount);
     var expect_present = false;
     for (members) |member| {
-        try testing.expect(@intFromEnum(member) < action_mod.actionCount);
+        try testing.expect(@backingInt(member) < action_mod.actionCount);
         expect_present = action_mod.actionSetContains(mask, member);
         try testing.expect(expect_present);
     }
@@ -397,7 +397,7 @@ test "every tag stores, reads back and releases, in every slice shape" {
         const tag = tags[tag_index];
         var form_index: usize = 0;
         while (form_index < SliceForm.count) : (form_index += 1) {
-            const form: SliceForm = @enumFromInt(form_index);
+            const form: SliceForm = @fromBackingInt(@intCast(form_index));
             cases += 1;
 
             var built = try generate.buildValue(gpa, &source, tag, form);
@@ -523,7 +523,7 @@ test "a store answers through a model after a random sequence of writes" {
 }
 
 fn formFor(source: *Random) random.DrawError!SliceForm {
-    return @enumFromInt(@as(u8, @intCast(try source.below(SliceForm.count))));
+    return @fromBackingInt(@intCast(@as(u8, @intCast(try source.below(SliceForm.count)))));
 }
 
 /// Every entry is in ascending id order, carries the payload its property
@@ -537,7 +537,7 @@ fn checkStoreInvariants(store: *const Properties) !void {
         try testing.expectEqual(table.propertyValueTagOf(entry.id), entry.value.getTag());
         if (index > 0) {
             try testing.expect(
-                @intFromEnum(store.items.items[index - 1].id) < @intFromEnum(entry.id),
+                @backingInt(store.items.items[index - 1].id) < @backingInt(entry.id),
             );
         }
     }
@@ -567,7 +567,7 @@ test "a repeated set releases the value it displaces and keeps the new one" {
         // `set`, and not a figure per tag: `live` is what the whole store
         // costs, so a number fixed on the first write of a tag would also carry
         // every property written before it.
-        var held = [_]bool{false} ** tags.len;
+        var held = @as([tags.len]bool, @splat(false));
         var step: usize = 0;
         while (step < 64) : (step += 1) {
             const tag_index = step % tags.len;
@@ -958,7 +958,7 @@ pub fn everyPropertyId() []const PropertyId {
 const every_property_id: [table.propertyIdCount]PropertyId = blk: {
     var out: [table.propertyIdCount]PropertyId = undefined;
     for (&out, 0..) |*slot, index| {
-        slot.* = @enumFromInt(@as(u8, @intCast(index)));
+        slot.* = @fromBackingInt(@intCast(@as(u8, @intCast(index))));
     }
     break :blk out;
 };

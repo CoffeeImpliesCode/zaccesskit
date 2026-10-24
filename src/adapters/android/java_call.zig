@@ -675,11 +675,11 @@ test "every Class spells its two names the way the JNI takes them" {
 test "every failure the helpers report is named" {
     // The walk is over the three members of `CallError`, so the error set's own
     // field count is the bound.
-    const errors = @typeInfo(CallError).error_set.?;
+    const errors = @typeInfo(CallError).error_set.error_names.?;
     try testing.expectEqual(@as(usize, 3), errors.len);
-    try testing.expectEqualStrings("OutOfMemory", errors[0].name);
-    try testing.expectEqualStrings("JavaException", errors[1].name);
-    try testing.expectEqualStrings("JavaMemberMissing", errors[2].name);
+    try testing.expectEqualStrings("OutOfMemory", errors[0]);
+    try testing.expectEqualStrings("JavaException", errors[1]);
+    try testing.expectEqualStrings("JavaMemberMissing", errors[2]);
 }
 
 test "checked class acquisition releases a nonnull result beside an exception" {

@@ -155,7 +155,7 @@ pub const OptionalDomain = enum {
 ///
 /// This is the compile-time bound on every loop over the optional domain, read
 /// off the type so a member added to it is counted without an edit here.
-pub const optional_domain_count: u32 = @intCast(@typeInfo(OptionalDomain).@"enum".fields.len);
+pub const optional_domain_count: u32 = @intCast(@typeInfo(OptionalDomain).@"enum".field_names.len);
 
 /// How the port spells "absent" for a form.
 pub const AbsentKind = enum {
@@ -381,7 +381,7 @@ pub const optional_rows: [optional_domain_count]OptionalRow = .{
 /// run-time lookup and no run-time failure. The returned value is a copy of
 /// `const` data and is never released.
 pub fn rowFor(comptime key: OptionalDomain) OptionalRow {
-    return optional_rows[@intFromEnum(key)];
+    return optional_rows[@backingInt(key)];
 }
 
 /// Each row's C type name, in `OptionalDomain` order.

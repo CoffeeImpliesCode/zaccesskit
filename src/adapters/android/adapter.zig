@@ -994,7 +994,7 @@ const ActionProbe = struct {
         self.has_payload = request.data.has_value;
         if (!request.data.has_value) return;
 
-        switch (@as(schema.ActionDataTag, @enumFromInt(request.data.value.tag))) {
+        switch (@as(schema.ActionDataTag, @fromBackingInt(@intCast(request.data.value.tag)))) {
             .numeric_value => {
                 self.numeric = request.data.value.payload.numeric_value;
             },

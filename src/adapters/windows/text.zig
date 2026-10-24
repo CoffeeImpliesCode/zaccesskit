@@ -231,7 +231,7 @@ fn compare(raw: *const Interface, other_raw: ?*Interface, output: ?*bindings.Boo
 }
 
 fn weakEndpoint(value: WeakRange, endpoint: Endpoint) ProviderError!inner.ComparablePath {
-    return switch (@intFromEnum(endpoint)) {
+    return switch (@backingInt(endpoint)) {
         0 => value.start_comparable,
         1 => value.end_comparable,
         else => error.InvalidArgument,
@@ -239,7 +239,7 @@ fn weakEndpoint(value: WeakRange, endpoint: Endpoint) ProviderError!inner.Compar
 }
 
 fn endpointPosition(value: Range, endpoint: Endpoint) ProviderError!Position {
-    return switch (@intFromEnum(endpoint)) {
+    return switch (@backingInt(endpoint)) {
         0 => ranges.start(value),
         1 => ranges.end(value),
         else => error.InvalidArgument,
@@ -247,7 +247,7 @@ fn endpointPosition(value: Range, endpoint: Endpoint) ProviderError!Position {
 }
 
 fn setEndpoint(gpa: std.mem.Allocator, value: *Range, endpoint: Endpoint, pos: Position) ProviderError!void {
-    switch (@intFromEnum(endpoint)) {
+    switch (@backingInt(endpoint)) {
         0 => try ranges.setStart(gpa, value, pos),
         1 => try ranges.setEnd(gpa, value, pos),
         else => return error.InvalidArgument,
@@ -304,7 +304,7 @@ fn compareEndpoints(
 }
 
 fn backToUnitStart(pos: Position, unit: Unit) ProviderError!Position {
-    return switch (@intFromEnum(unit)) {
+    return switch (@backingInt(unit)) {
         0 => pos,
         1 => if (try position.isFormatStart(pos)) pos else try motion.backwardToFormatStart(pos),
         2 => if (position.isWordStart(pos)) pos else try motion.backwardToWordStart(pos),
@@ -317,7 +317,7 @@ fn backToUnitStart(pos: Position, unit: Unit) ProviderError!Position {
 }
 
 fn forward(pos: Position, unit: Unit, to_end: bool) ProviderError!Position {
-    return switch (@intFromEnum(unit)) {
+    return switch (@backingInt(unit)) {
         0 => if (to_end) try position.forwardToCharacterEnd(pos) else try position.forwardToCharacterStart(pos),
         1 => if (to_end) try motion.forwardToFormatEnd(pos) else try motion.forwardToFormatStart(pos),
         2 => if (to_end) try motion.forwardToWordEnd(pos) else try motion.forwardToWordStart(pos),
@@ -330,7 +330,7 @@ fn forward(pos: Position, unit: Unit, to_end: bool) ProviderError!Position {
 }
 
 fn backward(pos: Position, unit: Unit) ProviderError!Position {
-    return switch (@intFromEnum(unit)) {
+    return switch (@backingInt(unit)) {
         0 => try position.backwardToCharacterStart(pos),
         1 => try motion.backwardToFormatStart(pos),
         2 => try motion.backwardToWordStart(pos),
@@ -366,7 +366,7 @@ fn movePosition(initial: Position, unit: Unit, to_end: bool, count: i32) Provide
 
 fn expand(raw: *const Interface, unit: Unit) callconv(.winapi) Hresult {
     const state = &objectOf(raw).state;
-    if (@intFromEnum(unit) == 6) {
+    if (@backingInt(unit) == 6) {
         var lease = state.weak.lease() catch |err| return status(err);
         defer lease.deinit();
         state.lock();
@@ -382,7 +382,7 @@ fn expand(raw: *const Interface, unit: Unit) callconv(.winapi) Hresult {
     var read = Read.acquire(state) catch |err| return status(err);
     defer read.deinit();
     const initial = ranges.start(read.live);
-    if (@intFromEnum(unit) == 0 and
+    if (@backingInt(unit) == 0 and
         (position.isDocumentEnd(initial) catch |err| return status(err))) return errors.ok();
     const start = backToUnitStart(initial, unit) catch |err| return status(err);
     ranges.setStart(read.lease.allocator(), &read.live, start) catch |err| return status(err);
@@ -447,12 +447,12 @@ fn attribute(read: *Read, id: uia.UIA_TEXTATTRIBUTE_ID) ProviderError!util.Varia
     const gpa = read.lease.allocator();
     const api = read.lease.automation();
     const live = read.live;
-    return switch (@intFromEnum(id)) {
-        @intFromEnum(uia.UIA_IsReadOnlyAttributeId) => util.VariantOwner.fromBool(
+    return switch (@backingInt(id)) {
+        @backingInt(uia.UIA_IsReadOnlyAttributeId) => util.VariantOwner.fromBool(
             api,
             consumer.node_ref.predicates.isReadOnly(live.node),
         ),
-        @intFromEnum(uia.UIA_CaretPositionAttributeId) => blk: {
+        @backingInt(uia.UIA_CaretPositionAttributeId) => blk: {
             var caret: i32 = 0;
             if (try ranges.isDegenerate(gpa, live)) {
                 const pos = ranges.start(live);
@@ -464,7 +464,7 @@ fn attribute(read: *Read, id: uia.UIA_TEXTATTRIBUTE_ID) ProviderError!util.Varia
             }
             break :blk util.VariantOwner.fromI32(api, caret);
         },
-        @intFromEnum(uia.UIA_CultureAttributeId) => blk: {
+        @backingInt(uia.UIA_CultureAttributeId) => blk: {
             const value = try inherited.rangeLanguage(gpa, live);
             break :blk switch (value) {
                 .mixed => try util.VariantOwner.mixed(api),
@@ -474,37 +474,37 @@ fn attribute(read: *Read, id: uia.UIA_TEXTATTRIBUTE_ID) ProviderError!util.Varia
                     util.VariantOwner.init(api),
             };
         },
-        @intFromEnum(uia.UIA_FontNameAttributeId) => try util.VariantOwner.fromRangeProperty(
+        @backingInt(uia.UIA_FontNameAttributeId) => try util.VariantOwner.fromRangeProperty(
             api,
             []const u8,
             try inherited.rangeFontFamily(gpa, live),
         ),
-        @intFromEnum(uia.UIA_FontSizeAttributeId) => try util.VariantOwner.fromRangeProperty(
+        @backingInt(uia.UIA_FontSizeAttributeId) => try util.VariantOwner.fromRangeProperty(
             api,
             f64,
             ranges.map(f32, f64, try inherited.rangeFontSize(gpa, live), fontSize),
         ),
-        @intFromEnum(uia.UIA_FontWeightAttributeId) => try util.VariantOwner.fromRangeProperty(
+        @backingInt(uia.UIA_FontWeightAttributeId) => try util.VariantOwner.fromRangeProperty(
             api,
             i32,
             ranges.map(f32, i32, try inherited.rangeFontWeight(gpa, live), fontWeight),
         ),
-        @intFromEnum(uia.UIA_IsItalicAttributeId) => try util.VariantOwner.fromRangeProperty(
+        @backingInt(uia.UIA_IsItalicAttributeId) => try util.VariantOwner.fromRangeProperty(
             api,
             bool,
             try inherited.rangeIsItalic(gpa, live),
         ),
-        @intFromEnum(uia.UIA_BackgroundColorAttributeId) => try util.VariantOwner.fromRangeProperty(
+        @backingInt(uia.UIA_BackgroundColorAttributeId) => try util.VariantOwner.fromRangeProperty(
             api,
             schema.Color,
             try inherited.rangeBackgroundColor(gpa, live),
         ),
-        @intFromEnum(uia.UIA_ForegroundColorAttributeId) => try util.VariantOwner.fromRangeProperty(
+        @backingInt(uia.UIA_ForegroundColorAttributeId) => try util.VariantOwner.fromRangeProperty(
             api,
             schema.Color,
             try inherited.rangeForegroundColor(gpa, live),
         ),
-        @intFromEnum(uia.UIA_OverlineStyleAttributeId) => try util.VariantOwner.fromRangeProperty(
+        @backingInt(uia.UIA_OverlineStyleAttributeId) => try util.VariantOwner.fromRangeProperty(
             api,
             schema.TextDecorationStyle,
             ranges.map(
@@ -514,7 +514,7 @@ fn attribute(read: *Read, id: uia.UIA_TEXTATTRIBUTE_ID) ProviderError!util.Varia
                 decorationStyle,
             ),
         ),
-        @intFromEnum(uia.UIA_OverlineColorAttributeId) => try util.VariantOwner.fromRangeProperty(
+        @backingInt(uia.UIA_OverlineColorAttributeId) => try util.VariantOwner.fromRangeProperty(
             api,
             schema.Color,
             ranges.map(
@@ -524,7 +524,7 @@ fn attribute(read: *Read, id: uia.UIA_TEXTATTRIBUTE_ID) ProviderError!util.Varia
                 decorationColor,
             ),
         ),
-        @intFromEnum(uia.UIA_StrikethroughStyleAttributeId) => try util.VariantOwner.fromRangeProperty(
+        @backingInt(uia.UIA_StrikethroughStyleAttributeId) => try util.VariantOwner.fromRangeProperty(
             api,
             schema.TextDecorationStyle,
             ranges.map(
@@ -534,7 +534,7 @@ fn attribute(read: *Read, id: uia.UIA_TEXTATTRIBUTE_ID) ProviderError!util.Varia
                 decorationStyle,
             ),
         ),
-        @intFromEnum(uia.UIA_StrikethroughColorAttributeId) => try util.VariantOwner.fromRangeProperty(
+        @backingInt(uia.UIA_StrikethroughColorAttributeId) => try util.VariantOwner.fromRangeProperty(
             api,
             schema.Color,
             ranges.map(
@@ -544,7 +544,7 @@ fn attribute(read: *Read, id: uia.UIA_TEXTATTRIBUTE_ID) ProviderError!util.Varia
                 decorationColor,
             ),
         ),
-        @intFromEnum(uia.UIA_UnderlineStyleAttributeId) => try util.VariantOwner.fromRangeProperty(
+        @backingInt(uia.UIA_UnderlineStyleAttributeId) => try util.VariantOwner.fromRangeProperty(
             api,
             schema.TextDecorationStyle,
             ranges.map(
@@ -554,7 +554,7 @@ fn attribute(read: *Read, id: uia.UIA_TEXTATTRIBUTE_ID) ProviderError!util.Varia
                 decorationStyle,
             ),
         ),
-        @intFromEnum(uia.UIA_UnderlineColorAttributeId) => try util.VariantOwner.fromRangeProperty(
+        @backingInt(uia.UIA_UnderlineColorAttributeId) => try util.VariantOwner.fromRangeProperty(
             api,
             schema.Color,
             ranges.map(
@@ -564,12 +564,12 @@ fn attribute(read: *Read, id: uia.UIA_TEXTATTRIBUTE_ID) ProviderError!util.Varia
                 decorationColor,
             ),
         ),
-        @intFromEnum(uia.UIA_HorizontalTextAlignmentAttributeId) => try util.VariantOwner.fromRangeProperty(
+        @backingInt(uia.UIA_HorizontalTextAlignmentAttributeId) => try util.VariantOwner.fromRangeProperty(
             api,
             schema.TextAlign,
             try inherited.rangeTextAlign(gpa, live),
         ),
-        @intFromEnum(uia.UIA_IsSubscriptAttributeId) => try util.VariantOwner.fromRangeProperty(
+        @backingInt(uia.UIA_IsSubscriptAttributeId) => try util.VariantOwner.fromRangeProperty(
             api,
             bool,
             ranges.map(
@@ -579,7 +579,7 @@ fn attribute(read: *Read, id: uia.UIA_TEXTATTRIBUTE_ID) ProviderError!util.Varia
                 isSubscript,
             ),
         ),
-        @intFromEnum(uia.UIA_IsSuperscriptAttributeId) => try util.VariantOwner.fromRangeProperty(
+        @backingInt(uia.UIA_IsSuperscriptAttributeId) => try util.VariantOwner.fromRangeProperty(
             api,
             bool,
             ranges.map(
@@ -751,7 +751,7 @@ fn moveEndpointByUnit(
     var read = Read.acquire(&objectOf(raw).state) catch |err| return status(err);
     defer read.deinit();
     const pos = endpointPosition(read.live, endpoint) catch |err| return status(err);
-    const movement = movePosition(pos, unit, @intFromEnum(endpoint) == 1, count) catch |err|
+    const movement = movePosition(pos, unit, @backingInt(endpoint) == 1, count) catch |err|
         return status(err);
     setEndpoint(read.lease.allocator(), &read.live, endpoint, movement.pos) catch |err|
         return status(err);

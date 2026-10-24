@@ -532,7 +532,7 @@ const Fixture = struct {
     /// Gives the node the `tree_id` property, which makes it a graft node.
     fn setTreeId(self: *Fixture, id: FullNodeId, byte: u8) !void {
         const entry = try self.slotOf(id);
-        try schema.option.setTreeId(&entry.data.properties, schema.treeIdFromBytes(.{byte} ** 16));
+        try schema.option.setTreeId(&entry.data.properties, schema.treeIdFromBytes(@splat(byte)));
     }
 
     fn ref(self: *Fixture, id: FullNodeId) !NodeRef {
@@ -653,7 +653,7 @@ test "a graft node yields its subtree root instead of its children list" {
     try fixture.setTreeId(graft, 1);
     try fixture.setChildren(graft, &.{2});
 
-    try fixture.state.subtrees.put(gpa, schema.treeIdFromBytes(.{1} ** 16), .{
+    try fixture.state.subtrees.put(gpa, schema.treeIdFromBytes(@splat(1)), .{
         .root = subtree_root,
         .focus = subtree_root,
     });

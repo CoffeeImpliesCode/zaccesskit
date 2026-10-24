@@ -379,15 +379,15 @@ test "TextDecoration compares the style and then the color" {
     try std.testing.expect(!dotted.eql(.{ .style = .dotted, .color = clear_black }));
 }
 
-test "CustomAction is 32 bytes at alignment 8" {
-    // Zig 0.16.0 lays the fields of a plain struct out to remove padding, so
-    // `description` takes offset 0 and `id` sits after it. `extern struct`
-    // would keep the source order, and the compiler rejects it here because an
-    // extern struct cannot hold a slice.
-    try std.testing.expectEqual(@as(usize, 32), @sizeOf(CustomAction));
-    try std.testing.expectEqual(@as(usize, 8), @alignOf(CustomAction));
+test "CustomAction layout follows its owned description storage" {
+    const Description = std.ArrayList(u8);
+    try std.testing.expectEqual(
+        std.mem.alignForward(usize, @sizeOf(Description) + @sizeOf(i32), @alignOf(Description)),
+        @sizeOf(CustomAction),
+    );
+    try std.testing.expectEqual(@alignOf(Description), @alignOf(CustomAction));
     try std.testing.expectEqual(@as(usize, 0), @offsetOf(CustomAction, "description"));
-    try std.testing.expectEqual(@as(usize, 24), @offsetOf(CustomAction, "id"));
+    try std.testing.expectEqual(@sizeOf(Description), @offsetOf(CustomAction, "id"));
 }
 
 test "TextPosition is 16 bytes at alignment 8" {

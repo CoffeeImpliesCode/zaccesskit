@@ -117,7 +117,7 @@ pub const Interface = enum(u5) {
 
 /// The number of members of `Interface`, and so the width of `InterfaceSet`.
 /// Every walk over the domain is bounded by it.
-pub const interface_count = @typeInfo(Interface).@"enum".fields.len;
+pub const interface_count = @typeInfo(Interface).@"enum".field_names.len;
 
 /// The D-Bus interface string `Interface` names.
 ///
@@ -158,7 +158,7 @@ pub const InterfaceSet = struct {
 
     /// The tag of `Interface`, which is its bit position in `bits`.
     fn mask(value: Interface) u32 {
-        return @as(u32, 1) << @as(u5, @intFromEnum(value));
+        return @as(u32, 1) << @as(u5, @backingInt(value));
     }
 
     /// True when `set` carries `value`. Upstream `InterfaceSet::contains`.
@@ -525,14 +525,14 @@ pub const State = enum(u6) {
 
 /// The number of members of `State`. Every walk over the domain is bounded by
 /// it.
-pub const state_count = @typeInfo(State).@"enum".fields.len;
+pub const state_count = @typeInfo(State).@"enum".field_names.len;
 
 /// One past the highest canonical state bit, including `read_only` at 43.
 /// A packed state set needs a `u64` because this exceeds one `u32`.
 pub const state_bits: u7 = blk: {
     var widest: u7 = 0;
     for (std.enums.values(State)) |value| {
-        const tag: u7 = @intFromEnum(value);
+        const tag: u7 = @backingInt(value);
         if (tag > widest) widest = tag;
     }
     break :blk widest + 1;
@@ -542,7 +542,7 @@ comptime {
     // The highest canonical state bit is `read_only` at 43.
     if (state_bits > 64) @compileError("StateSet is one u64 wide");
     for (std.enums.values(State)) |value| {
-        const bit: u7 = @intFromEnum(value);
+        const bit: u7 = @backingInt(value);
         if (bit > 63) @compileError("a State value does not fit a u64 mask");
     }
 }
@@ -598,19 +598,19 @@ pub fn stateName(value: State) [:0]const u8 {
 }
 
 /// Highest accepted role code from the pinned canonical domain.
-pub const role_code_max: u32 = @intFromEnum(Role.push_button_menu);
+pub const role_code_max: u32 = @backingInt(Role.push_button_menu);
 /// Highest accepted state bit position from the pinned canonical domain.
-pub const state_code_max: u32 = @intFromEnum(State.read_only);
+pub const state_code_max: u32 = @backingInt(State.read_only);
 /// Highest accepted drawing-layer code from the pinned canonical domain.
-pub const layer_code_max: u32 = @intFromEnum(Layer.window);
+pub const layer_code_max: u32 = @backingInt(Layer.window);
 /// Highest accepted relation code from the pinned canonical domain.
-pub const relation_type_code_max: u32 = @intFromEnum(RelationType.error_for);
+pub const relation_type_code_max: u32 = @backingInt(RelationType.error_for);
 
 /// The set of defined state bits. Bits outside this mask are invalid peer input.
 pub const state_mask: u64 = blk: {
     var bits: u64 = 0;
     for (std.enums.values(State)) |value| {
-        bits |= @as(u64, 1) << @intFromEnum(value);
+        bits |= @as(u64, 1) << @backingInt(value);
     }
     break :blk bits;
 };
@@ -653,7 +653,7 @@ pub const StateSet = struct {
 
     /// The tag of `State`, which is its bit position in `bits`.
     fn mask(value: State) u64 {
-        return @as(u64, 1) << @as(u6, @intFromEnum(value));
+        return @as(u64, 1) << @as(u6, @backingInt(value));
     }
 
     /// The set holding only `value`. Upstream `From<State> for StateSet`, at
@@ -831,9 +831,9 @@ test "a peer value outside the declared domain decodes to null rather than a gue
 }
 
 test "the Politeness domain is the three values an announcement can carry" {
-    try testing.expectEqual(@as(i32, 0), @intFromEnum(Politeness.none));
-    try testing.expectEqual(@as(i32, 1), @intFromEnum(Politeness.polite));
-    try testing.expectEqual(@as(i32, 2), @intFromEnum(Politeness.assertive));
+    try testing.expectEqual(@as(i32, 0), @backingInt(Politeness.none));
+    try testing.expectEqual(@as(i32, 1), @backingInt(Politeness.polite));
+    try testing.expectEqual(@as(i32, 2), @backingInt(Politeness.assertive));
 }
 
 test "AT-SPI protocol regression: role reply numbers and recorded little-endian bytes" {
@@ -851,7 +851,7 @@ test "AT-SPI protocol regression: role reply numbers and recorded little-endian 
         .{ .role = .document_text, .code = 94, .bytes = .{ 94, 0, 0, 0 } },
     };
     for (cases) |case| {
-        const code = @intFromEnum(case.role);
+        const code = @backingInt(case.role);
         try testing.expectEqual(case.code, code);
         try testing.expectEqual(case.role, roleFromInt(case.code).?);
         var bytes: [4]u8 = undefined;
@@ -862,22 +862,22 @@ test "AT-SPI protocol regression: role reply numbers and recorded little-endian 
 
 test "AT-SPI protocol regression: layer and relation client numbers" {
     // Source: atspi-common 0.13.0 lib.rs:128-150 and relation_type.rs:6-121.
-    try testing.expectEqual(@as(u32, 3), @intFromEnum(Layer.widget));
-    try testing.expectEqual(@as(u32, 7), @intFromEnum(Layer.window));
+    try testing.expectEqual(@as(u32, 3), @backingInt(Layer.widget));
+    try testing.expectEqual(@as(u32, 7), @backingInt(Layer.window));
     try testing.expectEqual(Layer.widget, layerFromInt(3).?);
     try testing.expectEqual(Layer.window, layerFromInt(7).?);
-    try testing.expectEqual(@as(u32, 3), @intFromEnum(RelationType.controller_for));
-    try testing.expectEqual(@as(u32, 4), @intFromEnum(RelationType.controlled_by));
-    try testing.expectEqual(@as(u32, 5), @intFromEnum(RelationType.member_of));
-    try testing.expectEqual(@as(u32, 7), @intFromEnum(RelationType.node_child_of));
+    try testing.expectEqual(@as(u32, 3), @backingInt(RelationType.controller_for));
+    try testing.expectEqual(@as(u32, 4), @backingInt(RelationType.controlled_by));
+    try testing.expectEqual(@as(u32, 5), @backingInt(RelationType.member_of));
+    try testing.expectEqual(@as(u32, 7), @backingInt(RelationType.node_child_of));
     var bytes: [4]u8 = undefined;
-    std.mem.writeInt(u32, &bytes, @intFromEnum(RelationType.controller_for), .little);
+    std.mem.writeInt(u32, &bytes, @backingInt(RelationType.controller_for), .little);
     try testing.expectEqualSlices(u8, &.{ 3, 0, 0, 0 }, &bytes);
     try testing.expectEqual(RelationType.controller_for, relationTypeFromInt(3).?);
     try testing.expectEqual(RelationType.member_of, relationTypeFromInt(5).?);
-    std.mem.writeInt(u32, &bytes, @intFromEnum(Layer.widget), .little);
+    std.mem.writeInt(u32, &bytes, @backingInt(Layer.widget), .little);
     try testing.expectEqualSlices(u8, &.{ 3, 0, 0, 0 }, &bytes);
-    std.mem.writeInt(u32, &bytes, @intFromEnum(Layer.window), .little);
+    std.mem.writeInt(u32, &bytes, @backingInt(Layer.window), .little);
     try testing.expectEqualSlices(u8, &.{ 7, 0, 0, 0 }, &bytes);
 }
 
@@ -1065,11 +1065,11 @@ fn testCanonicalRoles() error{ TestUnexpectedResult, TestExpectedEqual }!void {
         .{ .value = .push_button_menu, .code = 129 },
     };
     for (cases) |case| {
-        try testing.expectEqual(case.code, @intFromEnum(case.value));
+        try testing.expectEqual(case.code, @backingInt(case.value));
         try testing.expectEqual(@as(?Role, case.value), roleFromInt(case.code));
     }
     inline for (comptime std.enums.values(Role)) |value| {
-        const code = @intFromEnum(value);
+        const code = @backingInt(value);
         try testing.expect(code < cases.len);
         try testing.expectEqual(value, cases[code].value);
     }
@@ -1146,7 +1146,7 @@ fn testCanonicalStates() error{ TestUnexpectedResult, TestExpectedEqual, Invalid
         .{ .value = .read_only, .code = 43, .words = .{ 0x00000000, 0x00000800 }, .name = "read-only" },
     };
     for (cases) |case| {
-        try testing.expectEqual(case.code, @intFromEnum(case.value));
+        try testing.expectEqual(case.code, @backingInt(case.value));
         try testing.expectEqual(@as(?State, case.value), stateFromInt(case.code));
         const set = StateSet.singleton(case.value);
         const words = set.toWords();
@@ -1157,7 +1157,7 @@ fn testCanonicalStates() error{ TestUnexpectedResult, TestExpectedEqual, Invalid
         try testing.expectEqualStrings(case.name, stateName(case.value));
     }
     inline for (comptime std.enums.values(State)) |value| {
-        const code = @intFromEnum(value);
+        const code = @backingInt(value);
         try testing.expect(code < cases.len);
         try testing.expectEqual(value, cases[code].value);
     }
@@ -1195,11 +1195,11 @@ fn testCanonicalLayersAndRelations() error{ TestUnexpectedResult, TestExpectedEq
         .{ .value = .window, .code = 7 },
     };
     for (layers) |case| {
-        try testing.expectEqual(case.code, @intFromEnum(case.value));
+        try testing.expectEqual(case.code, @backingInt(case.value));
         try testing.expectEqual(@as(?Layer, case.value), layerFromInt(case.code));
     }
     inline for (comptime std.enums.values(Layer)) |value| {
-        const code = @intFromEnum(value);
+        const code = @backingInt(value);
         try testing.expect(code < layers.len);
         try testing.expectEqual(value, layers[code].value);
     }
@@ -1229,11 +1229,11 @@ fn testCanonicalLayersAndRelations() error{ TestUnexpectedResult, TestExpectedEq
         .{ .value = .error_for, .code = 22 },
     };
     for (relations) |case| {
-        try testing.expectEqual(case.code, @intFromEnum(case.value));
+        try testing.expectEqual(case.code, @backingInt(case.value));
         try testing.expectEqual(@as(?RelationType, case.value), relationTypeFromInt(case.code));
     }
     inline for (comptime std.enums.values(RelationType)) |value| {
-        const code = @intFromEnum(value);
+        const code = @backingInt(value);
         try testing.expect(code < relations.len);
         try testing.expectEqual(value, relations[code].value);
     }
@@ -1314,22 +1314,22 @@ fn testWireDomainFuzz(_: void, smith: *testing.Smith) error{
 }!void {
     const code = smith.value(u32);
     if (code < 130) {
-        try testing.expectEqual(code, @intFromEnum(roleFromInt(code).?));
+        try testing.expectEqual(code, @backingInt(roleFromInt(code).?));
     } else {
         try testing.expect(roleFromInt(code) == null);
     }
     if (code < 44) {
-        try testing.expectEqual(code, @as(u32, @intFromEnum(stateFromInt(code).?)));
+        try testing.expectEqual(code, @as(u32, @backingInt(stateFromInt(code).?)));
     } else {
         try testing.expect(stateFromInt(code) == null);
     }
     if (code < 8) {
-        try testing.expectEqual(code, @intFromEnum(layerFromInt(code).?));
+        try testing.expectEqual(code, @backingInt(layerFromInt(code).?));
     } else {
         try testing.expect(layerFromInt(code) == null);
     }
     if (code < 23) {
-        try testing.expectEqual(code, @intFromEnum(relationTypeFromInt(code).?));
+        try testing.expectEqual(code, @backingInt(relationTypeFromInt(code).?));
     } else {
         try testing.expect(relationTypeFromInt(code) == null);
     }
@@ -1360,19 +1360,19 @@ fn testUnchangedDomains() error{ TestUnexpectedResult, TestExpectedEqual }!void 
     };
     const priorities = [_]Politeness{ .none, .polite, .assertive };
     for (coordinates, 0..) |value, code| {
-        try testing.expectEqual(@as(u32, @intCast(code)), @intFromEnum(value));
+        try testing.expectEqual(@as(u32, @intCast(code)), @backingInt(value));
         try testing.expectEqual(@as(?CoordType, value), coordTypeFromInt(@intCast(code)));
     }
     for (granularities, 0..) |value, code| {
-        try testing.expectEqual(@as(u32, @intCast(code)), @intFromEnum(value));
+        try testing.expectEqual(@as(u32, @intCast(code)), @backingInt(value));
         try testing.expectEqual(@as(?Granularity, value), granularityFromInt(@intCast(code)));
     }
     for (scroll_types, 0..) |value, code| {
-        try testing.expectEqual(@as(u32, @intCast(code)), @intFromEnum(value));
+        try testing.expectEqual(@as(u32, @intCast(code)), @backingInt(value));
         try testing.expectEqual(@as(?ScrollType, value), scrollTypeFromInt(@intCast(code)));
     }
     for (priorities, 0..) |value, code| {
-        try testing.expectEqual(@as(i32, @intCast(code)), @intFromEnum(value));
+        try testing.expectEqual(@as(i32, @intCast(code)), @backingInt(value));
         try testing.expectEqual(@as(?Politeness, value), std.enums.fromInt(Politeness, code));
     }
     try testing.expect(coordTypeFromInt(3) == null);

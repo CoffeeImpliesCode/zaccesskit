@@ -211,8 +211,8 @@ test "signature single requires exactly one full type" {
 
 // Length applies to every entry point, even when parsing only the first type.
 test "signature enforces 255 byte bound" {
-    const longest = [_]u8{'y'} ** 255;
-    const oversized = [_]u8{'y'} ** 256;
+    const longest = @as([255]u8, @splat('y'));
+    const oversized = @as([256]u8, @splat('y'));
     try validate(&longest, 0);
     try std.testing.expectEqual(@as(usize, 1), try typeEnd(&longest, 0, 0));
     try std.testing.expectEqual(@as(usize, 1), try elementEnd(&longest, 0, 0));
@@ -220,9 +220,9 @@ test "signature enforces 255 byte bound" {
     try std.testing.expectError(error.LimitExceeded, single(&oversized, 16));
     try std.testing.expectError(error.LimitExceeded, typeEnd(&oversized, 0, 16));
     try std.testing.expectError(error.LimitExceeded, elementEnd(&oversized, 0, 16));
-    const longest_type = [_]u8{'('} ++ ([_]u8{'y'} ** 253) ++ [_]u8{')'};
+    const longest_type = [_]u8{'('} ++ (@as([253]u8, @splat('y'))) ++ [_]u8{')'};
     try single(&longest_type, 1);
-    const array_chain = ([_]u8{'a'} ** 32) ++ [_]u8{'y'};
+    const array_chain = (@as([32]u8, @splat('a'))) ++ [_]u8{'y'};
     try single(&array_chain, 32);
     try std.testing.expectError(error.LimitExceeded, single(&array_chain, 31));
 }
@@ -249,11 +249,11 @@ test "signature basic classification and alignment cover every byte" {
 }
 
 test "signature enforces independent specification nesting ceilings" {
-    const arrays = ([_]u8{'a'} ** 33) ++ [_]u8{'u'};
-    const structures = ([_]u8{'('} ** 33) ++ [_]u8{'u'} ++ ([_]u8{')'} ** 33);
+    const arrays = (@as([33]u8, @splat('a'))) ++ [_]u8{'u'};
+    const structures = (@as([33]u8, @splat('('))) ++ [_]u8{'u'} ++ (@as([33]u8, @splat(')')));
     try std.testing.expectError(error.LimitExceeded, single(&arrays, 64));
     try std.testing.expectError(error.LimitExceeded, single(&structures, 64));
-    const deepest = ([_]u8{'a'} ** 32) ++ ([_]u8{'('} ** 32) ++
-        [_]u8{'u'} ++ ([_]u8{')'} ** 32);
+    const deepest = (@as([32]u8, @splat('a'))) ++ (@as([32]u8, @splat('('))) ++
+        [_]u8{'u'} ++ (@as([32]u8, @splat(')')));
     try single(&deepest, 64);
 }

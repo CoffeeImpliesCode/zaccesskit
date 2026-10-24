@@ -260,14 +260,14 @@ pub const VariantOwner = struct {
         if (T == []const *bindings.IUnknown) return fromComSlice(api, value);
         if (T == schema.Color) return fromColor(api, value);
         if (T == schema.TextDecoration) return fromValue(api, schema.TextDecorationStyle, value.style);
-        if (T == schema.TextDecorationStyle) return fromI32(api, @intFromEnum(switch (value) {
+        if (T == schema.TextDecorationStyle) return fromI32(api, @backingInt(switch (value) {
             .solid => bindings.uia.TextDecorationLineStyle.Single,
             .dotted => bindings.uia.TextDecorationLineStyle.Dot,
             .dashed => bindings.uia.TextDecorationLineStyle.Dash,
             .double => bindings.uia.TextDecorationLineStyle.Double,
             .wavy => bindings.uia.TextDecorationLineStyle.Wavy,
         }));
-        if (T == schema.TextAlign) return fromI32(api, @intFromEnum(switch (value) {
+        if (T == schema.TextAlign) return fromI32(api, @backingInt(switch (value) {
             .left => bindings.uia.HorizontalTextAlignment.Left,
             .center => bindings.uia.HorizontalTextAlignment.Centered,
             .right => bindings.uia.HorizontalTextAlignment.Right,
@@ -278,7 +278,7 @@ pub const VariantOwner = struct {
                 if (value) |present| return fromValue(api, optional.child, present);
                 return init(api);
             },
-            .@"enum" => return fromI32(api, @intCast(@intFromEnum(value))),
+            .@"enum" => return fromI32(api, @intCast(@backingInt(value))),
             else => @compileError("Automation value needs bool, i32, f64, UTF string, COM, or UIA enum."),
         }
     }
@@ -837,8 +837,8 @@ fn ariaAllocationFailures(gpa: std.mem.Allocator) !void {
         try testing.expect(!properties.hasProperties());
         return failure;
     };
-    const large_value = "z" ** 256;
-    AriaProperties.writeProperty(gpa, &properties, .{ .name = "second", .value = large_value }) catch |failure| {
+    const large_value = @as([256]u8, @splat('z'));
+    AriaProperties.writeProperty(gpa, &properties, .{ .name = "second", .value = &large_value }) catch |failure| {
         try testing.expectEqualStrings("first=done", properties.bytes.items);
         try testing.expect(properties.hasProperties());
         // The failed property added neither a separator nor a partial name.
@@ -876,7 +876,7 @@ test "ARIA allocation failure does not leave a separator before a later retry" {
     failing.fail_index = failing.alloc_index;
     try testing.expectError(
         error.OutOfMemory,
-        AriaProperties.writeProperty(gpa, &properties, .{ .name = "second", .value = "z" ** 256 }),
+        AriaProperties.writeProperty(gpa, &properties, .{ .name = "second", .value = &@as([256]u8, @splat('z')) }),
     );
     try testing.expectEqualStrings("first=done", properties.bytes.items);
     try testing.expect(properties.hasProperties());
@@ -1536,7 +1536,7 @@ test "automation enum optional locale and text values preserve upstream variants
     inline for (native_enums) |input| {
         var value = try VariantOwner.fromValue(&api, @TypeOf(input), input);
         try testing.expectEqual(@as(u16, 3), variantType(&value.raw));
-        try testing.expectEqual(@as(i32, @intFromEnum(input)), value.raw.Anonymous.Anonymous.Anonymous.lVal);
+        try testing.expectEqual(@as(i32, @backingInt(input)), value.raw.Anonymous.Anonymous.Anonymous.lVal);
         try value.deinit();
     }
 }
@@ -1577,7 +1577,7 @@ test "automation bounds reject before allocation and preserve no-title null" {
     try testing.expectError(error.StringTooLong, localeNameToLcid(
         testing.allocator,
         &api,
-        "a" ** (locale_name_units_max + 1),
+        &@as([(locale_name_units_max + 1)]u8, @splat('a')),
     ));
     try testing.expectEqual(@as(u32, 0), abi.live_strings);
     try testing.expectEqual(@as(u32, 0), abi.live_arrays);
@@ -1698,7 +1698,7 @@ fn automationWideAllocationFailures(gpa: std.mem.Allocator) !void {
         try testing.expectEqual(@as(usize, 0), buffer.units.items.len);
         return failure;
     };
-    wide.writeStr(gpa, "界" ** 256) catch |failure| {
+    wide.writeStr(gpa, &@as([(256) * 3]u8, @bitCast(@as([256][3]u8, @splat("界".*))))) catch |failure| {
         try testing.expectEqualSlices(u16, &.{0xe9}, buffer.units.items);
         return failure;
     };

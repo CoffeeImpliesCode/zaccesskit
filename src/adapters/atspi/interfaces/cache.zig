@@ -64,7 +64,7 @@ fn cacheItemWithText(ctx: *Context, cache: *const platform.CacheNode, short_name
         .{ .int32 = cache.child_count },
         try ctx.interfaces(cache.interfaces),
         short_name,
-        .{ .uint32 = @intFromEnum(cache.role) },
+        .{ .uint32 = @backingInt(cache.role) },
         name,
         try ctx.states(cache.states),
     });
@@ -80,7 +80,7 @@ fn applicationCacheItem(ctx: *Context, root: platform.PlatformRoot) Error!Value 
         .{ .int32 = try root.childCount() },
         try ctx.interfaces(root.interfaces()),
         try ctx.string(root.name()),
-        .{ .uint32 = @intFromEnum(root.role()) },
+        .{ .uint32 = @backingInt(root.role()) },
         try ctx.string(root.description()),
         try ctx.states(root.state()),
     });
@@ -136,7 +136,7 @@ fn cacheAllocationCase(gpa: std.mem.Allocator) !void {
     try std.testing.expectEqualStrings("org.a11y.atspi.Accessible", root[5].array.values[0].string);
     try std.testing.expectEqualStrings("org.a11y.atspi.Application", root[5].array.values[1].string);
     try std.testing.expectEqualStrings("Example application", root[6].string);
-    try std.testing.expectEqual(@intFromEnum(wire.Role.application), root[7].uint32);
+    try std.testing.expectEqual(@backingInt(wire.Role.application), root[7].uint32);
     try std.testing.expectEqualStrings("", root[8].string);
     try std.testing.expectEqualStrings("u", root[9].array.element_signature);
     try std.testing.expectEqual(@as(usize, 2), root[9].array.values.len);

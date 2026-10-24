@@ -348,7 +348,7 @@ const Frame = struct {
     }
 
     fn delta(self: *Frame, entries: []schema.NodeEntry) schema.TreeUpdate {
-        return .{ .nodes = .{ .items = entries, .capacity = 0 }, .focus = self.full.focus };
+        return .{ .nodes = .{ .items = entries, .capacity = 0, .pointer_stability = .{} }, .focus = self.full.focus };
     }
 
     fn deinit(self: *Frame, gpa: std.mem.Allocator) void {

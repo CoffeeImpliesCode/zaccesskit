@@ -277,9 +277,9 @@ test "filesystem paths use socket path semantics not D Bus object path grammar" 
 
 test "socket name length limits apply to decoded bytes and reserve a NUL byte" {
     const maximum_inputs = [_][]const u8{
-        "unix:path=/" ++ ("a" ** 106),
-        "unix:abstract=" ++ ("a" ** 107),
-        "unix:abstract=" ++ ("%61" ** 107),
+        "unix:path=/" ++ (@as([106]u8, @splat('a'))),
+        "unix:abstract=" ++ (@as([107]u8, @splat('a'))),
+        "unix:abstract=" ++ (@as([(107) * 3]u8, @bitCast(@as([107][3]u8, @splat("%61".*))))),
     };
     for (maximum_inputs) |input| {
         var iterator = Iterator.init(input);
@@ -288,9 +288,9 @@ test "socket name length limits apply to decoded bytes and reserve a NUL byte" {
         try std.testing.expectEqual(@as(usize, 107), address.name.len);
     }
     const oversized_inputs = [_][]const u8{
-        "unix:path=/" ++ ("a" ** 107),
-        "unix:abstract=" ++ ("a" ** 108),
-        "unix:abstract=" ++ ("%61" ** 108),
+        "unix:path=/" ++ (@as([107]u8, @splat('a'))),
+        "unix:abstract=" ++ (@as([108]u8, @splat('a'))),
+        "unix:abstract=" ++ (@as([(108) * 3]u8, @bitCast(@as([108][3]u8, @splat("%61".*))))),
     };
     for (oversized_inputs) |input| {
         var iterator = Iterator.init(input);

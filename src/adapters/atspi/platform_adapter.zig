@@ -415,7 +415,7 @@ pub const PlatformAdapter = struct {
                     .kind = .object,
                     .member = events.member_announcement,
                     .id = self.objectId(node.id()),
-                    .detail2 = @intFromEnum(live),
+                    .detail2 = @backingInt(live),
                     .any_data = .{ .text = name.items },
                 });
             }
@@ -1542,7 +1542,7 @@ test "native lifecycle regression cache snapshot survives updates removal and cl
     try testing.expectEqual(@as(i32, 1), root.child_count);
     try testing.expect(root.interfaces.bits != 0);
     try testing.expect(root.states.bits != 0);
-    try testing.expect(@intFromEnum(root.role) != 0);
+    try testing.expect(@backingInt(root.role) != 0);
     try testing.expect(std.meta.eql(root.id, child.parent.node));
     try adapter.apply(try notificationUpdate(gpa, .{
         .initial = false,

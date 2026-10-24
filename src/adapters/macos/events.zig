@@ -598,7 +598,7 @@ test "the adapter names exactly seven notifications and picks the right one per 
     // The decision table. Six changes name one of the 6 notifications that go
     // through `NSAccessibilityPostNotification`, and the announcement names the
     // seventh, which goes through the `WithUserInfo` call instead.
-    try testing.expectEqual(change_count, @typeInfo(Change).@"enum".fields.len);
+    try testing.expectEqual(change_count, @typeInfo(Change).@"enum".field_names.len);
     const expected = [_]struct { Change, []const u8 }{
         .{ .focus_moved, "NSAccessibilityFocusedUIElementChangedNotification" },
         .{ .value_changed, "NSAccessibilityValueChangedNotification" },
@@ -661,7 +661,7 @@ test "an assertive live region announces at high priority and a polite one at me
         switch (event) {
             .announcement => |announcement| {
                 try testing.expectEqualStrings(payload.text, announcement.text);
-                try testing.expectEqual(payload.priority, @intFromEnum(announcement.priority));
+                try testing.expectEqual(payload.priority, @backingInt(announcement.priority));
             },
             else => return error.TestUnexpectedResult,
         }
@@ -672,9 +672,9 @@ test "a FullNodeId is compared with std.meta.eql and never with ==" {
     // The house rule, asserted where it is easiest to break. Two identifiers
     // that name the same node have the same two scalars, and `==` on the struct
     // would compare every field including any added later.
-    const one: FullNodeId = .{ .local = .{ .value = 7 }, .tree_index = @enumFromInt(0) };
-    const same: FullNodeId = .{ .local = .{ .value = 7 }, .tree_index = @enumFromInt(0) };
-    const other: FullNodeId = .{ .local = .{ .value = 8 }, .tree_index = @enumFromInt(0) };
+    const one: FullNodeId = .{ .local = .{ .value = 7 }, .tree_index = @fromBackingInt(@intCast(0)) };
+    const same: FullNodeId = .{ .local = .{ .value = 7 }, .tree_index = @fromBackingInt(@intCast(0)) };
+    const other: FullNodeId = .{ .local = .{ .value = 8 }, .tree_index = @fromBackingInt(@intCast(0)) };
     try testing.expect(std.meta.eql(one, same));
     try testing.expect(!std.meta.eql(one, other));
 }
@@ -711,7 +711,7 @@ test "the two sets hold a FullNodeId only once" {
     // `AK/macos/src/event.rs:184-192` and `:210-221`.
     var generator = EventGenerator.init(std.testing.allocator);
     defer generator.deinit();
-    const id: FullNodeId = .{ .local = .{ .value = 1 }, .tree_index = @enumFromInt(0) };
+    const id: FullNodeId = .{ .local = .{ .value = 1 }, .tree_index = @fromBackingInt(@intCast(0)) };
 
     const first = try generator.text_changed.getOrPut(std.testing.allocator, id);
     try testing.expect(!first.found_existing);
@@ -735,8 +735,8 @@ test "the four handler slots are the ones the tree calls" {
     try testing.expect(handler.node_updated != null);
     try testing.expect(handler.focus_moved != null);
     try testing.expect(handler.node_removed != null);
-    const fields = @typeInfo(consumer.tree.TreeChangeHandler).@"struct".fields;
-    try testing.expectEqual(@as(usize, 4), fields.len - 1);
+    const fields = @typeInfo(consumer.tree.TreeChangeHandler).@"struct";
+    try testing.expectEqual(@as(usize, 4), fields.field_names.len - 1);
 }
 
 test "a slot records the tag it failed with, and keeps the first one" {

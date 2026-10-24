@@ -73,8 +73,8 @@ comptime {
     // singleton identifiers. A variable-length encoding reads these numbers, so
     // the span is pinned rather than assumed.
     std.debug.assert(bindings.len == 21);
-    std.debug.assert(@intFromEnum(bindings[0].id) == 15);
-    std.debug.assert(@intFromEnum(bindings[bindings.len - 1].id) == 35);
+    std.debug.assert(@backingInt(bindings[0].id) == 15);
+    std.debug.assert(@backingInt(bindings[bindings.len - 1].id) == 35);
     // The rows of `bindings` are the family's domain, so the reachability
     // claim is over the same rows rather than over a second list. A property
     // with a descriptor row and no binding here is a compile error.

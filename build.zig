@@ -5,11 +5,6 @@
 //! `zaccesskit.h`. `-Dlinkage=static` is the default. `-Dlinkage=dynamic` selects
 //! the same C surface as a shared library.
 //!
-//! **Compiler.** `build.zig.zon` declares `.minimum_zig_version = "0.16.0"`.
-//! That is a lower bound, not the supported compiler. Zig 0.16.0 is the line
-//! this project intends. On this host `zig` is an anyzig shim that reads the
-//! same field to select the toolchain, so the manifest is the single version
-//! authority for the project and for every tool the gate runs.
 
 const std = @import("std");
 
@@ -23,7 +18,7 @@ const version = "0.0.0";
 /// Compiler floor. Mirrors `.minimum_zig_version` in `build.zig.zon`, which is
 /// the authority and also selects the toolchain through the anyzig shim.
 /// `src/root.zig` checks it against the running compiler.
-const minimum_zig_version = "0.16.0";
+const minimum_zig_version = "0.17.0";
 
 /// Address-space ceiling for one test shard, in kibibytes. Four gigabytes is
 /// far above an honest test and far below what an unbounded allocation loop
@@ -110,7 +105,7 @@ pub fn build(b: *std.Build) void {
     b.installArtifact(library);
 
     // The gate modes stay fixed even when a consumer selects another mode.
-    const debug_module = if (optimize == .Debug) mod else b.createModule(.{
+    const debug_module = if (optimize == .debug) mod else b.createModule(.{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
         .optimize = .Debug,
@@ -168,7 +163,7 @@ pub fn build(b: *std.Build) void {
     const bench_step = b.step("bench", "Run the consumer benchmark without internal timing");
     const benchmark_run = b.addRunArtifact(benchmark);
     benchmark_run.has_side_effects = true;
-    if (b.args) |args| benchmark_run.addArgs(args);
+    benchmark_run.addPassthruArgs();
     bench_step.dependOn(&benchmark_run.step);
 
     const probe_build_step = b.step("native-atspi-probe", "Build and install the Linux AT-SPI probe");
@@ -189,7 +184,7 @@ pub fn build(b: *std.Build) void {
         probe_build_step.dependOn(&probe_install.step);
         const probe_run = b.addRunArtifact(probe);
         probe_run.has_side_effects = true;
-        if (b.args) |args| probe_run.addArgs(args);
+        probe_run.addPassthruArgs();
         probe_run_step.dependOn(&probe_run.step);
     } else {
         const unavailable = b.addFail("native-atspi-probe requires a Linux target");
@@ -224,7 +219,7 @@ pub fn build(b: *std.Build) void {
         if (runs_on_host) {
             const run = b.addRunArtifact(client);
             run.has_side_effects = true;
-            if (b.args) |args| run.addArgs(args);
+            run.addPassthruArgs();
             windows_client_run.dependOn(&run.step);
         } else {
             const unavailable = b.addFail("windows-native-client-run requires a native Windows host");
@@ -262,7 +257,7 @@ pub fn build(b: *std.Build) void {
         if (runs_on_host) {
             const run = b.addRunArtifact(client);
             run.has_side_effects = true;
-            if (b.args) |args| run.addArgs(args);
+            run.addPassthruArgs();
             macos_client_run.dependOn(&run.step);
         } else {
             const unavailable = b.addFail("macos-native-client-run requires a native macOS host");
@@ -310,7 +305,7 @@ pub fn build(b: *std.Build) void {
                 .imports = &.{
                     .{
                         .name = "zaccesskit",
-                        .module = if (mode == .Debug) debug_module else release_tests.root_module,
+                        .module = if (mode == .debug) debug_module else release_tests.root_module,
                     },
                 },
             }),
@@ -333,7 +328,7 @@ pub fn build(b: *std.Build) void {
                 .imports = &.{
                     .{
                         .name = "zaccesskit",
-                        .module = if (mode == .Debug) debug_module else release_tests.root_module,
+                        .module = if (mode == .debug) debug_module else release_tests.root_module,
                     },
                 },
             }),
@@ -589,7 +584,7 @@ pub fn build(b: *std.Build) void {
     });
     const parity_run = b.addRunArtifact(parity);
     parity_run.has_side_effects = true;
-    if (b.args) |args| parity_run.addArgs(args);
+    parity_run.addPassthruArgs();
     parity_run.step.dependOn(&parity_test_run.step);
     parity_step.dependOn(&parity_run.step);
 
@@ -636,7 +631,7 @@ pub fn build(b: *std.Build) void {
     });
     const tables_run = b.addRunArtifact(tables);
     tables_run.has_side_effects = true;
-    if (b.args) |args| tables_run.addArgs(args);
+    tables_run.addPassthruArgs();
     tables_run.step.dependOn(&tables_test_run.step);
     tables_step.dependOn(&tables_run.step);
 }
@@ -652,12 +647,11 @@ fn createMacObjcBindings(
         []const u8,
         "macos-sdk",
         "Actual macOS SDK path for Objective-C declarations and native linking",
-    ) orelse b.sysroot orelse
+    ) orelse
         std.debug.panic(
-            "macOS native adapters require -Dmacos-sdk=<SDK> or --sysroot <SDK>",
+            "macOS native adapters require -Dmacos-sdk=<SDK>",
             .{},
         );
-    b.sysroot = sdk;
     const translated = b.addTranslateC(.{
         .root_source_file = b.path("src/adapters/macos/runtime.h"),
         .target = target,
@@ -691,7 +685,13 @@ fn linkNativeSdk(
         },
         .macos => {
             const b = module.owner;
-            const sdk = b.sysroot.?;
+            const sdk = b.option([]const u8, "macos-sdk", "macOS SDK path").?;
+            module.addSystemIncludePath(.{
+                .cwd_relative = b.pathJoin(&.{ sdk, "usr/include" }),
+            });
+            module.addLibraryPath(.{
+                .cwd_relative = b.pathJoin(&.{ sdk, "usr/lib" }),
+            });
             module.addSystemFrameworkPath(.{
                 .cwd_relative = b.pathJoin(&.{ sdk, "System/Library/Frameworks" }),
             });

@@ -92,7 +92,7 @@ pub const SliceForm = enum {
     drawn,
 
     /// The number of members, and the bound for every walk over this domain.
-    pub const count: usize = @typeInfo(SliceForm).@"enum".fields.len;
+    pub const count: usize = @typeInfo(SliceForm).@"enum".field_names.len;
 };
 
 /// The slice length `form` asks `source` for.
@@ -187,7 +187,7 @@ pub fn buildRect(source: *Random) Rect {
 /// The walk over the domain is `table.propertyIdCount` wide, which is the count
 /// of rows in `property_descriptors`.
 pub fn pickPropertyId(source: *Random) random.DrawError!table.PropertyId {
-    return @enumFromInt(@as(u8, @intCast(try source.below(table.propertyIdCount))));
+    return @fromBackingInt(@intCast(@as(u8, @intCast(try source.below(table.propertyIdCount)))));
 }
 
 /// An owned `std.ArrayList(u8)` of `len` drawn bytes.

@@ -222,10 +222,10 @@ test "a walk that discards every draw it is given names its exhaustion" {
 }
 
 test "every DrawError member is the exhaustion the bounded walk names" {
-    const members = @typeInfo(DrawError).error_set.?;
+    const members = @typeInfo(DrawError).error_set.error_names.?;
     try std.testing.expectEqual(@as(usize, 1), members.len);
     inline for (members) |member| {
-        try std.testing.expectEqualStrings("TooManyRejectedDraws", member.name);
+        try std.testing.expectEqualStrings("TooManyRejectedDraws", member);
     }
 }
 

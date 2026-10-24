@@ -1675,9 +1675,10 @@ fn focusLocalId(tree: *const Tree) u64 {
 /// `free(): invalid pointer` glibc reports on the inactive state.
 fn debugText(gpa: Allocator, state: AdapterState) Allocator.Error![:0]u8 {
     return switch (state) {
-        .inactive => gpa.dupeZ(
+        .inactive => gpa.dupeSentinel(
             u8,
             "IosAdapter { state: inactive, root: none, focus: none }",
+            0,
         ),
         .placeholder => |tree| std.fmt.allocPrintSentinel(
             gpa,

@@ -462,12 +462,12 @@ const ReadKey = enum {
     /// asked for a key the recorder does not know is visible rather than
     /// silently reading row zero.
     fn handle(self: ReadKey) JString {
-        return @ptrFromInt(@as(usize, handle_base + 100) + @intFromEnum(self));
+        return @ptrFromInt(@as(usize, handle_base + 100) + @backingInt(self));
     }
 };
 
 /// How many keys `ReadKey` declares, which is the bound every walk over it uses.
-const read_key_count = @typeInfo(ReadKey).@"enum".fields.len;
+const read_key_count = @typeInfo(ReadKey).@"enum".field_names.len;
 
 /// The key a fabricated string handle carries, or `null` when it names none.
 fn readKeyOf(key: JString) ?ReadKey {
@@ -476,7 +476,7 @@ fn readKeyOf(key: JString) ?ReadKey {
     if (offset < handle_base + 100) return null;
     const index = offset - (handle_base + 100);
     if (index >= read_key_count) return null;
-    return @enumFromInt(index);
+    return @fromBackingInt(@intCast(index));
 }
 
 /// What one decode reads back, kept where a test can read it.
@@ -486,10 +486,10 @@ fn readKeyOf(key: JString) ?ReadKey {
 /// table is built by value around this one value, so no test shares it.
 const Recorder = struct {
     /// Which keys `containsKey` reports present.
-    present: [read_key_count]bool = .{false} ** read_key_count,
+    present: [read_key_count]bool = @splat(false),
     /// What each getter answers, indexed by `ReadKey`.
-    ints: [read_key_count]JInt = .{0} ** read_key_count,
-    booleans: [read_key_count]bool = .{false} ** read_key_count,
+    ints: [read_key_count]JInt = @splat(0),
+    booleans: [read_key_count]bool = @splat(false),
     /// How many getter calls arrived, so a test can see that a read was skipped.
     reads: usize = 0,
     /// What `exceptionCheck` answers.
@@ -503,18 +503,18 @@ const Recorder = struct {
 
     /// Marks `key` present.
     fn withPresent(self: *Recorder, key: ReadKey) void {
-        self.present[@intFromEnum(key)] = true;
+        self.present[@backingInt(key)] = true;
     }
 
     /// Sets the integer `key` answers and marks it present.
     fn withInt(self: *Recorder, key: ReadKey, value: JInt) void {
-        self.ints[@intFromEnum(key)] = value;
+        self.ints[@backingInt(key)] = value;
         self.withPresent(key);
     }
 
     /// Sets the boolean `key` answers and marks it present.
     fn withBool(self: *Recorder, key: ReadKey, value: bool) void {
-        self.booleans[@intFromEnum(key)] = value;
+        self.booleans[@backingInt(key)] = value;
         self.withPresent(key);
     }
 };
@@ -588,10 +588,10 @@ fn answeredBooleanCall(
     if (recorder.exception_pending) return 0;
     const key = readKeyOf(args[0].l) orelse return 0;
     switch (lookupRowOf(method)) {
-        0 => return @intFromBool(recorder.present[@intFromEnum(key)]),
+        0 => return @intFromBool(recorder.present[@backingInt(key)]),
         2 => {
             recorder.reads += 1;
-            return @intFromBool(recorder.booleans[@intFromEnum(key)]);
+            return @intFromBool(recorder.booleans[@backingInt(key)]);
         },
         else => return 0,
     }
@@ -603,7 +603,7 @@ fn answeredGetInt(env: JniEnv, _: JObject, method: JMethodId, args: []const JVal
     if (lookupRowOf(method) != 1) return 0;
     recorder.reads += 1;
     const key = readKeyOf(args[0].l) orelse return 0;
-    return recorder.ints[@intFromEnum(key)];
+    return recorder.ints[@backingInt(key)];
 }
 
 fn answeredGetFloat(env: JniEnv, _: JObject, method: JMethodId, args: []const JValue) JFloat {
@@ -612,7 +612,7 @@ fn answeredGetFloat(env: JniEnv, _: JObject, method: JMethodId, args: []const JV
     if (lookupRowOf(method) != 3) return 0;
     recorder.reads += 1;
     const key = readKeyOf(args[0].l) orelse return 0;
-    return @floatFromInt(recorder.ints[@intFromEnum(key)]);
+    return @floatFromInt(recorder.ints[@backingInt(key)]);
 }
 
 fn answeredExceptionCheck(env: JniEnv) bool {

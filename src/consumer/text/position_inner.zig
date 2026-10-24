@@ -802,7 +802,7 @@ fn nestedTextRootFixture() !TreeState {
         try put(&state, localId(6), parentOf(localId(4), 0), second);
     }
     try putBranch(&state, 7, parentOf(localId(0), 2), .generic_container, &.{localId(8)});
-    try putRun(&state, 8, parentOf(localId(7), 0), "outside", &([_]u8{1} ** 7));
+    try putRun(&state, 8, parentOf(localId(7), 0), "outside", &(@as([7]u8, @splat(1))));
     return state;
 }
 

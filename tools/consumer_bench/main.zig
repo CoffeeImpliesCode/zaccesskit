@@ -131,7 +131,7 @@ fn parseNumber(bytes: []const u8) BenchError!u32 {
 const LabelOptions = struct { id: u32, changed: bool };
 
 fn labelBytes(options: LabelOptions) [label_byte_count]u8 {
-    var bytes = [_]u8{'-'} ** label_byte_count;
+    var bytes = @as([label_byte_count]u8, @splat('-'));
     bytes[0] = if (options.changed) 'B' else 'A';
     const hexadecimal = "0123456789abcdef";
     for (0..8) |index| {
@@ -214,13 +214,13 @@ fn validateState(
     changed: bool,
 ) BenchError!u64 {
     const state = tree.stateOf();
-    if (state.rootId().local.value != 1 or @intFromEnum(state.rootId().tree_index) != 0)
+    if (state.rootId().local.value != 1 or @backingInt(state.rootId().tree_index) != 0)
         return error.InvalidState;
     if (state.nodes.count() != options.nodes) return error.InvalidState;
     const focus = state.focusId() orelse return error.InvalidState;
     if (focus.local.value != (if (changed) @as(u64, 2) else 1))
         return error.InvalidState;
-    if (@intFromEnum(focus.tree_index) != 0) return error.InvalidState;
+    if (@backingInt(focus.tree_index) != 0) return error.InvalidState;
     var digest: Digest = .{};
     digest.field("zaccesskit-consumer-state-v1");
     digest.number(options.nodes);
@@ -250,7 +250,7 @@ fn validateState(
         if (data.properties.count() != (if (children.len == 0) @as(usize, 2) else 3))
             return error.InvalidState;
         digest.number(id);
-        digest.number(@intFromEnum(data.role));
+        digest.number(@backingInt(data.role));
         digest.number(data.actions);
         digest.number(data.child_actions);
         digest.number(data.flags);
@@ -270,7 +270,7 @@ fn validateState(
             const expected_parent = if (options.shape == .wide) 1 else @divFloor(id - 2, branching_factor) + 1;
             const expected_index = if (options.shape == .wide) id - 2 else (id - 2) % branching_factor;
             if (parent.parent_id.local.value != expected_parent) return error.InvalidState;
-            if (@intFromEnum(parent.parent_id.tree_index) != 0) return error.InvalidState;
+            if (@backingInt(parent.parent_id.tree_index) != 0) return error.InvalidState;
             if (parent.index != expected_index) return error.InvalidState;
             digest.number(parent.parent_id.local.value);
             digest.number(parent.index);

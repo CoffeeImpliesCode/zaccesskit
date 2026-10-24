@@ -512,11 +512,11 @@ comptime {
         std.debug.assert(@sizeOf(Interface) == pointer_size);
         std.debug.assert(@alignOf(Interface) == @alignOf(usize));
         const info = @typeInfo(Interface).@"union";
-        std.debug.assert(info.fields.len == 2);
-        std.debug.assert(std.mem.eql(u8, info.fields[0].name, "vtable"));
-        std.debug.assert(info.fields[0].type == *const Interface.VTable);
-        std.debug.assert(std.mem.eql(u8, info.fields[1].name, "IUnknown"));
-        std.debug.assert(info.fields[1].type == IUnknown);
+        std.debug.assert(info.field_names.len == 2);
+        std.debug.assert(std.mem.eql(u8, info.field_names[0], "vtable"));
+        std.debug.assert(info.field_types[0] == *const Interface.VTable);
+        std.debug.assert(std.mem.eql(u8, info.field_names[1], "IUnknown"));
+        std.debug.assert(info.field_types[1] == IUnknown);
     }
 
     // The automation value is 24 bytes and 8-byte aligned in this binding, not
@@ -532,11 +532,11 @@ comptime {
     // header of the tag and the three reserved words, then the payload union.
     // The offsets below are the addresses `variant.zig` writes, so they are the
     // load-bearing part of the layout.
-    const VariantArm = @typeInfo(Variant).@"struct".fields[0].type;
+    const VariantArm = @typeInfo(Variant).@"struct".field_types[0];
     const VariantArms = @typeInfo(VariantArm).@"union";
-    std.debug.assert(VariantArms.fields.len == 2);
-    std.debug.assert(std.mem.eql(u8, VariantArms.fields[0].name, "Anonymous"));
-    const VariantHead = VariantArms.fields[0].type;
+    std.debug.assert(VariantArms.field_names.len == 2);
+    std.debug.assert(std.mem.eql(u8, VariantArms.field_names[0], "Anonymous"));
+    const VariantHead = VariantArms.field_types[0];
     std.debug.assert(@offsetOf(VariantHead, "vt") == 0);
     std.debug.assert(@offsetOf(VariantHead, "wReserved1") == 2);
     std.debug.assert(@offsetOf(VariantHead, "wReserved2") == 4);
@@ -648,18 +648,18 @@ test "implemented interfaces are distinct COM interfaces" {
 test "every vtable begins with the three IUnknown slots" {
     if (comptime winapi_resolves) {
         const unknown = @typeInfo(IUnknown.VTable).@"struct";
-        try std.testing.expectEqual(@as(usize, 3), unknown.fields.len);
-        try std.testing.expectEqualStrings("QueryInterface", unknown.fields[0].name);
-        try std.testing.expectEqualStrings("AddRef", unknown.fields[1].name);
-        try std.testing.expectEqualStrings("Release", unknown.fields[2].name);
+        try std.testing.expectEqual(@as(usize, 3), unknown.field_names.len);
+        try std.testing.expectEqualStrings("QueryInterface", unknown.field_names[0]);
+        try std.testing.expectEqualStrings("AddRef", unknown.field_names[1]);
+        try std.testing.expectEqualStrings("Release", unknown.field_names[2]);
         inline for (implemented_interfaces) |Interface| {
             const info = @typeInfo(Interface.VTable).@"struct";
-            std.debug.assert(info.fields.len >= 1);
+            std.debug.assert(info.field_names.len >= 1);
             // One base plus at least one method. `IInvokeProvider` and
             // `IScrollItemProvider` carry exactly one, so the lower bound is
             // two.
-            try std.testing.expect(info.fields.len >= 2);
-            try std.testing.expectEqualStrings("base", info.fields[0].name);
+            try std.testing.expect(info.field_names.len >= 2);
+            try std.testing.expectEqualStrings("base", info.field_names[0]);
             try std.testing.expectEqual(@as(usize, 0), @offsetOf(Interface.VTable, "base"));
         }
     } else return error.SkipZigTest;
@@ -786,9 +786,9 @@ test "every implemented vtable names its slots in the order COM dispatches" {
         };
         inline for (expected) |entry| {
             const info = @typeInfo(entry.Interface.VTable).@"struct";
-            try std.testing.expectEqual(entry.slots.len, info.fields.len - 1);
+            try std.testing.expectEqual(entry.slots.len, info.field_names.len - 1);
             inline for (entry.slots, 0..) |name, index| {
-                try std.testing.expectEqualStrings(name, info.fields[index + 1].name);
+                try std.testing.expectEqualStrings(name, info.field_names[index + 1]);
             }
         }
     } else return error.SkipZigTest;
@@ -798,7 +798,7 @@ test "the fourteen interfaces preserve all native method slots" {
     if (comptime winapi_resolves) {
         var total: usize = 0;
         inline for (implemented_interfaces) |Interface| {
-            total += @typeInfo(Interface.VTable).@"struct".fields.len - 1;
+            total += @typeInfo(Interface.VTable).@"struct".field_names.len - 1;
         }
         try std.testing.expectEqual(
             @as(usize, 4 + 6 + 2 + 2 + 1 + 3 + 7 + 1 + 5 + 3 + 6 + 18 + 3 + 9),

@@ -647,7 +647,7 @@ test "a graft node yields its subtree root instead of its children list" {
     const root = try fixture.add(0, null);
     const graft = try fixture.add(1, root);
     const subtree_root = try fixture.add(2, null);
-    const tree_id = schema.treeIdFromBytes(.{1} ** 16);
+    const tree_id = schema.treeIdFromBytes(@splat(1));
     try schema.option.setTreeId(
         &(try fixture.slotOf(graft)).data.properties,
         tree_id,

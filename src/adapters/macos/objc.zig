@@ -275,21 +275,21 @@ pub fn sel(name: [:0]const u8) Sel {
 }
 
 fn MessageType(comptime Result: type, comptime Prefix: type, comptime Args: type) type {
-    const fields = @typeInfo(Args).@"struct".fields;
-    comptime var types: [fields.len + 2]type = undefined;
+    const fields = @typeInfo(Args).@"struct";
+    comptime var types: [fields.field_names.len + 2]type = undefined;
     types[0] = Prefix;
     types[1] = Sel;
-    inline for (fields, 0..) |field, index| {
-        if (field.type == bool or field.type == comptime_int or field.type == comptime_float) {
+    inline for (fields.field_types, 0..) |field_type, index| {
+        if (field_type == bool or field_type == comptime_int or field_type == comptime_float) {
             @compileError("Objective-C arguments require explicit ABI types; use BOOL for boolean");
         }
-        types[index + 2] = field.type;
+        types[index + 2] = field_type;
     }
     if (Result == bool) @compileError("Objective-C return requires BOOL, not Zig bool");
     if (@typeInfo(Result) == .float and @sizeOf(Result) > 8) {
         @compileError("Objective-C extended floating-point return is not a provider ABI type");
     }
-    const attributes = [_]std.builtin.Type.Fn.Param.Attributes{.{}} ** types.len;
+    const attributes: [types.len]std.builtin.Type.Fn.ParamAttributes = @splat(.{});
     return @Fn(&types, &attributes, Result, .{ .@"callconv" = .c });
 }
 

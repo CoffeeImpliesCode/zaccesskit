@@ -126,14 +126,14 @@ comptime {
     // encoding of `ScrollUnit` depends on the order upstream declares. Pin the
     // count and the discriminant of every tag, so a reordering tag fails to
     // compile instead of changing the bytes on the wire.
-    for (@typeInfo(ScrollUnit).@"enum".fields, 0..) |field, index| {
-        std.debug.assert(field.value == index);
+    for (@typeInfo(ScrollUnit).@"enum".field_values, 0..) |field_value, index| {
+        std.debug.assert(field_value == index);
     }
-    for (@typeInfo(ScrollHint).@"enum".fields, 0..) |field, index| {
-        std.debug.assert(field.value == index);
+    for (@typeInfo(ScrollHint).@"enum".field_values, 0..) |field_value, index| {
+        std.debug.assert(field_value == index);
     }
-    std.debug.assert(@typeInfo(ScrollUnit).@"enum".fields.len == 2);
-    std.debug.assert(@typeInfo(ScrollHint).@"enum".fields.len == 6);
+    std.debug.assert(@typeInfo(ScrollUnit).@"enum".field_names.len == 2);
+    std.debug.assert(@typeInfo(ScrollHint).@"enum".field_names.len == 6);
 
     // Rule L2: a `#[repr(u8)]` enum crosses the C ABI as one byte.
     std.debug.assert(@sizeOf(ScrollUnit) == 1);
@@ -148,7 +148,7 @@ test "ScrollUnit keeps the upstream layout and tag order" {
 
     const upstream_order = [_]ScrollUnit{ .item, .page };
     for (upstream_order, 0..) |tag, index| {
-        try std.testing.expectEqual(@as(u8, @intCast(index)), @intFromEnum(tag));
+        try std.testing.expectEqual(@as(u8, @intCast(index)), @backingInt(tag));
     }
 }
 
@@ -165,7 +165,7 @@ test "ScrollHint keeps the upstream layout and tag order" {
         .right_edge,
     };
     for (upstream_order, 0..) |tag, index| {
-        try std.testing.expectEqual(@as(u8, @intCast(index)), @intFromEnum(tag));
+        try std.testing.expectEqual(@as(u8, @intCast(index)), @backingInt(tag));
     }
 }
 
@@ -194,17 +194,17 @@ test "scrollHintFromInt rejects every discriminant no variant declares" {
 }
 
 test "every ScrollUnit byte round trips through its tag spelling" {
-    inline for (@typeInfo(ScrollUnit).@"enum".fields) |field| {
-        const tag: ScrollUnit = @enumFromInt(field.value);
-        try std.testing.expectEqual(tag, scrollUnitFromInt(@intCast(field.value)).?);
-        try std.testing.expectEqualStrings(field.name, scrollUnitToStaticStr(tag));
+    inline for (@typeInfo(ScrollUnit).@"enum".field_names, @typeInfo(ScrollUnit).@"enum".field_values) |field_name, field_value| {
+        const tag: ScrollUnit = @fromBackingInt(@intCast(field_value));
+        try std.testing.expectEqual(tag, scrollUnitFromInt(@intCast(field_value)).?);
+        try std.testing.expectEqualStrings(field_name, scrollUnitToStaticStr(tag));
     }
 }
 
 test "every ScrollHint byte round trips through its tag spelling" {
-    inline for (@typeInfo(ScrollHint).@"enum".fields) |field| {
-        const tag: ScrollHint = @enumFromInt(field.value);
-        try std.testing.expectEqual(tag, scrollHintFromInt(@intCast(field.value)).?);
-        try std.testing.expectEqualStrings(field.name, scrollHintToStaticStr(tag));
+    inline for (@typeInfo(ScrollHint).@"enum".field_names, @typeInfo(ScrollHint).@"enum".field_values) |field_name, field_value| {
+        const tag: ScrollHint = @fromBackingInt(@intCast(field_value));
+        try std.testing.expectEqual(tag, scrollHintFromInt(@intCast(field_value)).?);
+        try std.testing.expectEqualStrings(field_name, scrollHintToStaticStr(tag));
     }
 }

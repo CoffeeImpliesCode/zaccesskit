@@ -384,11 +384,11 @@ const variant_counts = [_]VariantCount{
 
 comptime {
     for (variant_counts) |row| {
-        const fields = @typeInfo(row.enum_type).@"enum".fields;
-        if (fields.len != row.count) {
+        const fields = @typeInfo(row.enum_type).@"enum";
+        if (fields.field_names.len != row.count) {
             @compileError(std.fmt.comptimePrint(
                 "{s}: {d} tags in Zig, {d} declared at accesskit/src/lib.rs:417-700",
-                .{ row.upstream_name, fields.len, row.count },
+                .{ row.upstream_name, fields.field_names.len, row.count },
             ));
         }
         if (@sizeOf(row.enum_type) != 1) {
@@ -403,11 +403,11 @@ comptime {
                 .{ row.upstream_name, @alignOf(row.enum_type) },
             ));
         }
-        for (fields, 0..) |field, discriminant| {
-            if (field.value != discriminant) {
+        for (fields.field_names, fields.field_values, 0..) |field_name, field_value, discriminant| {
+            if (field_value != discriminant) {
                 @compileError(std.fmt.comptimePrint(
                     "{s}.{s} carries {d}, and rule Z5 copies the upstream order",
-                    .{ row.upstream_name, field.name, field.value },
+                    .{ row.upstream_name, field_name, field_value },
                 ));
             }
         }
@@ -423,9 +423,9 @@ fn expectTotalGate(comptime T: type, comptime count: usize, comptime from_int: a
             "{s}: the gate rejects its own tag {d}",
             .{ @typeName(T), value },
         ));
-        if (@intFromEnum(tag) != value) @compileError(std.fmt.comptimePrint(
+        if (@backingInt(tag) != value) @compileError(std.fmt.comptimePrint(
             "{s}: the gate maps byte {d} to tag {s}, which carries {d}",
-            .{ @typeName(T), value, @tagName(tag), @intFromEnum(tag) },
+            .{ @typeName(T), value, @tagName(tag), @backingInt(tag) },
         ));
     }
     if (from_int(@intCast(count)) != null) @compileError(std.fmt.comptimePrint(
@@ -456,26 +456,26 @@ comptime {
 // below walks the whole domain at run time. Every enum above is dense from 0,
 // so the domain has no hole that needs a case of its own.
 fn expectByteDomain(comptime E: type, comptime name: []const u8, comptime from_int: anytype) !void {
-    const fields = @typeInfo(E).@"enum".fields;
+    const fields = @typeInfo(E).@"enum";
     for (0..256) |value| {
         const byte: u8 = @intCast(value);
         const answer = from_int(byte);
         // Every failure names the enum, because `@compileError` cannot report a
         // byte.
-        if (value < fields.len) {
+        if (value < fields.field_names.len) {
             const found = answer orelse {
                 std.log.info("{s}: byte {d} carries {s}, and the gate named nothing", .{
                     name,
                     byte,
-                    fields[value].name,
+                    fields.field_names[value],
                 });
                 return error.LegalByteRejected;
             };
-            if (@intFromEnum(found) != byte) {
+            if (@backingInt(found) != byte) {
                 std.log.info("{s}: byte {d} carries {s}, and the gate named {s}", .{
                     name,
                     byte,
-                    fields[value].name,
+                    fields.field_names[value],
                     @tagName(found),
                 });
                 return error.ByteNamesAnotherTag;

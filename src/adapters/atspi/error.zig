@@ -256,7 +256,7 @@ test "mapError answers a reply for every member of the error set" {
     // payload is an optional slice in Zig 0.16.0, and an unwrap here would be a
     // claim where a switch is a question with a stated answer.
     const members = switch (@typeInfo(Error)) {
-        .error_set => |set| set orelse return error.EmptyErrorSet,
+        .error_set => |set| set.error_names orelse return error.EmptyErrorSet,
         else => return error.NotAnErrorSet,
     };
     try testing.expectEqual(@as(usize, 6), members.len);
@@ -346,7 +346,7 @@ test "three names are declared here and two more belong to their call sites" {
 // count here rather than falling silently into the default arm.
 test "the transport set names three members and the sweep reaches every one" {
     const members = switch (@typeInfo(BusError)) {
-        .error_set => |set| set orelse return error.EmptyErrorSet,
+        .error_set => |set| set.error_names orelse return error.EmptyErrorSet,
         else => return error.NotAnErrorSet,
     };
     try testing.expectEqual(@as(usize, 3), members.len);

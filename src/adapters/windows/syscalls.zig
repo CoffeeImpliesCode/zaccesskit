@@ -88,7 +88,7 @@ pub const EventId = enum(u32) {
     window_window_opened = 20016,
 
     /// The number of members. Every loop over this domain uses it.
-    pub const count: usize = @typeInfo(EventId).@"enum".fields.len;
+    pub const count: usize = @typeInfo(EventId).@"enum".field_names.len;
 };
 
 /// The UI Automation property identifiers this adapter raises.
@@ -100,51 +100,51 @@ pub const EventId = enum(u32) {
 /// `NodeWrapper::enqueue_property_changes` at `node.rs`, which is the node
 /// layer's file. `zigwin32/win32/ui/accessibility.zig:9459`.
 pub const PropertyId = enum(u32) {
-    aria_properties = @intFromEnum(bindings.uia.UIA_AriaPropertiesPropertyId),
-    aria_role = @intFromEnum(bindings.uia.UIA_AriaRolePropertyId),
-    automation_id = @intFromEnum(bindings.uia.UIA_AutomationIdPropertyId),
-    class_name = @intFromEnum(bindings.uia.UIA_ClassNamePropertyId),
-    control_type = @intFromEnum(bindings.uia.UIA_ControlTypePropertyId),
-    controller_for = @intFromEnum(bindings.uia.UIA_ControllerForPropertyId),
-    culture = @intFromEnum(bindings.uia.UIA_CulturePropertyId),
+    aria_properties = @backingInt(bindings.uia.UIA_AriaPropertiesPropertyId),
+    aria_role = @backingInt(bindings.uia.UIA_AriaRolePropertyId),
+    automation_id = @backingInt(bindings.uia.UIA_AutomationIdPropertyId),
+    class_name = @backingInt(bindings.uia.UIA_ClassNamePropertyId),
+    control_type = @backingInt(bindings.uia.UIA_ControlTypePropertyId),
+    controller_for = @backingInt(bindings.uia.UIA_ControllerForPropertyId),
+    culture = @backingInt(bindings.uia.UIA_CulturePropertyId),
     expand_collapse_expand_collapse_state =
-        @intFromEnum(bindings.uia.UIA_ExpandCollapseExpandCollapseStatePropertyId),
-    framework_id = @intFromEnum(bindings.uia.UIA_FrameworkIdPropertyId),
-    full_description = @intFromEnum(bindings.uia.UIA_FullDescriptionPropertyId),
-    has_keyboard_focus = @intFromEnum(bindings.uia.UIA_HasKeyboardFocusPropertyId),
-    help_text = @intFromEnum(bindings.uia.UIA_HelpTextPropertyId),
-    is_content_element = @intFromEnum(bindings.uia.UIA_IsContentElementPropertyId),
-    is_control_element = @intFromEnum(bindings.uia.UIA_IsControlElementPropertyId),
-    is_dialog = @intFromEnum(bindings.uia.UIA_IsDialogPropertyId),
-    is_enabled = @intFromEnum(bindings.uia.UIA_IsEnabledPropertyId),
-    is_keyboard_focusable = @intFromEnum(bindings.uia.UIA_IsKeyboardFocusablePropertyId),
-    is_password = @intFromEnum(bindings.uia.UIA_IsPasswordPropertyId),
-    is_required_for_form = @intFromEnum(bindings.uia.UIA_IsRequiredForFormPropertyId),
-    level = @intFromEnum(bindings.uia.UIA_LevelPropertyId),
-    live_setting = @intFromEnum(bindings.uia.UIA_LiveSettingPropertyId),
-    localized_control_type = @intFromEnum(bindings.uia.UIA_LocalizedControlTypePropertyId),
-    name = @intFromEnum(bindings.uia.UIA_NamePropertyId),
-    native_window_handle = @intFromEnum(bindings.uia.UIA_NativeWindowHandlePropertyId),
-    orientation = @intFromEnum(bindings.uia.UIA_OrientationPropertyId),
-    position_in_set = @intFromEnum(bindings.uia.UIA_PositionInSetPropertyId),
-    provider_description = @intFromEnum(bindings.uia.UIA_ProviderDescriptionPropertyId),
-    range_value_is_read_only = @intFromEnum(bindings.uia.UIA_RangeValueIsReadOnlyPropertyId),
-    range_value_large_change = @intFromEnum(bindings.uia.UIA_RangeValueLargeChangePropertyId),
-    range_value_maximum = @intFromEnum(bindings.uia.UIA_RangeValueMaximumPropertyId),
-    range_value_minimum = @intFromEnum(bindings.uia.UIA_RangeValueMinimumPropertyId),
-    range_value_small_change = @intFromEnum(bindings.uia.UIA_RangeValueSmallChangePropertyId),
-    range_value_value = @intFromEnum(bindings.uia.UIA_RangeValueValuePropertyId),
-    selection_can_select_multiple = @intFromEnum(bindings.uia.UIA_SelectionCanSelectMultiplePropertyId),
-    selection_is_selection_required = @intFromEnum(bindings.uia.UIA_SelectionIsSelectionRequiredPropertyId),
-    selection_item_is_selected = @intFromEnum(bindings.uia.UIA_SelectionItemIsSelectedPropertyId),
-    size_of_set = @intFromEnum(bindings.uia.UIA_SizeOfSetPropertyId),
-    toggle_toggle_state = @intFromEnum(bindings.uia.UIA_ToggleToggleStatePropertyId),
-    value_is_read_only = @intFromEnum(bindings.uia.UIA_ValueIsReadOnlyPropertyId),
-    value_value = @intFromEnum(bindings.uia.UIA_ValueValuePropertyId),
-    window_is_modal = @intFromEnum(bindings.uia.UIA_WindowIsModalPropertyId),
+        @backingInt(bindings.uia.UIA_ExpandCollapseExpandCollapseStatePropertyId),
+    framework_id = @backingInt(bindings.uia.UIA_FrameworkIdPropertyId),
+    full_description = @backingInt(bindings.uia.UIA_FullDescriptionPropertyId),
+    has_keyboard_focus = @backingInt(bindings.uia.UIA_HasKeyboardFocusPropertyId),
+    help_text = @backingInt(bindings.uia.UIA_HelpTextPropertyId),
+    is_content_element = @backingInt(bindings.uia.UIA_IsContentElementPropertyId),
+    is_control_element = @backingInt(bindings.uia.UIA_IsControlElementPropertyId),
+    is_dialog = @backingInt(bindings.uia.UIA_IsDialogPropertyId),
+    is_enabled = @backingInt(bindings.uia.UIA_IsEnabledPropertyId),
+    is_keyboard_focusable = @backingInt(bindings.uia.UIA_IsKeyboardFocusablePropertyId),
+    is_password = @backingInt(bindings.uia.UIA_IsPasswordPropertyId),
+    is_required_for_form = @backingInt(bindings.uia.UIA_IsRequiredForFormPropertyId),
+    level = @backingInt(bindings.uia.UIA_LevelPropertyId),
+    live_setting = @backingInt(bindings.uia.UIA_LiveSettingPropertyId),
+    localized_control_type = @backingInt(bindings.uia.UIA_LocalizedControlTypePropertyId),
+    name = @backingInt(bindings.uia.UIA_NamePropertyId),
+    native_window_handle = @backingInt(bindings.uia.UIA_NativeWindowHandlePropertyId),
+    orientation = @backingInt(bindings.uia.UIA_OrientationPropertyId),
+    position_in_set = @backingInt(bindings.uia.UIA_PositionInSetPropertyId),
+    provider_description = @backingInt(bindings.uia.UIA_ProviderDescriptionPropertyId),
+    range_value_is_read_only = @backingInt(bindings.uia.UIA_RangeValueIsReadOnlyPropertyId),
+    range_value_large_change = @backingInt(bindings.uia.UIA_RangeValueLargeChangePropertyId),
+    range_value_maximum = @backingInt(bindings.uia.UIA_RangeValueMaximumPropertyId),
+    range_value_minimum = @backingInt(bindings.uia.UIA_RangeValueMinimumPropertyId),
+    range_value_small_change = @backingInt(bindings.uia.UIA_RangeValueSmallChangePropertyId),
+    range_value_value = @backingInt(bindings.uia.UIA_RangeValueValuePropertyId),
+    selection_can_select_multiple = @backingInt(bindings.uia.UIA_SelectionCanSelectMultiplePropertyId),
+    selection_is_selection_required = @backingInt(bindings.uia.UIA_SelectionIsSelectionRequiredPropertyId),
+    selection_item_is_selected = @backingInt(bindings.uia.UIA_SelectionItemIsSelectedPropertyId),
+    size_of_set = @backingInt(bindings.uia.UIA_SizeOfSetPropertyId),
+    toggle_toggle_state = @backingInt(bindings.uia.UIA_ToggleToggleStatePropertyId),
+    value_is_read_only = @backingInt(bindings.uia.UIA_ValueIsReadOnlyPropertyId),
+    value_value = @backingInt(bindings.uia.UIA_ValueValuePropertyId),
+    window_is_modal = @backingInt(bindings.uia.UIA_WindowIsModalPropertyId),
 
     /// The number of members. Every loop over this domain uses it.
-    pub const count: usize = @typeInfo(PropertyId).@"enum".fields.len;
+    pub const count: usize = @typeInfo(PropertyId).@"enum".field_names.len;
 };
 
 /// `WM_GETOBJECT`. `zigwin32/win32/ui/windows_and_messaging.zig:1105`.
@@ -239,7 +239,7 @@ pub const RaiseStatus = enum(u8) {
     unavailable,
 
     /// The number of members. Every loop over this domain uses it.
-    pub const count: usize = @typeInfo(RaiseStatus).@"enum".fields.len;
+    pub const count: usize = @typeInfo(RaiseStatus).@"enum".field_names.len;
 };
 
 /// A stable registry slot. Registry and queued events own references to this
@@ -389,7 +389,7 @@ fn platformWithEntryPoints(comptime entry: UiaEntryPoints) Platform {
         .raise_event = struct {
             fn call(slot: *const ProviderSlot, event_id: EventId) RaiseStatus {
                 const provider = simple(slot) orelse return .refused;
-                const result = entry.raise_event(provider, @enumFromInt(@intFromEnum(event_id)));
+                const result = entry.raise_event(provider, @fromBackingInt(@intCast(@backingInt(event_id))));
                 return if (!result.failed) .raised else .refused;
             }
         }.call,
@@ -403,7 +403,7 @@ fn platformWithEntryPoints(comptime entry: UiaEntryPoints) Platform {
                 const provider = simple(slot) orelse return .refused;
                 const result = entry.raise_property_changed(
                     provider,
-                    @enumFromInt(@intFromEnum(property_id)),
+                    @fromBackingInt(@intCast(@backingInt(property_id))),
                     old,
                     new,
                 );
@@ -549,7 +549,7 @@ pub fn windowsWindowApi() ?WindowApi {
             fn call(hwnd: Hwnd, index: i32, procedure: WindowProc) LResult {
                 return bindings.win32.windowlongptr.SetWindowLongPtrW(
                     @ptrCast(hwnd),
-                    @enumFromInt(index),
+                    @fromBackingInt(@intCast(index)),
                     @bitCast(@intFromPtr(procedure)),
                 );
             }
@@ -763,7 +763,7 @@ const native_automation_api: util.AutomationApi = .{
     .array_create_vector = struct {
         fn call(_: ?*anyopaque, kind: u16, lower_bound: i32, count: u32) ?*bindings.SafeArray {
             return bindings.win32.oleaut32.SafeArrayCreateVector(
-                @enumFromInt(kind),
+                @fromBackingInt(@intCast(kind)),
                 lower_bound,
                 count,
             );
@@ -891,13 +891,13 @@ test "every event identifier carries the value the pinned binding gives" {
     // The bound is the length of the table, which `EventId.count` is.
     try testing.expectEqual(expected.len, EventId.count);
     inline for (expected) |entry| {
-        try testing.expectEqual(entry.bits, @as(u32, @intFromEnum(entry.id)));
+        try testing.expectEqual(entry.bits, @as(u32, @backingInt(entry.id)));
     }
     // Every declared member appears in the table exactly once, which is the
     // check a table of numbers cannot make on its own.
     var seen: usize = 0;
-    inline for (@typeInfo(EventId).@"enum".fields) |field| {
-        const entry: EventId = @enumFromInt(@as(u32, @intCast(field.value)));
+    inline for (@typeInfo(EventId).@"enum".field_values) |field_value| {
+        const entry: EventId = @fromBackingInt(@intCast(@as(u32, @intCast(field_value))));
         for (expected) |candidate| {
             if (candidate.id == entry) seen += 1;
         }
@@ -907,7 +907,7 @@ test "every event identifier carries the value the pinned binding gives" {
 
 test "selection property belongs to the complete provider property domain" {
     // `zigwin32/win32/ui/accessibility.zig:9459`.
-    try testing.expectEqual(@as(u32, 30079), @intFromEnum(PropertyId.selection_item_is_selected));
+    try testing.expectEqual(@as(u32, 30079), @backingInt(PropertyId.selection_item_is_selected));
     try testing.expectEqual(@as(usize, 41), PropertyId.count);
 }
 
@@ -1005,13 +1005,13 @@ test "every raise status is distinct, so a refusal is not read as a success" {
 }
 
 test "complete node property events use the upstream UIA property domain" {
-    try testing.expectEqual(@as(u32, 30005), @intFromEnum(PropertyId.name));
-    try testing.expectEqual(@as(u32, 30003), @intFromEnum(PropertyId.control_type));
-    try testing.expectEqual(@as(u32, 30159), @intFromEnum(PropertyId.full_description));
-    try testing.expectEqual(@as(u32, 30174), @intFromEnum(PropertyId.is_dialog));
-    try testing.expectEqual(@as(u32, 30079), @intFromEnum(PropertyId.selection_item_is_selected));
-    try testing.expectEqual(@as(u32, 30086), @intFromEnum(PropertyId.toggle_toggle_state));
-    try testing.expectEqual(@as(u32, 20014), @intFromEnum(EventId.text_text_selection_changed));
+    try testing.expectEqual(@as(u32, 30005), @backingInt(PropertyId.name));
+    try testing.expectEqual(@as(u32, 30003), @backingInt(PropertyId.control_type));
+    try testing.expectEqual(@as(u32, 30159), @backingInt(PropertyId.full_description));
+    try testing.expectEqual(@as(u32, 30174), @backingInt(PropertyId.is_dialog));
+    try testing.expectEqual(@as(u32, 30079), @backingInt(PropertyId.selection_item_is_selected));
+    try testing.expectEqual(@as(u32, 30086), @backingInt(PropertyId.toggle_toggle_state));
+    try testing.expectEqual(@as(u32, 20014), @backingInt(EventId.text_text_selection_changed));
 }
 
 test "native BSTR preserves embedded NUL and VariantClear transfers cleanup" {

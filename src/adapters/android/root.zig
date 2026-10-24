@@ -616,17 +616,17 @@ comptime {
     // and a module that catches one and misses the other is a module that
     // mishandles a failed lookup, so the two sets are compared here where both
     // are visible.
-    const DecodeErrors = @typeInfo(platform_action_module.DecodeError).error_set.?;
-    const FillErrors = @typeInfo(node_module.FillError).error_set.?;
+    const DecodeErrors = @typeInfo(platform_action_module.DecodeError).error_set.error_names.?;
+    const FillErrors = @typeInfo(node_module.FillError).error_set.error_names.?;
     for (DecodeErrors) |tag| {
         var found = false;
         for (FillErrors) |other| {
-            if (std.mem.eql(u8, tag.name, other.name)) found = true;
+            if (std.mem.eql(u8, tag, other)) found = true;
         }
         if (!found) {
             @compileError(std.fmt.comptimePrint(
                 "the decode tag {s} is not in FillError",
-                .{tag.name},
+                .{tag},
             ));
         }
     }
@@ -1170,18 +1170,18 @@ test "a platform action over an unattached environment answers the simple form" 
 test "every failure an adapter call can report is named" {
     // The walk is over the tags of `adapter.Error`, so the error set's own length
     // is the bound. A tag added without a decision behind it is the finding.
-    const adapter_errors = @typeInfo(adapter_module.Error).error_set.?;
+    const adapter_errors = @typeInfo(adapter_module.Error).error_set.error_names.?;
     var seen_null_update = false;
     var seen_tree_rejected = false;
     var seen_narrow_failure = false;
     var seen_filter_failure = false;
     var seen_allocation_failure = false;
     for (adapter_errors) |tag| {
-        if (std.mem.eql(u8, tag.name, "NullTreeUpdate")) seen_null_update = true;
-        if (std.mem.eql(u8, tag.name, "TreeRejected")) seen_tree_rejected = true;
-        if (std.mem.eql(u8, tag.name, "OutOfRange")) seen_narrow_failure = true;
-        if (std.mem.eql(u8, tag.name, "TreeCycle")) seen_filter_failure = true;
-        if (std.mem.eql(u8, tag.name, "OutOfMemory")) seen_allocation_failure = true;
+        if (std.mem.eql(u8, tag, "NullTreeUpdate")) seen_null_update = true;
+        if (std.mem.eql(u8, tag, "TreeRejected")) seen_tree_rejected = true;
+        if (std.mem.eql(u8, tag, "OutOfRange")) seen_narrow_failure = true;
+        if (std.mem.eql(u8, tag, "TreeCycle")) seen_filter_failure = true;
+        if (std.mem.eql(u8, tag, "OutOfMemory")) seen_allocation_failure = true;
     }
     try testing.expect(seen_null_update);
     try testing.expect(seen_tree_rejected);
@@ -1212,7 +1212,7 @@ fn registeredNativeCount() usize {
 // The raw slot array drives the C-facing raise through realTable, not a VM.
 const RaiseConsumerFixture = struct {
     slots: [jni_table_module.jni_slot_count]?*const anyopaque =
-        .{null} ** jni_table_module.jni_slot_count,
+        @splat(null),
     enabled: bool = true,
     failure: ?java_call_module.CallError = null,
     detached: bool = false,

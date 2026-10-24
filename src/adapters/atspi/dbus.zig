@@ -350,11 +350,11 @@ fn parseFrame(arena: *std.heap.ArenaAllocator, raw: []const u8, limits: Limits) 
         .budget = .{ .limits = limits },
     };
     var message: Message = .{
-        .kind = @enumFromInt(raw[1]),
+        .kind = @fromBackingInt(@intCast(raw[1])),
         .flags = raw[2],
         .serial = readInteger(u32, raw[8..12], endian),
     };
-    var seen = [_]bool{false} ** 256;
+    var seen = @as([256]bool, @splat(false));
     while (reader.position < fields_end) {
         try reader.pad(8);
         const code = (try reader.take(1))[0];
@@ -604,7 +604,7 @@ fn encodeFrame(writer: *Encoder, message: Message) CodecError!void {
         return error.InvalidLength;
     if (!writer.count_only) {
         writer.bytes.items[0] = if (writer.endian == .little) 'l' else 'B';
-        writer.bytes.items[1] = @intFromEnum(message.kind);
+        writer.bytes.items[1] = @backingInt(message.kind);
         writer.bytes.items[2] = message.flags;
         writer.bytes.items[3] = 1;
     }

@@ -528,7 +528,7 @@ const Host = struct {
         const self: *Host = @ptrCast(@alignCast(userdata.?));
         _ = self.activation_calls.fetchAdd(1, .acq_rel);
         // This callback only loans the current prebuilt full view. No native call or allocation.
-        consumer(if (self.placeholder) null else &self.cache.full[@intFromEnum(self.current)], consumer_data);
+        consumer(if (self.placeholder) null else &self.cache.full[@backingInt(self.current)], consumer_data);
     }
 
     fn action(request: *const schema.ActionRequest, userdata: ?*anyopaque) void {
@@ -567,7 +567,7 @@ const Host = struct {
                 return;
             }
             const wait = kernel32.WaitForSingleObject(self.callback_release_event, self.options.timeout_ms);
-            if (@intFromEnum(wait) != 0) self.callback_error = error.CallbackGateTimeout;
+            if (@backingInt(wait) != 0) self.callback_error = error.CallbackGateTimeout;
             self.callback_finished.store(true, .release);
         }
     }
@@ -659,15 +659,15 @@ const Host = struct {
 
     fn execute(self: *Host, command: Command, argument: u32) Error!void {
         self.reply = .{};
-        const changed: usize = @intFromEnum(Frame.changed);
+        const changed: usize = @backingInt(Frame.changed);
         switch (command) {
             .late => {
                 self.current = .late;
-                const late: usize = @intFromEnum(Frame.late);
+                const late: usize = @backingInt(Frame.late);
                 try self.publish(&self.cache.delta[late], &self.cache.full[late], .late);
             },
             .restore => {
-                const late: usize = @intFromEnum(Frame.late);
+                const late: usize = @backingInt(Frame.late);
                 try self.publish(&self.cache.full[late], &self.cache.full[late], .late);
             },
             .missing_previous_fallback => {
@@ -680,8 +680,8 @@ const Host = struct {
                 try require(result != 0);
             },
             .publish => {
-                const frame: Frame = if (argument == @intFromEnum(Frame.removed)) .removed else .changed;
-                const index: usize = @intFromEnum(frame);
+                const frame: Frame = if (argument == @backingInt(Frame.removed)) .removed else .changed;
+                const index: usize = @backingInt(frame);
                 try self.publish(&self.cache.delta[index], &self.cache.full[index], frame);
             },
             .invalid => try self.publish(&self.cache.invalid, &self.cache.full[changed], .changed),
@@ -722,13 +722,13 @@ const Host = struct {
 
     fn send(self: *Host, command: Command, argument: u32) Error!Reply {
         if (self.cancelled.load(.acquire)) return error.MessagePumpExhausted;
-        if (user32.PostMessageW(self.hwnd, command_message, @intFromEnum(command), argument) == 0)
+        if (user32.PostMessageW(self.hwnd, command_message, @backingInt(command), argument) == 0)
             return error.WindowOperationFailed;
         const waited = kernel32.WaitForSingleObject(self.reply_event, self.options.timeout_ms);
-        if (@intFromEnum(waited) != 0)
+        if (@backingInt(waited) != 0)
             std.debug.panic(
                 "{s}: owner command has not acknowledged result ownership",
-                .{@errorName(if (@intFromEnum(waited) == 258)
+                .{@errorName(if (@backingInt(waited) == 258)
                     error.CommandTimeout
                 else
                     error.EventOperationFailed)},
@@ -1028,9 +1028,9 @@ const Host = struct {
         defer clearVariant(&value);
         try hr(button.GetCurrentPropertyValue(uia.UIA_ControlTypePropertyId, &value));
         try require(value.Anonymous.Anonymous.vt == .I4);
-        try require(value.Anonymous.Anonymous.Anonymous.lVal == @intFromEnum(uia.UIA_ButtonControlTypeId));
+        try require(value.Anonymous.Anonymous.Anonymous.lVal == @backingInt(uia.UIA_ButtonControlTypeId));
         try self.reporter.passed("sdk_name_controltype_focus_properties", .{
-            .button_control_type = @intFromEnum(control_type),
+            .button_control_type = @backingInt(control_type),
             .text_has_keyboard_focus = focused,
         });
     }
@@ -1435,7 +1435,7 @@ const Host = struct {
 
     fn observeCloseAdmission(self: *Host, weak: *windows.context.WeakContext) Error!void {
         const started = kernel32.WaitForSingleObject(self.close_started_event, self.options.timeout_ms);
-        if (@intFromEnum(started) != 0) return error.CallbackGateTimeout;
+        if (@backingInt(started) != 0) return error.CallbackGateTimeout;
         for (0..self.options.pump_rounds) |_| {
             var lease = weak.lease() catch |err| {
                 if (err != error.ElementNotAvailable) return error.ProviderOperationFailed;
@@ -1447,7 +1447,7 @@ const Host = struct {
             };
             lease.deinit();
             const yielded = kernel32.WaitForSingleObject(self.callback_release_event, 1);
-            if (@intFromEnum(yielded) != 258) return error.EventOperationFailed;
+            if (@backingInt(yielded) != 258) return error.EventOperationFailed;
         }
         return error.CloseAdmissionExhausted;
     }
@@ -1472,7 +1472,7 @@ const Host = struct {
         errdefer if (kernel32.SetEvent(self.callback_release_event) == 0)
             std.debug.panic("error cleanup SetEvent failed", .{});
         const started = kernel32.WaitForSingleObject(self.callback_started_event, self.options.timeout_ms);
-        if (@intFromEnum(started) != 0) return error.CallbackGateTimeout;
+        if (@backingInt(started) != 0) return error.CallbackGateTimeout;
         const observer = std.Thread.spawn(.{}, Host.releaseBlockedCallback, .{self}) catch
             return error.ThreadSpawnFailed;
         var observer_joined = false;
@@ -1505,7 +1505,7 @@ const Host = struct {
         );
         defer release(invoke);
         // A separate owner command publishes this prebuilt removal under the same checked API.
-        const removed_index: usize = @intFromEnum(Frame.removed);
+        const removed_index: usize = @backingInt(Frame.removed);
         // Stage removal through the posted command's argument rather than mutating on client thread.
         const removed = try self.send(.publish, @intCast(removed_index));
         try require(removed.disposition == .committed);

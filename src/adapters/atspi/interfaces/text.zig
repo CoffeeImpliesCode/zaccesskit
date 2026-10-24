@@ -283,7 +283,7 @@ test "Text wire uses Unicode scalar offsets and flattened tuple results" {
     const reversed = try call(&ctx, "GetText", &.{ .{ .int32 = 3 }, .{ .int32 = 1 } });
     try std.testing.expectEqualStrings("", try h.text(reversed[0]));
     const char_reply = try call(&ctx, "GetStringAtOffset", &.{
-        .{ .int32 = 3 }, .{ .uint32 = @intFromEnum(wire.Granularity.char) },
+        .{ .int32 = 3 }, .{ .uint32 = @backingInt(wire.Granularity.char) },
     });
     try std.testing.expectEqual(@as(usize, 3), char_reply.len);
     try std.testing.expectEqualStrings("é", try h.text(char_reply[0]));
@@ -345,7 +345,7 @@ test "Text wire preserves range errors and validates wire enums" {
         .{ .int32 = 0 }, .{ .uint32 = 99 },
     }));
     try std.testing.expectError(error.UnsupportedTextGranularity, call(&ctx, "GetStringAtOffset", &.{
-        .{ .int32 = 0 }, .{ .uint32 = @intFromEnum(wire.Granularity.sentence) },
+        .{ .int32 = 0 }, .{ .uint32 = @backingInt(wire.Granularity.sentence) },
     }));
     try std.testing.expectError(error.InvalidArgs, call(&ctx, "GetRangeExtents", &.{
         .{ .int32 = 0 }, .{ .int32 = 2 }, .{ .uint32 = 99 },

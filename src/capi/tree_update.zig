@@ -330,7 +330,7 @@ pub const TreeUpdateError = error{OutOfMemory};
 /// Read off the writer's own list rather than repeated, and asserted against
 /// `schema.TreeUpdate` at the foot of this file, so a fifth field on the value
 /// fails the build here rather than going missing from the text.
-pub const fieldCount = @typeInfo(SchemaField).@"enum".fields.len;
+pub const fieldCount = @typeInfo(SchemaField).@"enum".field_names.len;
 
 /// The four fields `schema.TreeUpdate` declares, in declaration order.
 ///
@@ -738,11 +738,11 @@ fn assertPointerShaped(signature: anytype) void {
     if (info.return_type) |returned| {
         std.debug.assert(!isAggregate(returned));
     }
-    for (info.params) |param| {
+    for (info.param_types) |param| {
         // A parameter reflection names no type for cannot be an aggregate, so
         // the absence is an answer this gate can act on rather than a gap it
         // has to step over.
-        if (param.type) |declared| {
+        if (param) |declared| {
             std.debug.assert(!isAggregate(declared));
         }
     }
@@ -779,7 +779,7 @@ comptime {
     // its only member, which is the rule `AGENTS.md` section 3 states for every
     // error set in this repository.
     std.debug.assert(TreeUpdateError == std.mem.Allocator.Error);
-    std.debug.assert(@typeInfo(TreeUpdateError).error_set.?.len == 1);
+    std.debug.assert(@typeInfo(TreeUpdateError).error_set.error_names.?.len == 1);
     std.debug.assert(std.mem.eql(
         u8,
         @errorName(@as(TreeUpdateError, error.OutOfMemory)),
@@ -793,10 +793,10 @@ comptime {
     // reorder in the schema that left the count alone would still be caught,
     // because the rendering names each member by its `SchemaField` tag.
     std.debug.assert(fieldCount == 4);
-    std.debug.assert(fieldCount == @typeInfo(schema.TreeUpdate).@"struct".fields.len);
+    std.debug.assert(fieldCount == @typeInfo(schema.TreeUpdate).@"struct".field_names.len);
     for (std.enums.values(SchemaField), 0..) |field, index| {
-        const named = @typeInfo(schema.TreeUpdate).@"struct".fields[index];
-        std.debug.assert(std.mem.eql(u8, named.name, @tagName(field)));
+        const named = @typeInfo(schema.TreeUpdate).@"struct".field_names[index];
+        std.debug.assert(std.mem.eql(u8, named, @tagName(field)));
     }
 
     // The eight declarations that cross as a pointer or a scalar. One signature
@@ -818,14 +818,14 @@ comptime {
     // The header passes and returns the tree identifier by value.
     // Both exports lower its representation only on PowerPC64 Linux musl.
     const getter = @typeInfo(@TypeOf(accesskit_tree_update_get_tree_id)).@"fn";
-    std.debug.assert(getter.params.len == 1);
-    std.debug.assert(!isAggregate(getter.params[0].type.?));
+    std.debug.assert(getter.param_types.len == 1);
+    std.debug.assert(!isAggregate(getter.param_types[0].?));
     std.debug.assert(getter.return_type.? == abi.TreeIdValue);
 
     const setter = @typeInfo(@TypeOf(accesskit_tree_update_set_tree_id)).@"fn";
-    std.debug.assert(setter.params.len == 2);
-    std.debug.assert(!isAggregate(setter.params[0].type.?));
-    std.debug.assert(setter.params[1].type.? == abi.TreeIdValue);
+    std.debug.assert(setter.param_types.len == 2);
+    std.debug.assert(!isAggregate(setter.param_types[0].?));
+    std.debug.assert(setter.param_types[1].? == abi.TreeIdValue);
     std.debug.assert(setter.return_type.? == void);
     std.debug.assert(@sizeOf(TreeId) == 16);
     std.debug.assert(@alignOf(TreeId) == 1);
@@ -1359,7 +1359,7 @@ test "the exported constructor, pusher and accessors answer through the C layer"
 
     // Compare every stored byte against independent logical values.
     const tree_ids = [_]TreeId{
-        .{ .bytes = [_]u8{0} ** 16 },
+        .{ .bytes = @as([16]u8, @splat(0)) },
         .{ .bytes = .{
             0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef,
             0xfe, 0xdc, 0xba, 0x98, 0x76, 0x54, 0x32, 0x10,

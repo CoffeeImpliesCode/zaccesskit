@@ -408,7 +408,7 @@ comptime {
     // every one of them sits at offset 0 of the union. This is the check
     // `src/schema/update.zig` does not make. That module pins the union's
     // size and the tag-to-member pairing, and not where each member lands.
-    if (@typeInfo(ActionDataPayload).@"union".fields.len != 8) @compileError(
+    if (@typeInfo(ActionDataPayload).@"union".field_names.len != 8) @compileError(
         "the header declares eight payload members at include/zaccesskit.h:1623-1648",
     );
     // `@offsetOf` takes a struct and Zig 0.16.0 has no reflection over a union
@@ -431,11 +431,11 @@ comptime {
     // `include/zaccesskit.h:1594-1605` and lists the eight payload members at
     // `:1624-1647` in the same order. The `comptime` loop is what lets a ninth
     // tag pair itself with an eighth member instead of failing here.
-    const tag_fields = @typeInfo(ActionDataTag).@"enum".fields;
-    const member_fields = @typeInfo(ActionDataPayload).@"union".fields;
-    for (tag_fields, member_fields, 0..) |tag, member, index| {
-        if (tag.value != index) @compileError("ActionDataTag is out of order");
-        if (!std.mem.eql(u8, tag.name, member.name)) @compileError(
+    const tag_fields = @typeInfo(ActionDataTag).@"enum";
+    const member_fields = @typeInfo(ActionDataPayload).@"union";
+    for (tag_fields.field_names, tag_fields.field_values, member_fields.field_names, 0..) |tag_name, tag_value, member_name, index| {
+        if (tag_value != index) @compileError("ActionDataTag is out of order");
+        if (!std.mem.eql(u8, tag_name, member_name)) @compileError(
             "ActionDataTag names a member the payload union does not declare",
         );
     }
@@ -455,7 +455,7 @@ test "the callback runs through the declared type and sees both arguments" {
         .data = .{
             .has_value = true,
             .value = .{
-                .tag = @intFromEnum(ActionDataTag.numeric_value),
+                .tag = @backingInt(ActionDataTag.numeric_value),
                 .payload = .{ .numeric_value = 3.5 },
             },
         },
@@ -467,7 +467,7 @@ test "the callback runs through the declared type and sees both arguments" {
     try testing.expectEqual(@as(usize, 1), seen.calls);
     try testing.expectEqual(schema.Action.replace_selected_text, seen.action);
     try testing.expectEqual(@as(u64, 42), seen.target_node.value);
-    try testing.expectEqual(@as(c_uint, @intFromEnum(ActionDataTag.numeric_value)), seen.tag);
+    try testing.expectEqual(@as(c_uint, @backingInt(ActionDataTag.numeric_value)), seen.tag);
     try testing.expectEqual(@as(f64, 3.5), seen.numeric_value);
     try testing.expectEqual(@as(*SeenRequest, &seen), seen.self);
 }
@@ -490,18 +490,18 @@ test "the payload union overlays, so a tag read picks up the member it names" {
     // Three writes that differ in type and in width, so a member that moved to
     // its own offset would read the wrong bytes for at least one of them.
     var data: CActionData = undefined;
-    data.tag = @intFromEnum(ActionDataTag.custom_action);
+    data.tag = @backingInt(ActionDataTag.custom_action);
     data.payload.custom_action = 7;
     try testing.expectEqual(@as(i32, 7), data.payload.custom_action);
 
-    data.tag = @intFromEnum(ActionDataTag.numeric_value);
+    data.tag = @backingInt(ActionDataTag.numeric_value);
     data.payload.numeric_value = 1.5;
     try testing.expectEqual(@as(f64, 1.5), data.payload.numeric_value);
 
     // The widest member, at 32 bytes, is the one a struct-shaped payload would
     // push past the union.
     const selection = zeroSelection();
-    data.tag = @intFromEnum(ActionDataTag.set_text_selection);
+    data.tag = @backingInt(ActionDataTag.set_text_selection);
     data.payload.set_text_selection = selection;
     try testing.expect(data.payload.set_text_selection.eql(selection));
     try testing.expectEqual(@as(usize, 32), @sizeOf(schema.TextSelection));
@@ -516,11 +516,11 @@ test "the payload union overlays, so a tag read picks up the member it names" {
     // Both directions use a value the two enumerations share, because a cross
     // read of a number one of them does not declare is itself a trap.
     data.payload.scroll_unit = .page;
-    const unit_bits = @intFromEnum(data.payload.scroll_unit);
-    try testing.expectEqual(as_hint.bottom_right, @as(as_hint, @enumFromInt(unit_bits)));
+    const unit_bits = @backingInt(data.payload.scroll_unit);
+    try testing.expectEqual(as_hint.bottom_right, @as(as_hint, @fromBackingInt(@intCast(unit_bits))));
     data.payload.scroll_hint = .top_left;
-    const hint_bits = @intFromEnum(data.payload.scroll_hint);
-    try testing.expectEqual(as_unit.item, @as(as_unit, @enumFromInt(hint_bits)));
+    const hint_bits = @backingInt(data.payload.scroll_hint);
+    try testing.expectEqual(as_unit.item, @as(as_unit, @fromBackingInt(@intCast(hint_bits))));
 }
 
 test "every tag names its own payload member and no ninth one appears" {
@@ -528,13 +528,13 @@ test "every tag names its own payload member and no ninth one appears" {
     // above rather than a silent gap here. `inline for` is what makes `tag`
     // comptime-known: `@typeInfo` gives back a struct field that requires
     // comptime, so a plain `for` cannot read `tag.value`.
-    const members = @typeInfo(ActionDataPayload).@"union".fields;
-    const tags = @typeInfo(ActionDataTag).@"enum".fields;
-    try testing.expectEqual(members.len, tags.len);
+    const members = @typeInfo(ActionDataPayload).@"union";
+    const tags = @typeInfo(ActionDataTag).@"enum";
+    try testing.expectEqual(members.field_names.len, tags.field_names.len);
 
-    inline for (tags, members, 0..) |tag, member, index| {
-        try testing.expectEqualStrings(tag.name, member.name);
-        try testing.expectEqual(index, tag.value);
+    inline for (tags.field_names, tags.field_values, members.field_names, 0..) |tag_name, tag_value, member_name, index| {
+        try testing.expectEqualStrings(tag_name, member_name);
+        try testing.expectEqual(index, tag_value);
     }
 }
 
@@ -570,7 +570,7 @@ test "a request with a number payload frees nothing and stays readable" {
         .data = .{
             .has_value = true,
             .value = .{
-                .tag = @intFromEnum(ActionDataTag.custom_action),
+                .tag = @backingInt(ActionDataTag.custom_action),
                 .payload = .{ .custom_action = 3 },
             },
         },
@@ -774,7 +774,7 @@ test "the public request free releases an independent copy through the installed
             self.target_tree = owned.target_tree;
             self.target_node = owned.target_node;
             if (!owned.data.has_value) return;
-            if (owned.data.value.tag != @intFromEnum(schema.ActionDataTag.value)) return;
+            if (owned.data.value.tag != @backingInt(schema.ActionDataTag.value)) return;
             const pointer = owned.data.value.payload.value orelse return;
             const text = std.mem.span(pointer);
             if (text.len != self.text.len) return;
@@ -837,10 +837,10 @@ fn recordRequest(request: *CActionRequest, userdata: ?*anyopaque) callconv(.c) v
     seen.target_node = request.target_node;
     if (!request.data.has_value) return;
     seen.tag = request.data.value.tag;
-    if (request.data.value.tag == @intFromEnum(ActionDataTag.value)) {
+    if (request.data.value.tag == @backingInt(ActionDataTag.value)) {
         seen.text = request.data.value.payload.value;
     }
-    if (request.data.value.tag == @intFromEnum(ActionDataTag.numeric_value)) {
+    if (request.data.value.tag == @backingInt(ActionDataTag.numeric_value)) {
         seen.numeric_value = request.data.value.payload.numeric_value;
     }
 }

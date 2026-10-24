@@ -570,9 +570,9 @@ test "ns_role maps all 182 Role variants and leaves none unmapped" {
     // here as well as at compile time, and the `else` a port might add to
     // silence a compile error still fails because no variant answers `null`.
     const info = @typeInfo(schema.Role).@"enum";
-    try testing.expectEqual(@as(usize, 182), info.fields.len);
-    inline for (info.fields) |field| {
-        const role: schema.Role = @enumFromInt(field.value);
+    try testing.expectEqual(@as(usize, 182), info.field_names.len);
+    inline for (info.field_values) |field_value| {
+        const role: schema.Role = @fromBackingInt(@intCast(field_value));
         const answer = nsRole(role, null);
         // Not empty: a client that receives an empty role has been told the
         // node has a role named "".
@@ -583,8 +583,8 @@ test "ns_role maps all 182 Role variants and leaves none unmapped" {
     }
     // Every role answers under a toggled state too, so the one conditional arm
     // cannot leave a hole.
-    inline for (info.fields) |field| {
-        const role: schema.Role = @enumFromInt(field.value);
+    inline for (info.field_values) |field_value| {
+        const role: schema.Role = @fromBackingInt(@intCast(field_value));
         try testing.expect(nsRole(role, .true_).len > 1);
     }
 }
@@ -600,8 +600,8 @@ test "every one of the 31 role constants is reachable from ns_role" {
         // state and `AXCheckBoxRole` only under a toggled one, so neither state
         // alone reaches all 31 and the union is what the claim is about.
         var reached: usize = 0;
-        inline for (@typeInfo(schema.Role).@"enum".fields) |field| {
-            const role: schema.Role = @enumFromInt(field.value);
+        inline for (@typeInfo(schema.Role).@"enum".field_values) |field_value| {
+            const role: schema.Role = @fromBackingInt(@intCast(field_value));
             if (std.mem.eql(u8, nsRole(role, null), constant.value)) reached += 1;
             if (std.mem.eql(u8, nsRole(role, .true_), constant.value)) reached += 1;
         }
@@ -627,8 +627,8 @@ test "the roles that share one AX literal share it deliberately" {
     // from the 182 variants minus every other fold.
     const group_answer = literals.role_constants[5].value;
     var counted: usize = 0;
-    inline for (@typeInfo(schema.Role).@"enum".fields) |field| {
-        const role: schema.Role = @enumFromInt(field.value);
+    inline for (@typeInfo(schema.Role).@"enum".field_values) |field_value| {
+        const role: schema.Role = @fromBackingInt(@intCast(field_value));
         if (std.mem.eql(u8, nsRole(role, null), group_answer)) counted += 1;
     }
     try testing.expectEqual(group_role_fold_size, counted);
@@ -673,11 +673,11 @@ test "ns_sub_role answers for 44 roles and returns null for the other 138" {
     // and both are silent: a role that maps to nothing returning a string, and a
     // role that maps to a string returning null.
     const info = @typeInfo(schema.Role).@"enum";
-    try testing.expectEqual(@as(usize, 182), info.fields.len);
+    try testing.expectEqual(@as(usize, 182), info.field_names.len);
     var mapped: usize = 0;
     var toggled_only: usize = 0;
-    inline for (info.fields) |field| {
-        const role: schema.Role = @enumFromInt(field.value);
+    inline for (info.field_values) |field_value| {
+        const role: schema.Role = @fromBackingInt(@intCast(field_value));
         if (nsSubRole(role, null)) |text| {
             mapped += 1;
             try testing.expect(text.len > 1);
@@ -731,8 +731,8 @@ test "the 36 arms that emit a literal emit all 32 spellings" {
     var literal_arms: usize = 0;
     var seen: [subrole_literal_count][]const u8 = undefined;
     var seen_count: usize = 0;
-    inline for (@typeInfo(schema.Role).@"enum".fields) |field| {
-        const role: schema.Role = @enumFromInt(field.value);
+    inline for (@typeInfo(schema.Role).@"enum".field_values) |field_value| {
+        const role: schema.Role = @fromBackingInt(@intCast(field_value));
         if (nsSubRole(role, .true_)) |answer| {
             if (literals.findInGroup(.subrole_literal, answer) != null) {
                 literal_arms += 1;
@@ -767,8 +767,8 @@ test "a role with no subrole answers nil rather than an empty string" {
     // it is one of the 44 mapped roles, and `null` under `.true_` would be the
     // wrong answer for it.
     var unmapped: usize = 0;
-    inline for (@typeInfo(schema.Role).@"enum".fields) |field| {
-        const role: schema.Role = @enumFromInt(field.value);
+    inline for (@typeInfo(schema.Role).@"enum".field_values) |field_value| {
+        const role: schema.Role = @fromBackingInt(@intCast(field_value));
         if (role == .button) continue;
         if (nsSubRole(role, .true_)) |answer| {
             // An answer that is present is never the empty string, and it is
@@ -794,8 +794,8 @@ test "the five roles that expose their label in their value" {
     for (expected) |role| {
         try testing.expect(labelIsExposedInValue(role));
     }
-    inline for (@typeInfo(schema.Role).@"enum".fields) |field| {
-        const role: schema.Role = @enumFromInt(field.value);
+    inline for (@typeInfo(schema.Role).@"enum".field_values) |field_value| {
+        const role: schema.Role = @fromBackingInt(@intCast(field_value));
         var wanted = false;
         for (expected) |candidate| {
             if (candidate == role) wanted = true;

@@ -480,9 +480,9 @@ test "toI32Checked rejects what an i32 cannot hold" {
 }
 
 test "every NarrowError member is reachable" {
-    inline for (@typeInfo(NarrowError).error_set.?) |member| {
-        const rejecting: f64 = if (std.mem.eql(u8, member.name, "OutOfRange")) 1.0e19 else 0.0;
-        try testing.expectError(@field(NarrowError, member.name), toI32Checked(rejecting));
+    inline for (@typeInfo(NarrowError).error_set.error_names.?) |member| {
+        const rejecting: f64 = if (std.mem.eql(u8, member, "OutOfRange")) 1.0e19 else 0.0;
+        try testing.expectError(@field(NarrowError, member), toI32Checked(rejecting));
     }
 }
 

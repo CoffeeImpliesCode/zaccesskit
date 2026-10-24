@@ -151,8 +151,8 @@ pub const Flag = enum(u8) {
 };
 
 comptime {
-    std.debug.assert(@typeInfo(Flag).@"enum".fields.len == Flag.count);
-    std.debug.assert(@intFromEnum(Flag.is_suggestion) == Flag.count - 1);
+    std.debug.assert(@typeInfo(Flag).@"enum".field_names.len == Flag.count);
+    std.debug.assert(@backingInt(Flag.is_suggestion) == Flag.count - 1);
 }
 
 /// The bound on any walk over `Flag`.
@@ -164,7 +164,7 @@ pub const flagCount: usize = Flag.count;
 /// method upstream because `Flag` is a type it owns. A conversion lives at
 /// file scope here, prefixed by the type it converts.
 pub fn flagMask(flag: Flag) u32 {
-    return @as(u32, 1) << @as(u5, @intCast(@intFromEnum(flag)));
+    return @as(u32, 1) << @as(u5, @intCast(@backingInt(flag)));
 }
 
 /// True when `flag_set` carries the bit for `flag`.
@@ -323,7 +323,7 @@ pub const PropertyId = enum(u8) {
 };
 
 /// Every tag `PropertyId` carries, which is every property and nothing else.
-pub const propertyIdTagCount: usize = @typeInfo(PropertyId).@"enum".fields.len;
+pub const propertyIdTagCount: usize = @typeInfo(PropertyId).@"enum".field_names.len;
 
 /// The tag carrying `value`, or `null` when no tag does.
 ///
@@ -331,7 +331,7 @@ pub const propertyIdTagCount: usize = @typeInfo(PropertyId).@"enum".fields.len;
 /// here rather than producing a value no switch can name.
 pub fn propertyIdFromInt(value: u8) ?PropertyId {
     if (value >= propertyIdTagCount) return null;
-    return @enumFromInt(value);
+    return @fromBackingInt(@intCast(value));
 }
 
 /// The payload of one property: its shape, and nothing else.
@@ -594,7 +594,7 @@ pub fn PropertyValuePayloadType(comptime tag: PropertyValueTag) type {
 /// A decoder compares against this rather than against the size of the tag
 /// type, because a tag type is one byte and this is 29.
 pub fn propertyValueTagCount() usize {
-    return @typeInfo(PropertyValueTag).@"enum".fields.len;
+    return @typeInfo(PropertyValueTag).@"enum".field_names.len;
 }
 
 /// A value carrying `payload` under `tag`.
@@ -1043,12 +1043,12 @@ pub const property_value_tags_by_id: [propertyIdCount]PropertyValueTag = tags: {
 /// The row for `id`. Every tag has one, so the discriminant indexes the table
 /// directly. `comptime`, because a row holds a `type`.
 pub fn propertyDescriptor(comptime id: PropertyId) PropertyDescriptor {
-    return property_descriptors[@intFromEnum(id)];
+    return property_descriptors[@backingInt(id)];
 }
 
 /// The payload tag `id` carries, read from the table's run-time projection.
 pub fn propertyValueTagOf(id: PropertyId) PropertyValueTag {
-    return property_value_tags_by_id[@intFromEnum(id)];
+    return property_value_tags_by_id[@backingInt(id)];
 }
 
 /// How many rows of `property_descriptors` carry each payload tag, indexed by
@@ -1061,8 +1061,8 @@ pub fn propertyValueTagOf(id: PropertyId) PropertyValueTag {
 /// one comptime branch quota, while summing the per-tag counts costs one
 /// addition per tag the family owns.
 pub const property_counts_by_tag: [propertyValueTagCount()]usize = counts: {
-    var collected = [_]usize{0} ** propertyValueTagCount();
-    for (property_descriptors) |row| collected[@intFromEnum(row.tag)] += 1;
+    var collected = @as([propertyValueTagCount()]usize, @splat(0));
+    for (property_descriptors) |row| collected[@backingInt(row.tag)] += 1;
     break :counts collected;
 };
 
@@ -1133,7 +1133,7 @@ pub const Family = enum {
 
 /// How many families there are, and the `comptime` bound on the sweeps that
 /// walk them.
-pub const familyCount: usize = @typeInfo(Family).@"enum".fields.len;
+pub const familyCount: usize = @typeInfo(Family).@"enum".field_names.len;
 
 /// The payload tags `family` owns, and no other family does.
 ///
@@ -1177,16 +1177,16 @@ pub fn familyTags(comptime family: Family) []const PropertyValueTag {
 /// descriptor rows is 1131 branches, which exhausts it on the third family
 /// analysed. This table is 29 entries wide and is built in 28 steps.
 const family_by_tag: [propertyValueTagCount()]?Family = owners: {
-    var collected = [_]?Family{null} ** propertyValueTagCount();
+    var collected = @as([propertyValueTagCount()]?Family, @splat(null));
     for (std.enums.values(Family)) |family| {
         for (familyTags(family)) |tag| {
-            if (collected[@intFromEnum(tag)]) |first| {
+            if (collected[@backingInt(tag)]) |first| {
                 @compileError(std.fmt.comptimePrint(
                     "tag `{s}` is owned by props/{s}.zig and props/{s}.zig; one family each",
                     .{ @tagName(tag), @tagName(first), @tagName(family) },
                 ));
             }
-            collected[@intFromEnum(tag)] = family;
+            collected[@backingInt(tag)] = family;
         }
     }
     break :owners collected;
@@ -1243,7 +1243,7 @@ pub fn assertFamilyReachable(comptime family: Family, comptime claimed: anytype)
     // domain this table could hold.
     var seen: u128 = 0;
     for (claimed, 0..) |id, index| {
-        const bit = @as(u128, 1) << @intCast(@intFromEnum(id));
+        const bit = @as(u128, 1) << @intCast(@backingInt(id));
         if (seen & bit != 0) {
             @compileError(std.fmt.comptimePrint(
                 "props/{s}.zig lists `{s}` at entry {d} and again; one entry per property",
@@ -1257,7 +1257,7 @@ pub fn assertFamilyReachable(comptime family: Family, comptime claimed: anytype)
         // could claim a property and read the wrong arm, and a second family
         // could also claim it and both would be checked against nothing.
         const tag = propertyValueTagOf(id);
-        if (family_by_tag[@intFromEnum(tag)] != family) {
+        if (family_by_tag[@backingInt(tag)] != family) {
             @compileError(std.fmt.comptimePrint(
                 "props/{s}.zig claims `{s}`, whose descriptor row carries tag `{s}`; " ++
                     "props/{s}.zig owns that tag",
@@ -1265,7 +1265,7 @@ pub fn assertFamilyReachable(comptime family: Family, comptime claimed: anytype)
                     name,
                     @tagName(id),
                     @tagName(tag),
-                    if (family_by_tag[@intFromEnum(tag)]) |owner| @tagName(owner) else "no family",
+                    if (family_by_tag[@backingInt(tag)]) |owner| @tagName(owner) else "no family",
                 },
             ));
         }
@@ -1276,7 +1276,7 @@ pub fn assertFamilyReachable(comptime family: Family, comptime claimed: anytype)
     // three rows once for each of the three properties that share it, which is
     // 9 where the table holds 3.
     var owned_rows: usize = 0;
-    for (familyTags(family)) |tag| owned_rows += property_counts_by_tag[@intFromEnum(tag)];
+    for (familyTags(family)) |tag| owned_rows += property_counts_by_tag[@backingInt(tag)];
 
     // Claim 2, by the bijection argued above.
     if (claimed.len != owned_rows) {
@@ -1284,7 +1284,7 @@ pub fn assertFamilyReachable(comptime family: Family, comptime claimed: anytype)
         // `propertyDescriptorCount` rows, which is the cost the count check
         // exists to avoid, so it runs only on this path.
         for (property_descriptors, 0..) |row, index| {
-            if (family_by_tag[@intFromEnum(row.tag)] == family and
+            if (family_by_tag[@backingInt(row.tag)] == family and
                 !declaresId(&claimed, row.id))
             {
                 @compileError(std.fmt.comptimePrint(
@@ -1310,11 +1310,11 @@ pub fn assertTagsPartitioned() void {
     comptime {
         // `none` is the absence tag: no descriptor row carries it and no family
         // publishes an accessor for it, so it stays unowned by design.
-        if (family_by_tag[@intFromEnum(PropertyValueTag.none)] != null) {
+        if (family_by_tag[@backingInt(PropertyValueTag.none)] != null) {
             @compileError("PropertyValueTag.none is the absence tag and no family owns it");
         }
         for (property_descriptors, 0..) |row, index| {
-            if (family_by_tag[@intFromEnum(row.tag)] == null) {
+            if (family_by_tag[@backingInt(row.tag)] == null) {
                 @compileError(std.fmt.comptimePrint(
                     "descriptor row {d} is `{s}` and carries tag `{s}`, which no " ++
                         "family owns; add the tag to one arm of `familyTags`",
@@ -1376,7 +1376,7 @@ pub const Properties = struct {
     pub fn find(self: *const Properties, id: PropertyId) ?usize {
         const position = self.insertionIndex(id);
         if (position >= self.items.items.len) return null;
-        if (@intFromEnum(self.items.items[position].id) != @intFromEnum(id)) return null;
+        if (@backingInt(self.items.items[position].id) != @backingInt(id)) return null;
         return position;
     }
 
@@ -1514,8 +1514,8 @@ pub const Properties = struct {
         var source_index: usize = 0;
         while (index < out.items.items.len and source_index < self.items.items.len) {
             const order = std.math.order(
-                @intFromEnum(out.items.items[index].id),
-                @intFromEnum(self.items.items[source_index].id),
+                @backingInt(out.items.items[index].id),
+                @backingInt(self.items.items[source_index].id),
             );
             switch (order) {
                 .eq => {
@@ -1564,7 +1564,7 @@ pub const Properties = struct {
 
     /// The position `id` would occupy, which is where an insert belongs.
     fn insertionIndex(self: *const Properties, id: PropertyId) usize {
-        const needle = @intFromEnum(id);
+        const needle = @backingInt(id);
         var low: usize = 0;
         var high: usize = self.items.items.len;
         // The midpoint is floored rather than exact, so an odd bound is not a
@@ -1573,7 +1573,7 @@ pub const Properties = struct {
         // ceil(log2(len + 1)) times and terminates.
         while (low < high) {
             const middle = low + @divFloor(high - low, 2);
-            if (@intFromEnum(self.items.items[middle].id) < needle) {
+            if (@backingInt(self.items.items[middle].id) < needle) {
                 low = middle + 1;
             } else {
                 high = middle;
@@ -1588,17 +1588,17 @@ comptime {
     // without a row and a row written twice are both compile errors. This is
     // the exhaustiveness the 27 upstream `macro_rules!` definitions gave the
     // Rust type checker for free.
-    if (@typeInfo(PropertyId).@"enum".fields.len != propertyDescriptorCount) {
+    if (@typeInfo(PropertyId).@"enum".field_names.len != propertyDescriptorCount) {
         @compileError(std.fmt.comptimePrint(
             "PropertyId carries {d} tags and property_descriptors holds {d} rows; the " ++
                 "contract is one row per property",
-            .{ @typeInfo(PropertyId).@"enum".fields.len, propertyDescriptorCount },
+            .{ @typeInfo(PropertyId).@"enum".field_names.len, propertyDescriptorCount },
         ));
     }
 
-    var seen = [_]bool{false} ** propertyDescriptorCount;
+    var seen = @as([propertyDescriptorCount]bool, @splat(false));
     for (property_descriptors) |row| {
-        const index = @intFromEnum(row.id);
+        const index = @backingInt(row.id);
         if (index >= propertyDescriptorCount) {
             @compileError(std.fmt.comptimePrint(
                 "the descriptor for `{s}` carries discriminant {d}, which is outside " ++
@@ -1638,7 +1638,7 @@ comptime {
     // The domain is dense from 0, so a row can be indexed by discriminant
     // rather than searched.
     for (property_descriptors, 0..) |row, index| {
-        if (@intFromEnum(row.id) != index) {
+        if (@backingInt(row.id) != index) {
             @compileError(std.fmt.comptimePrint(
                 "the descriptor at position {d} is `{s}`; the rows must stay in " ++
                     "PropertyId order so the discriminant indexes them",
@@ -1670,7 +1670,7 @@ const testing = std.testing;
 /// The property at `index`, for a `comptime`-only table and a run-time loop.
 fn propertyAt(index: usize) PropertyId {
     std.debug.assert(index < propertyIdCount);
-    return @enumFromInt(@as(u8, @intCast(index)));
+    return @fromBackingInt(@intCast(@as(u8, @intCast(index))));
 }
 
 /// One stored value per payload shape, built by hand so a test can name a
@@ -1754,7 +1754,7 @@ test "PropertyId carries exactly 87 properties and no sentinel" {
     try testing.expectEqual(@as(usize, 87), propertyIdCount);
     try testing.expectEqual(@as(usize, 87), propertyIdTagCount);
     // The last real property is 86, so 87 names nothing at all.
-    try testing.expectEqual(@as(u8, 86), @intFromEnum(PropertyId.tree_id));
+    try testing.expectEqual(@as(u8, 86), @backingInt(PropertyId.tree_id));
     try testing.expectEqual(PropertyValueTag.affine, propertyDescriptor(.transform).tag);
     try testing.expectEqual(std.ArrayList(NodeId), PropertyPayloadType(.children));
     try testing.expectEqual(bool, PropertyPayloadType(.expanded));
@@ -1959,7 +1959,7 @@ test "the store keeps its slice sorted whatever order it is written in" {
     var previous: u8 = 0;
     var first = true;
     for (properties.items.items) |entry| {
-        const current = @intFromEnum(entry.id);
+        const current = @backingInt(entry.id);
         if (!first) try testing.expect(current > previous);
         previous = current;
         first = false;
@@ -2221,7 +2221,7 @@ test "cloneInto sorted merge preserves scroll getters including zero maximum" {
     try testing.expectEqual(@as(usize, 4), out.count());
     try testing.expect(source.eql(&out));
     for (out.items.items[0 .. out.count() - 1], out.items.items[1..]) |left, right| {
-        try testing.expect(@intFromEnum(left.id) < @intFromEnum(right.id));
+        try testing.expect(@backingInt(left.id) < @backingInt(right.id));
     }
 }
 
@@ -2258,7 +2258,7 @@ test "cloneInto sorted merge owns interleaved strings through allocation failure
                 for (out.items.items, 0..) |entry, index| {
                     if (index > 0) {
                         try testing.expect(
-                            @intFromEnum(out.items.items[index - 1].id) < @intFromEnum(entry.id),
+                            @backingInt(out.items.items[index - 1].id) < @backingInt(entry.id),
                         );
                     }
                     try testing.expectEqual(index, out.find(entry.id).?);
@@ -2448,7 +2448,7 @@ test "flag masks are one bit each and a set round trips" {
         const mask = flagMask(flag);
         // One bit, and it is the flag's own position.
         try testing.expectEqual(mask & (mask -% 1), 0);
-        try testing.expectEqual(@as(u32, 1) << @as(u5, @intCast(@intFromEnum(flag))), mask);
+        try testing.expectEqual(@as(u32, 1) << @as(u5, @intCast(@backingInt(flag))), mask);
         try testing.expect(flagSetContains(mask, flag));
         try testing.expectEqual(mask, flagSetDifference(mask, 0));
         try testing.expectEqual(mask, flagSetUnion(0, mask));
@@ -2466,7 +2466,7 @@ test "flag masks are one bit each and a set round trips" {
 
 test "the 18 flag bit positions are dense and reach 17" {
     try testing.expectEqual(@as(usize, 18), flagCount);
-    try testing.expectEqual(@as(u8, 17), @intFromEnum(Flag.is_suggestion));
+    try testing.expectEqual(@as(u8, 17), @backingInt(Flag.is_suggestion));
     // Every position in 0 to 17 is claimed by exactly one flag, which is what
     // makes the discriminant the bit position.
     var claimed: u32 = 0;

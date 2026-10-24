@@ -333,31 +333,31 @@ comptime {
     // exhaustive, and which tag sits at each end. The sweep that proves every
     // tag is reachable belongs to `schema/props/table.zig`, which owns the
     // property domain.
-    std.debug.assert(info.fields.len == 182);
-    std.debug.assert(info.is_exhaustive);
-    std.debug.assert(std.mem.eql(u8, info.fields[0].name, "unknown"));
-    std.debug.assert(std.mem.eql(u8, info.fields[info.fields.len - 1].name, "terminal"));
+    std.debug.assert(info.field_names.len == 182);
+    std.debug.assert(info.mode == .exhaustive);
+    std.debug.assert(std.mem.eql(u8, info.field_names[0], "unknown"));
+    std.debug.assert(std.mem.eql(u8, info.field_names[info.field_names.len - 1], "terminal"));
 
     // Every discriminant sits at its declaration index, so a tag inserted in
     // the middle without renumbering the tags after it is a compile error that
     // names the tag, rather than a silent change to every serialized tree.
-    for (info.fields, 0..) |field, index| {
-        std.debug.assert(field.value == index);
+    for (info.field_values, 0..) |field_value, index| {
+        std.debug.assert(field_value == index);
     }
 }
 
 test "Role carries the 182 tags upstream declares" {
     comptime {
-        std.debug.assert(@typeInfo(Role).@"enum".fields.len == 182);
+        std.debug.assert(@typeInfo(Role).@"enum".field_names.len == 182);
         std.debug.assert(@sizeOf(Role) == 1);
         std.debug.assert(@alignOf(Role) == 1);
     }
 }
 
 test "the discriminants upstream pins" {
-    try std.testing.expectEqual(@as(u8, 0), @intFromEnum(Role.unknown));
+    try std.testing.expectEqual(@as(u8, 0), @backingInt(Role.unknown));
     // `GenericContainer` is `lib.rs:85`, the fifteenth tag. An anchor inside
     // the range catches the reordering that the two endpoints cannot.
-    try std.testing.expectEqual(@as(u8, 14), @intFromEnum(Role.generic_container));
-    try std.testing.expectEqual(@as(u8, 181), @intFromEnum(Role.terminal));
+    try std.testing.expectEqual(@as(u8, 14), @backingInt(Role.generic_container));
+    try std.testing.expectEqual(@as(u8, 181), @backingInt(Role.terminal));
 }

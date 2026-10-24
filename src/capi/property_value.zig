@@ -143,7 +143,7 @@ pub const EnumDomain = enum {
 ///
 /// This is the compile-time bound on every loop over the enumeration domain,
 /// read off the type so a member added to it is counted without an edit here.
-pub const enum_domain_count: u32 = @intCast(@typeInfo(EnumDomain).@"enum".fields.len);
+pub const enum_domain_count: u32 = @intCast(@typeInfo(EnumDomain).@"enum".field_names.len);
 
 /// One C enumerator and the Zig variant it is the same wire byte as.
 ///
@@ -669,7 +669,7 @@ pub const enum_rows: [enum_domain_count]EnumRow = .{
 /// run-time lookup and no run-time failure. The returned value is a copy of
 /// `const` data and is never released.
 pub fn rowFor(comptime key: EnumDomain) EnumRow {
-    return enum_rows[@intFromEnum(key)];
+    return enum_rows[@backingInt(key)];
 }
 
 /// How many tags `enum_rows` carries between them: 273.
@@ -738,11 +738,11 @@ fn flatten() struct { entries: [tag_count]TagEntry, rows_agree: [enum_domain_cou
     var at: usize = 0;
     for (enum_rows, 0..) |row, position| {
         const fields = fieldsOf(row.zig_type);
-        var agrees = fields.len == row.tags.len;
+        var agrees = fields.field_names.len == row.tags.len;
         for (row.tags, 0..) |entry, index| {
-            const resolved = index < fields.len and
-                fields[index].value == index and
-                std.mem.eql(u8, fields[index].name, entry.zig_name);
+            const resolved = index < fields.field_names.len and
+                fields.field_values[index] == index and
+                std.mem.eql(u8, fields.field_names[index], entry.zig_name);
             agrees = agrees and resolved;
             collected[at] = .{
                 .c_name = entry.c_name,
@@ -836,8 +836,8 @@ comptime {
     // pairs each tag with the union member the header lists at the same index,
     // and `accesskit_error` crosses outward only. The contiguous-discriminant
     // sweep above covers both.
-    std.debug.assert(rows_agree[@intFromEnum(EnumDomain.action_data_tag)]);
-    std.debug.assert(rows_agree[@intFromEnum(EnumDomain.error_tag)]);
+    std.debug.assert(rows_agree[@backingInt(EnumDomain.action_data_tag)]);
+    std.debug.assert(rows_agree[@backingInt(EnumDomain.error_tag)]);
 }
 
 // --- the checks ----------------------------------------------------------------
@@ -856,8 +856,8 @@ const enumerator_head: []const u8 = "ACCESSKIT_";
 /// name by searching the array instead would make every row quadratic in its
 /// own width and would spend the whole evaluation budget on `accesskit_role`
 /// alone.
-fn fieldsOf(comptime Tag: type) []const std.builtin.Type.EnumField {
-    return @typeInfo(Tag).@"enum".fields;
+fn fieldsOf(comptime Tag: type) std.builtin.Type.Enum {
+    return @typeInfo(Tag).@"enum";
 }
 
 /// The variant name with the trailing underscore a reserved Zig word carries
@@ -903,11 +903,11 @@ fn assertSpelling(comptime row: EnumRow) void {
     @setEvalBranchQuota(200_000);
     const fields = fieldsOf(row.zig_type);
     for (row.tags, 0..) |entry, index| {
-        if (index >= fields.len) @compileError("a row is wider than its enum");
-        if (!std.mem.eql(u8, fields[index].name, entry.zig_name)) {
+        if (index >= fields.field_names.len) @compileError("a row is wider than its enum");
+        if (!std.mem.eql(u8, fields.field_names[index], entry.zig_name)) {
             @compileError("a row names a variant its enum does not declare, or not in order");
         }
-        if (fields[index].value != index) {
+        if (fields.field_values[index] != index) {
             @compileError("a row is not at the wire byte its enum gives that variant");
         }
         if (!std.mem.eql(u8, &expectedCName(row, entry.zig_name), entry.c_name)) {
@@ -925,8 +925,8 @@ fn assertSpelling(comptime row: EnumRow) void {
 /// needs nothing else.
 fn assertContiguousDiscriminants(comptime key: EnumDomain) void {
     @setEvalBranchQuota(200_000);
-    for (fieldsOf(rowFor(key).zig_type), 0..) |field, index| {
-        if (field.value != index) {
+    for (fieldsOf(rowFor(key).zig_type).field_values, 0..) |field, index| {
+        if (field != index) {
             @compileError("a schema enum's discriminant is not its declaration index");
         }
     }
@@ -946,8 +946,8 @@ fn assertGate(comptime key: EnumDomain, comptime decode: anytype) void {
     const row = rowFor(key);
     const fields = fieldsOf(row.zig_type);
     for (row.tags, 0..) |entry, index| {
-        if (index >= fields.len) @compileError("a row is wider than its enum");
-        if (!std.mem.eql(u8, fields[index].name, entry.zig_name)) {
+        if (index >= fields.field_names.len) @compileError("a row is wider than its enum");
+        if (!std.mem.eql(u8, fields.field_names[index], entry.zig_name)) {
             @compileError("a row names a variant its enum does not declare, or not in order");
         }
         const wanted: row.zig_type = @field(row.zig_type, entry.zig_name);
@@ -992,20 +992,20 @@ test "the port error enum registry preserves the three C names and wire values" 
     try testing.expectEqual(EnumDomain.error_tag, row.key);
     try testing.expect(row.zig_type == allocation.Tag);
     try testing.expectEqual(cases.len, row.tags.len);
-    try testing.expectEqual(cases.len, @typeInfo(allocation.Tag).@"enum".fields.len);
+    try testing.expectEqual(cases.len, @typeInfo(allocation.Tag).@"enum".field_names.len);
 
     inline for (cases, 0..) |case, index| {
         const entry = row.tags[index];
         try testing.expectEqualStrings(case.c_name, entry.c_name);
         try testing.expectEqualStrings(@tagName(case.tag), entry.zig_name);
-        try testing.expectEqual(case.wire, @intFromEnum(case.tag));
+        try testing.expectEqual(case.wire, @backingInt(case.tag));
         const actual_tag = @field(row.zig_type, entry.zig_name);
         try testing.expectEqual(case.tag, actual_tag);
-        try testing.expectEqual(case.wire, @intFromEnum(actual_tag));
+        try testing.expectEqual(case.wire, @backingInt(actual_tag));
     }
 
     // Check the flattened entries themselves, not only the row parity verdict.
-    const error_row_index = @intFromEnum(EnumDomain.error_tag);
+    const error_row_index = @backingInt(EnumDomain.error_tag);
     var found: usize = 0;
     for (tag_entries) |entry| {
         if (entry.row_index == error_row_index) {

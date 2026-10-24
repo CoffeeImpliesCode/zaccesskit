@@ -5,55 +5,16 @@
     // Together with the name, this is the globally unique package identifier.
     // Zig generates it once and it never changes afterwards.
     .fingerprint = 0x95d7536e8599701b, // Changing this has security and trust implications.
-    // Zig 0.16.0 is the line this project targets, not merely a lower bound.
-    // `zig` on this host is an anyzig shim that reads this field, so it is also
-    // how the toolchain gets selected: every tool in the gate follows it.
-    .minimum_zig_version = "0.16.0",
+    .minimum_zig_version = "0.17.0",
     .dependencies = .{
-        // zio is the async runtime this port is built around: it replaces the
-        // tokio runtime that the Rust accesskit crates depend on. Pinned to the
-        // tip of `main` at 2662fdc45997611b962b560c513c16963475a01b — the
-        // commit `docs/20-zio-and-zig-io.md` was researched against. The hash
-        // is taken from that tree, so a moving `main` fails the build instead of
-        // drifting underneath us.
-        //
-        // A codeload tarball rather than `git+` because this host's libgit2
-        // cannot negotiate with GitHub; `devenv.nix` records the same commit.
-        //
-        // Fetched from `lalinsky/zio`, the upstream author, not from a fork
-        // account. The same commit is reachable from both, and the contents are
-        // identical, so the choice costs nothing and keeps the pin auditable
-        // against the account that owns the project. See
-        // `docs/21-licensing.md`, which records that a fork carries no asserted
-        // licence of its own.
         .zio = .{
-            .url = "https://codeload.github.com/lalinsky/zio/tar.gz/2662fdc45997611b962b560c513c16963475a01b",
-            // Computed by `zig build` from the tree the URL resolves to.
-            .hash = "zio-0.18.0-xHbVVNWuKgDuxgpeptynAPuUOVIn2sXbgcqRhtiYn-rk",
+            .url = "https://codeload.github.com/lalinsky/zio/tar.gz/9b49086c72edbfbcef00acb557d6177bcaee1cb5",
+            .hash = "zio-0.19.0-xHbVVHNqLQCbtzv2oAZp_8CRYKcc76Om5t697j-vFskK",
         },
 
-        // zigwin32 is the whole UI Automation, Win32, COM and `oleaut32`
-        // type boundary of the Windows adapter, and it is rung 2 of the
-        // binding ladder in `AGENTS.md` section 2. Pinned to commit
-        // 9f15c276b4e9d05afd34a10d8662a7dfc34647ea, the tree
-        // `docs/42-native-adapter-build-map.md` section 2.1 checked against
-        // the source. Its `.name` is `.win32`, so the module reaches source
-        // as `@import("win32")`.
-        //
-        // Why the standard library is not enough:
-        // `docs/42` section 2.1.4 records that `lib/std` has no `com.zig` and
-        // no UI Automation module, so both `std.com` and every one of the
-        // 10179 lines of `win32/ui/accessibility.zig` would have to be
-        // written by hand. Section 2.1.2 records that zigwin32's `build.zig`
-        // declares one module and opens no header, so it does not need a
-        // Windows SDK to be fetched.
-        //
-        // Fetched from `marlersoft/zigwin32`, the account that owns the
-        // project, so the pin stays auditable against the upstream author.
         .win32 = .{
-            .url = "https://codeload.github.com/marlersoft/zigwin32/tar.gz/9f15c276b4e9d05afd34a10d8662a7dfc34647ea",
-            // Computed by `zig build` from the tree the URL resolves to.
-            .hash = "win32-42.0.39-preview-mX5pFS564gPTezZn4v3TMxRnfJUrZNx1B_F2p2HKXOeG",
+            .url = "https://codeload.github.com/marlersoft/zigwin32/tar.gz/fb2645891520f3e99931db17a7eba04057e87e89",
+            .hash = "win32-42.0.39-preview-mX5pFc794wMcrMyFgsO1c4csBdowhpiqqwIyN_xjqI5z",
         },
     },
     // Only these paths are packaged and hashed. Keep it to what a build needs.

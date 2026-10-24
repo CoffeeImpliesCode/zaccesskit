@@ -267,11 +267,11 @@ pub const ExpandedStatus = enum(c_int) {
 pub const expanded_status_count: usize = 3;
 
 comptime {
-    if (@typeInfo(ExpandedStatus).@"enum".fields.len != expanded_status_count) {
+    if (@typeInfo(ExpandedStatus).@"enum".field_names.len != expanded_status_count) {
         @compileError("AK/ios/src/util.rs:24-26 names three expanded-status values");
     }
-    for (@typeInfo(ExpandedStatus).@"enum".fields) |field| {
-        if (field.value < 0 or field.value > 2) {
+    for (@typeInfo(ExpandedStatus).@"enum".field_values) |field_value| {
+        if (field_value < 0 or field_value > 2) {
             @compileError("AK/ios/src/util.rs:24-26 writes 0, 1 and 2 and no other number");
         }
     }
@@ -440,9 +440,9 @@ test "the three expanded-status values carry the numbers AK/ios/src/util.rs writ
     // this enumeration to the tree this port follows rather than to a document
     // that does not exist on this host.
     try testing.expectEqual(@as(usize, 3), expanded_status_count);
-    try testing.expectEqual(@as(c_int, 0), @intFromEnum(ExpandedStatus.unsupported));
-    try testing.expectEqual(@as(c_int, 1), @intFromEnum(ExpandedStatus.expanded));
-    try testing.expectEqual(@as(c_int, 2), @intFromEnum(ExpandedStatus.collapsed));
+    try testing.expectEqual(@as(c_int, 0), @backingInt(ExpandedStatus.unsupported));
+    try testing.expectEqual(@as(c_int, 1), @backingInt(ExpandedStatus.expanded));
+    try testing.expectEqual(@as(c_int, 2), @backingInt(ExpandedStatus.collapsed));
 }
 
 /// Checks that the identifiers of `kind` are exactly `expected`, in order.

@@ -554,7 +554,7 @@ test "a node states no more states than the wire declares" {
     const reported = try stateOf(try handle(&state, 0), true);
     var outside: u64 = 0;
     inline for (comptime std.enums.values(wire.State)) |member| {
-        const bit = @as(u64, 1) << @as(u6, @intFromEnum(member));
+        const bit = @as(u64, 1) << @as(u6, @backingInt(member));
         if (reported.bits & bit != 0) outside |= bit;
     }
     try testing.expectEqual(reported.bits, outside);

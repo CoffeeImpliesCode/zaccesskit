@@ -1047,7 +1047,7 @@ test "every registered native names a row methods.zig records" {
 test "the five native function pointers are five distinct addresses" {
     // Two rows bound to one function would make one Java method answer for
     // another, and `RegisterNatives` accepts that without complaint.
-    var seen: [registered_native_count]?*const anyopaque = .{null} ** registered_native_count;
+    var seen: [registered_native_count]?*const anyopaque = @splat(null);
     for (native_method_table, 0..) |row, index| {
         const address = row.function orelse continue;
         for (seen) |other| {
@@ -1394,7 +1394,7 @@ test "pending drain releases consumed queues on success disabled and exact failu
 test "pending append allocation failure retains prior events and exact error" {
     var inner = try AndroidAdapter.init(testing.allocator);
     defer inner.deinit();
-    var failing = testing.FailingAllocator.init(testing.allocator, .{ .fail_index = 0 });
+    var failing = testing.FailingAllocator.init(testing.allocator, .{ .fail_index = 0, .resize_fail_index = 0 });
     var target = consumerTarget(failing.allocator(), &inner);
     defer target.pending_events.deinit(target.gpa);
     target.pending_events = try std.ArrayList(QueuedEvent).initCapacity(testing.allocator, 1);

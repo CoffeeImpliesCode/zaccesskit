@@ -456,7 +456,7 @@ test "the six named scroll edges have six distinct hints" {
             // The shift amount of a `u8` shift is `u3`, and the enum has six
             // members with tags zero through five, so the narrowing is in
             // range for every member the sweep reaches.
-            const bit = @as(u8, 1) << @as(u3, @intCast(@intFromEnum(hint)));
+            const bit = @as(u8, 1) << @as(u3, @intCast(@backingInt(hint)));
             try testing.expectEqual(@as(u8, 0), seen & bit);
             seen |= bit;
         }

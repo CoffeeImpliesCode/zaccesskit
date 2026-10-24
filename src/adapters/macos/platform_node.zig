@@ -647,7 +647,7 @@ test "native class registers complete protocol and defunct objects answer upstre
     var weak = adapter.context.weak();
     const object = create(std.testing.allocator, weak, .{
         .local = .{ .value = 1 },
-        .tree_index = @enumFromInt(0),
+        .tree_index = @fromBackingInt(@intCast(0)),
     }) catch |err| {
         weak.deinit();
         return err;
@@ -1053,7 +1053,7 @@ test "native node factory allocation refusal preserves caller weak ownership" {
         error.OutOfMemory,
         create(failing.allocator(), refused, .{
             .local = .{ .value = 1 },
-            .tree_index = @enumFromInt(0),
+            .tree_index = @fromBackingInt(@intCast(0)),
         }),
     );
     // The failure did not consume this anchor. A real lease remains admissible.
@@ -1064,7 +1064,7 @@ test "native node factory allocation refusal preserves caller weak ownership" {
     var succeeding = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 1 });
     const object = create(succeeding.allocator(), succeeded, .{
         .local = .{ .value = 1 },
-        .tree_index = @enumFromInt(0),
+        .tree_index = @fromBackingInt(@intCast(0)),
     }) catch |err| {
         succeeded.deinit();
         return err;
@@ -1106,7 +1106,7 @@ test "native final weak authority observes the node payload already released" {
     var weak = adapter.context.weak();
     const object = create(tracked.allocator(), weak, .{
         .local = .{ .value = 1 },
-        .tree_index = @enumFromInt(0),
+        .tree_index = @fromBackingInt(@intCast(0)),
     }) catch |err| {
         weak.deinit();
         // The adapter cleanup below releases its original context reference.

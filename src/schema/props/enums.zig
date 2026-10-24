@@ -168,7 +168,7 @@ fn enumRow(comptime id: table.PropertyId) EnumProperty {
 /// that does not declare it.
 fn tagByName(comptime T: type, comptime name: []const u8) T {
     inline for (0..T.count) |value| {
-        const tag: T = @enumFromInt(@as(u8, @intCast(value)));
+        const tag: T = @fromBackingInt(@intCast(@as(u8, @intCast(value))));
         if (std.mem.eql(u8, @tagName(tag), name)) return tag;
     }
     @compileError(std.fmt.comptimePrint(
@@ -619,13 +619,13 @@ comptime {
     for (bool_properties) |row| {
         const payload = "bool_";
         var found = false;
-        for (@typeInfo(table.PropertyValue).@"union".fields) |field| {
-            if (std.mem.eql(u8, field.name, payload)) {
+        for (@typeInfo(table.PropertyValue).@"union".field_names, @typeInfo(table.PropertyValue).@"union".field_types) |field_name, field_type| {
+            if (std.mem.eql(u8, field_name, payload)) {
                 found = true;
-                if (field.type != bool) {
+                if (field_type != bool) {
                     @compileError(std.fmt.comptimePrint(
                         "PropertyValue.{s} carries {s}, and {s} stores a bool",
-                        .{ payload, @typeName(field.type), row.upstream_name },
+                        .{ payload, @typeName(field_type), row.upstream_name },
                     ));
                 }
             }
@@ -642,15 +642,15 @@ comptime {
         // The payload tag of an enum property is its own property identifier, so
         // a table that renames one without the other breaks every function here.
         var found = false;
-        for (@typeInfo(table.PropertyValue).@"union".fields) |field| {
-            if (std.mem.eql(u8, field.name, @tagName(row.id))) {
+        for (@typeInfo(table.PropertyValue).@"union".field_names, @typeInfo(table.PropertyValue).@"union".field_types) |field_name, field_type| {
+            if (std.mem.eql(u8, field_name, @tagName(row.id))) {
                 found = true;
-                if (field.type != row.enum_type) {
+                if (field_type != row.enum_type) {
                     @compileError(std.fmt.comptimePrint(
                         "PropertyValue.{s} carries {s}, and {s} stores {s}",
                         .{
                             @tagName(row.id),
-                            @typeName(field.type),
+                            @typeName(field_type),
                             row.upstream_name,
                             @typeName(row.enum_type),
                         },
@@ -711,7 +711,7 @@ fn expectEveryTag(
     properties: *table.Properties,
 ) !void {
     inline for (0..T.count) |value| {
-        const tag: T = @enumFromInt(@as(u8, @intCast(value)));
+        const tag: T = @fromBackingInt(@intCast(@as(u8, @intCast(value))));
         try set(properties, tag);
         try std.testing.expectEqual(@as(?T, tag), get(properties));
         clear(properties);
@@ -775,7 +775,7 @@ test "clearing selected reads false rather than the value before the clear" {
 
 test "invalid round trips through every tag" {
     // The byte a C caller reads for the tag accesskit/src/lib.rs:2457 names.
-    try std.testing.expectEqual(@as(u8, 1), @intFromEnum(invalid_default));
+    try std.testing.expectEqual(@as(u8, 1), @backingInt(invalid_default));
     var properties: table.Properties = .init(std.testing.allocator);
     defer properties.deinit();
 
@@ -784,7 +784,7 @@ test "invalid round trips through every tag" {
 
 test "toggled round trips through every tag" {
     // The byte a C caller reads for the tag accesskit/src/lib.rs:2467 names.
-    try std.testing.expectEqual(@as(u8, 1), @intFromEnum(toggled_default));
+    try std.testing.expectEqual(@as(u8, 1), @backingInt(toggled_default));
     var properties: table.Properties = .init(std.testing.allocator);
     defer properties.deinit();
 
@@ -793,7 +793,7 @@ test "toggled round trips through every tag" {
 
 test "live round trips through every tag" {
     // The byte a C caller reads for the tag accesskit/src/lib.rs:2472 names.
-    try std.testing.expectEqual(@as(u8, 1), @intFromEnum(live_default));
+    try std.testing.expectEqual(@as(u8, 1), @backingInt(live_default));
     var properties: table.Properties = .init(std.testing.allocator);
     defer properties.deinit();
 
@@ -802,7 +802,7 @@ test "live round trips through every tag" {
 
 test "textDirection round trips through every tag" {
     // The byte a C caller reads for the tag accesskit/src/lib.rs:2474 names.
-    try std.testing.expectEqual(@as(u8, 1), @intFromEnum(text_direction_default));
+    try std.testing.expectEqual(@as(u8, 1), @backingInt(text_direction_default));
     var properties: table.Properties = .init(std.testing.allocator);
     defer properties.deinit();
 
@@ -817,7 +817,7 @@ test "textDirection round trips through every tag" {
 
 test "orientation round trips through every tag" {
     // The byte a C caller reads for the tag accesskit/src/lib.rs:2479 names.
-    try std.testing.expectEqual(@as(u8, 1), @intFromEnum(orientation_default));
+    try std.testing.expectEqual(@as(u8, 1), @backingInt(orientation_default));
     var properties: table.Properties = .init(std.testing.allocator);
     defer properties.deinit();
 
@@ -832,7 +832,7 @@ test "orientation round trips through every tag" {
 
 test "sortDirection round trips through every tag" {
     // The byte a C caller reads for the tag accesskit/src/lib.rs:2484 names.
-    try std.testing.expectEqual(@as(u8, 1), @intFromEnum(sort_direction_default));
+    try std.testing.expectEqual(@as(u8, 1), @backingInt(sort_direction_default));
     var properties: table.Properties = .init(std.testing.allocator);
     defer properties.deinit();
 
@@ -847,7 +847,7 @@ test "sortDirection round trips through every tag" {
 
 test "ariaCurrent round trips through every tag" {
     // The byte a C caller reads for the tag accesskit/src/lib.rs:2489 names.
-    try std.testing.expectEqual(@as(u8, 1), @intFromEnum(aria_current_default));
+    try std.testing.expectEqual(@as(u8, 1), @backingInt(aria_current_default));
     var properties: table.Properties = .init(std.testing.allocator);
     defer properties.deinit();
 
@@ -862,7 +862,7 @@ test "ariaCurrent round trips through every tag" {
 
 test "autoComplete round trips through every tag" {
     // The byte a C caller reads for the tag accesskit/src/lib.rs:2494 names.
-    try std.testing.expectEqual(@as(u8, 1), @intFromEnum(auto_complete_default));
+    try std.testing.expectEqual(@as(u8, 1), @backingInt(auto_complete_default));
     var properties: table.Properties = .init(std.testing.allocator);
     defer properties.deinit();
 
@@ -877,7 +877,7 @@ test "autoComplete round trips through every tag" {
 
 test "hasPopup round trips through every tag" {
     // The zero tag, which is the one accesskit/src/lib.rs:2499 names.
-    try std.testing.expectEqual(@as(u8, 0), @intFromEnum(has_popup_default));
+    try std.testing.expectEqual(@as(u8, 0), @backingInt(has_popup_default));
     var properties: table.Properties = .init(std.testing.allocator);
     defer properties.deinit();
 
@@ -886,7 +886,7 @@ test "hasPopup round trips through every tag" {
 
 test "listStyle round trips through every tag" {
     // The byte a C caller reads for the tag accesskit/src/lib.rs:2501 names.
-    try std.testing.expectEqual(@as(u8, 1), @intFromEnum(list_style_default));
+    try std.testing.expectEqual(@as(u8, 1), @backingInt(list_style_default));
     var properties: table.Properties = .init(std.testing.allocator);
     defer properties.deinit();
 
@@ -895,7 +895,7 @@ test "listStyle round trips through every tag" {
 
 test "textAlign round trips through every tag" {
     // The byte a C caller reads for the tag accesskit/src/lib.rs:2503 names.
-    try std.testing.expectEqual(@as(u8, 1), @intFromEnum(text_align_default));
+    try std.testing.expectEqual(@as(u8, 1), @backingInt(text_align_default));
     var properties: table.Properties = .init(std.testing.allocator);
     defer properties.deinit();
 
@@ -904,7 +904,7 @@ test "textAlign round trips through every tag" {
 
 test "verticalOffset round trips through every tag" {
     // The byte a C caller reads for the tag accesskit/src/lib.rs:2505 names.
-    try std.testing.expectEqual(@as(u8, 1), @intFromEnum(vertical_offset_default));
+    try std.testing.expectEqual(@as(u8, 1), @backingInt(vertical_offset_default));
     var properties: table.Properties = .init(std.testing.allocator);
     defer properties.deinit();
 

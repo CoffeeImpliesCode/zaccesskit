@@ -91,8 +91,8 @@ pub const ObjectId = union(enum) {
         // the sentinel, so this is the same allocation with the arm written
         // as a statement rather than an expression.
         switch (self) {
-            .root => return gpa.dupeZ(u8, root_path),
-            .cache => return gpa.dupeZ(u8, cache_path),
+            .root => return gpa.dupeSentinel(u8, root_path, 0),
+            .cache => return gpa.dupeSentinel(u8, cache_path, 0),
             .node => |pair| {
                 const segment = nodeSegment(pair.node);
                 return std.fmt.allocPrintSentinel(

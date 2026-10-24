@@ -139,9 +139,9 @@ pub const OwnedObjectAddress = struct {
         bus_name: []const u8,
         path: []const u8,
     ) std.mem.Allocator.Error!OwnedObjectAddress {
-        const owned_name = try gpa.dupeZ(u8, bus_name);
+        const owned_name = try gpa.dupeSentinel(u8, bus_name, 0);
         errdefer gpa.free(owned_name);
-        const owned_path = try gpa.dupeZ(u8, path);
+        const owned_path = try gpa.dupeSentinel(u8, path, 0);
         return .{ .value = ObjectAddress.fromSlices(owned_name, owned_path) };
     }
 
@@ -203,12 +203,12 @@ comptime {
     // `(so)` names a string and an object path, and a peer walks the struct's
     // two fields in order, so a third field would make the decoder read past the
     // path. The arity and the type of each member are checked here.
-    const fields = @typeInfo(ObjectAddress).@"struct".fields;
-    if (fields.len != 2) {
+    const fields = @typeInfo(ObjectAddress).@"struct";
+    if (fields.field_names.len != 2) {
         @compileError("the (so) signature names exactly two members");
     }
-    for (fields) |field| {
-        if (field.type != [:0]const u8) {
+    for (fields.field_types) |field_type| {
+        if (field_type != [:0]const u8) {
             @compileError("every (so) member is a sentinel-terminated slice");
         }
     }

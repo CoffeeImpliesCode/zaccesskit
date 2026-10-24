@@ -401,7 +401,7 @@ const TestClearState = struct {
     fn clear(raw_context: ?*anyopaque, value: *abi.Variant) abi.Hresult {
         if (raw_context) |raw| {
             const state: *TestClearState = @ptrCast(@alignCast(raw));
-            if (@intFromEnum(value.Anonymous.Anonymous.vt) == 3) {
+            if (@backingInt(value.Anonymous.Anonymous.vt) == 3) {
                 if (state.fail_value) |fail_value| {
                     if (value.Anonymous.Anonymous.Anonymous.lVal == fail_value)
                         return @bitCast(@as(u32, 0x8002000d));

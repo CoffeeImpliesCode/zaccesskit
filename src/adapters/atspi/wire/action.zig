@@ -91,12 +91,12 @@ comptime {
     // the reply signature is the element signature with `a` in front of it.
     // Written as two constants, they drift apart the moment a member is added,
     // and only the reply is what a client checks.
-    const fields = @typeInfo(Action).@"struct".fields;
-    if (fields.len != 3) {
+    const fields = @typeInfo(Action).@"struct";
+    if (fields.field_names.len != 3) {
         @compileError("the (sss) signature names exactly three members");
     }
-    for (fields) |field| {
-        if (field.type != []const u8) {
+    for (fields.field_types) |field_type| {
+        if (field_type != []const u8) {
             @compileError("every (sss) member is a borrowed byte slice");
         }
     }

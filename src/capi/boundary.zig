@@ -152,7 +152,7 @@ comptime {
     // `callconv(.c)`, and it is the only place it is written. Reflection reads
     // it back too: `@typeInfo` on the pointer has no `calling_convention`, but
     // its `child` is the function type, and
-    // `@typeInfo(pointer.child).@"fn".calling_convention` is the convention the
+    // `@typeInfo(pointer.child).@"fn".@"callconv"` is the convention the
     // header declares. `src/capi/platform.zig` asserts exactly that for all
     // four types, in its test "the four callback types have the shapes the
     // header declares".
@@ -172,11 +172,11 @@ test "owned C request copies fields and every payload without retaining the sour
     defer gpa.free(text);
     const payloads = actionRequestPayloads(text);
     try std.testing.expectEqual(@as(usize, 9), payloads.len);
-    inline for (@typeInfo(schema.ActionData).@"union".fields) |field| {
+    inline for (@typeInfo(schema.ActionData).@"union".field_names) |field_name| {
         var found = false;
         for (payloads) |payload| {
             if (payload) |data| {
-                if (std.mem.eql(u8, @tagName(data), field.name)) found = true;
+                if (std.mem.eql(u8, @tagName(data), field_name)) found = true;
             }
         }
         try std.testing.expect(found);
@@ -213,7 +213,7 @@ test "owned C value request survives mutation and release of native source" {
     try std.testing.expect(copy.target_tree.eql(actionRequestFixture(null).target_tree));
     try std.testing.expect(copy.target_node.eql(schema.nodeIdFromContent(0x1234)));
     try std.testing.expect(copy.data.has_value);
-    try std.testing.expectEqual(@intFromEnum(schema.ActionDataTag.value), copy.data.value.tag);
+    try std.testing.expectEqual(@backingInt(schema.ActionDataTag.value), copy.data.value.tag);
     try std.testing.expectEqualStrings("native value", std.mem.span(copied_text));
 }
 
@@ -272,7 +272,7 @@ fn expectCopiedRequest(source: schema.ActionRequest, copy: *const schema.CAction
     try std.testing.expectEqual(source.data != null, copy.data.has_value);
     const data = source.data orelse return;
     const tag = std.meta.stringToEnum(schema.ActionDataTag, @tagName(data)).?;
-    try std.testing.expectEqual(@intFromEnum(tag), copy.data.value.tag);
+    try std.testing.expectEqual(@backingInt(tag), copy.data.value.tag);
     const payload = copy.data.value.payload;
     switch (data) {
         .custom_action => |id| try std.testing.expectEqual(id, payload.custom_action),

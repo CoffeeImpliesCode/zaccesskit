@@ -419,7 +419,7 @@ pub fn unixAdapterDebug(adapter: *const UnixAdapter) ?[*:0]u8 {
         allocation.failWithError(err);
         return null;
     };
-    const owned = allocation.allocator().dupeZ(u8, text) catch |err| {
+    const owned = allocation.allocator().dupeSentinel(u8, text, 0) catch |err| {
         allocation.failWithError(err);
         return null;
     };
@@ -634,7 +634,7 @@ test "C activation lends the actual full snapshot and metadata until owned-worke
 
 const DeclaredAllocatorProbe = struct {
     bytes: [4096]u8 align(8) = undefined,
-    slots: [8]?*anyopaque = [_]?*anyopaque{null} ** 8,
+    slots: [8]?*anyopaque = @as([8]?*anyopaque, @splat(null)),
     used: usize = 0,
     allocations: usize = 0,
     frees: usize = 0,
@@ -707,7 +707,7 @@ const ActionProbe = struct {
         const self: *ActionProbe = @ptrCast(@alignCast(context.?));
         self.called = true;
         self.callback_thread = std.Thread.getCurrentId();
-        if (!request.data.has_value or request.data.value.tag != @intFromEnum(schema.ActionDataTag.value)) return;
+        if (!request.data.has_value or request.data.value.tag != @backingInt(schema.ActionDataTag.value)) return;
         const text = request.data.value.payload.value orelse return;
         self.independent_string = text != self.expected_source;
         self.matches = request.action == .set_value and

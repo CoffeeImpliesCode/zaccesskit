@@ -681,7 +681,7 @@ comptime {
     // field added or renamed is a build failure rather than a diff a reviewer
     // has to notice, and the count is what keeps the "allocator is a parameter,
     // not a ninth field" sentence in the module doc checkable.
-    const tree_fields = @typeInfo(TreeState).@"struct".fields;
+    const tree_fields = @typeInfo(TreeState).@"struct";
     const tree_wanted = [_]struct { name: []const u8, ty: type }{
         .{ .name = "nodes", .ty = NodeMap },
         .{ .name = "info", .ty = TreeInfo },
@@ -692,28 +692,28 @@ comptime {
         .{ .name = "graft_parents", .ty = TreeIdNodeMap },
         .{ .name = "tree_index_map", .ty = TreeIndexMap },
     };
-    assert(tree_fields.len == tree_wanted.len);
+    assert(tree_fields.field_names.len == tree_wanted.len);
     // A `comptime` block already unrolls this loop, and Zig 0.16 rejects the
     // `inline` keyword there as redundant.
-    for (tree_wanted, tree_fields) |want, got| {
-        assert(std.mem.eql(u8, got.name, want.name));
-        assert(got.type == want.ty);
+    for (tree_wanted, tree_fields.field_names, tree_fields.field_types) |want, got_name, got_type| {
+        assert(std.mem.eql(u8, got_name, want.name));
+        assert(got_type == want.ty);
     }
 
     // I1's shape premise: "no parent" is one `null`, not a sentinel id, so the
     // root is the only node that can carry it. I2 has no shape premise, which
     // is why it has no assertion here.
-    const node_fields = @typeInfo(NodeState).@"struct".fields;
-    assert(node_fields.len == 2);
-    assert(node_fields[0].type == ?ParentAndIndex);
-    assert(node_fields[1].type == Node);
+    const node_fields = @typeInfo(NodeState).@"struct";
+    assert(node_fields.field_names.len == 2);
+    assert(node_fields.field_types[0] == ?ParentAndIndex);
+    assert(node_fields.field_types[1] == Node);
 
     // I3's "once" clause: both fields are ids, so a `SubtreeState` copy is the
     // same subtree rather than a second description of it.
-    const subtree_fields = @typeInfo(SubtreeState).@"struct".fields;
-    assert(subtree_fields.len == 2);
-    assert(subtree_fields[0].type == FullNodeId);
-    assert(subtree_fields[1].type == FullNodeId);
+    const subtree_fields = @typeInfo(SubtreeState).@"struct";
+    assert(subtree_fields.field_names.len == 2);
+    assert(subtree_fields.field_types[0] == FullNodeId);
+    assert(subtree_fields.field_types[1] == FullNodeId);
 
     // I1 and I4 cannot be compile-time claims, and the default value is why.
     // An empty `nodes` satisfies neither, so the run-time check in
@@ -736,15 +736,15 @@ comptime {
     // 0.16.0 makes `error_set` an optional slice and has no `keys`, so the
     // sweep takes the unwrapped value; `docs/33` section 5's `.keys` spelling
     // predates it and is recorded as deviation 6.
-    for (@typeInfo(UpdateError).error_set.?) |tag| {
-        assert(tag.name.len > 0);
+    for (@typeInfo(UpdateError).error_set.error_names.?) |tag| {
+        assert(tag.len > 0);
     }
-    for (@typeInfo(QueryError).error_set.?) |tag| {
-        assert(tag.name.len > 0);
+    for (@typeInfo(QueryError).error_set.error_names.?) |tag| {
+        assert(tag.len > 0);
     }
     // 13 platform tags, 2 port tags and OutOfMemory.
-    assert(@typeInfo(UpdateError).error_set.?.len == 16);
-    assert(@typeInfo(QueryError).error_set.?.len == 7);
+    assert(@typeInfo(UpdateError).error_set.error_names.?.len == 16);
+    assert(@typeInfo(QueryError).error_set.error_names.?.len == 7);
 }
 
 // --- Fixtures ----------------------------------------------------------------

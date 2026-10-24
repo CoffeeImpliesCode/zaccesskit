@@ -151,7 +151,7 @@ const ToolkitField = enum {
 /// How many members `ToolkitField` has: two, one per toolkit string on
 /// `TreeInfo`. Read off the type, so a field added to both is counted here
 /// without an edit to this file.
-pub const toolkitFieldCount = @typeInfo(ToolkitField).@"enum".fields.len;
+pub const toolkitFieldCount = @typeInfo(ToolkitField).@"enum".field_names.len;
 
 /// The only failure any function in this file has.
 ///
@@ -684,11 +684,11 @@ fn assertPointerShaped(signature: anytype) void {
     if (info.return_type) |returned| {
         std.debug.assert(!isAggregate(returned));
     }
-    for (info.params) |param| {
+    for (info.param_types) |param| {
         // A parameter reflection names no type for cannot be an aggregate, so
         // the absence is an answer this gate can act on rather than a gap it
         // has to step over.
-        if (param.type) |declared| {
+        if (param) |declared| {
             std.debug.assert(!isAggregate(declared));
         }
     }
@@ -720,7 +720,7 @@ comptime {
     // its only member, which is the rule `AGENTS.md` section 3 states for every
     // error set in this repository.
     std.debug.assert(TreeInfoError == std.mem.Allocator.Error);
-    std.debug.assert(@typeInfo(TreeInfoError).error_set.?.len == 1);
+    std.debug.assert(@typeInfo(TreeInfoError).error_set.error_names.?.len == 1);
     std.debug.assert(std.mem.eql(
         u8,
         @errorName(@as(TreeInfoError, error.OutOfMemory)),

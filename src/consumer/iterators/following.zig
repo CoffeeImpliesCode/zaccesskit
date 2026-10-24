@@ -616,7 +616,7 @@ test "a graft parent yields no following sibling even with a child of its own" {
     try fixture.setChildren(root, &.{1});
     try fixture.setChildren(graft, &.{2});
     const entry = try fixture.slotOf(graft);
-    try schema.option.setTreeId(&entry.data.properties, schema.treeIdFromBytes(.{7} ** 16));
+    try schema.option.setTreeId(&entry.data.properties, schema.treeIdFromBytes(@splat(7)));
 
     // A graft node has one child and no siblings, so upstream `iterators.rs:92-94`
     // yields nothing. A cursor that read the `children` property first would

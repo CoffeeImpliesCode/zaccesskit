@@ -407,7 +407,7 @@ test "sixteen zero bytes are a stored tree id and not an absent one" {
     // consumer acts on. `null` is the only report of an absent property.
     const stored = treeId(&properties) orelse return error.TreeIdMissing;
     try testing.expect(stored.eql(ids.tree_id_root));
-    try testing.expect(!stored.eql(ids.treeIdFromBytes(.{1} ** 16)));
+    try testing.expect(!stored.eql(ids.treeIdFromBytes(@splat(1))));
 
     clearTreeId(&properties);
 

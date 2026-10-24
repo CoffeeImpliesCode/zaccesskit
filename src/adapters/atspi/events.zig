@@ -526,7 +526,7 @@ test "the sweep over the four interfaces reaches every member of Kind" {
     // `inline for` over the domain is the whole coverage argument, so a fifth
     // family added to `Kind` fails the build here rather than silently missing
     // a name.
-    try testing.expectEqual(@as(usize, 4), @typeInfo(Kind).@"enum".fields.len);
+    try testing.expectEqual(@as(usize, 4), @typeInfo(Kind).@"enum".field_names.len);
     inline for (comptime std.enums.values(Kind)) |kind| {
         try testing.expect(kindInterface(kind).len > 0);
     }
@@ -535,7 +535,7 @@ test "the sweep over the four interfaces reaches every member of Kind" {
 test "no two event families share an interface name" {
     inline for (comptime std.enums.values(Kind)) |kind| {
         for (comptime std.enums.values(Kind)) |other| {
-            if (@intFromEnum(kind) >= @intFromEnum(other)) continue;
+            if (@backingInt(kind) >= @backingInt(other)) continue;
             try testing.expect(!std.mem.eql(
                 u8,
                 kindInterface(kind),
@@ -583,7 +583,7 @@ test "every variant reports the signature it puts in the fourth argument" {
 
     // The sweep is the coverage argument, so a variant added without a
     // signature is a compile error rather than a silent omission.
-    try testing.expectEqual(@as(usize, 8), @typeInfo(AnyData).@"union".fields.len);
+    try testing.expectEqual(@as(usize, 8), @typeInfo(AnyData).@"union".field_names.len);
 }
 
 test "an object reference is the only way a siiva{sv} body can carry an address" {

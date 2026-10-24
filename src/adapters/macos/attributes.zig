@@ -781,7 +781,7 @@ test "the 16 return shapes hold the counts upstream's tally gives" {
         .{ .orientation, 1 },
     };
     try testing.expectEqual(@as(usize, 16), expected.len);
-    try testing.expectEqual(@as(usize, 16), @typeInfo(ReturnShape).@"enum".fields.len);
+    try testing.expectEqual(@as(usize, 16), @typeInfo(ReturnShape).@"enum".field_names.len);
     var total: usize = 0;
     for (expected) |entry| {
         try testing.expectEqual(entry[1], countOfShape(entry[0]));
@@ -789,8 +789,8 @@ test "the 16 return shapes hold the counts upstream's tally gives" {
     }
     try testing.expectEqual(selector_count, total);
     // The spelled Rust type of every shape is what upstream writes.
-    inline for (@typeInfo(ReturnShape).@"enum".fields) |field| {
-        const shape: ReturnShape = @enumFromInt(field.value);
+    inline for (@typeInfo(ReturnShape).@"enum".field_values) |field_value| {
+        const shape: ReturnShape = @fromBackingInt(@intCast(field_value));
         try testing.expect(returnShapeRustType(shape).len > 0);
     }
 }
@@ -913,7 +913,7 @@ test "the four non-nil selectors answer their sentinel when the node is gone" {
     }
     // A `schema.Orientation` has no unknown tag, so the sentinel cannot be one
     // of the two answers a live node gives.
-    try testing.expectEqual(@as(usize, 2), @typeInfo(schema.Orientation).@"enum".fields.len);
+    try testing.expectEqual(@as(usize, 2), @typeInfo(schema.Orientation).@"enum".field_names.len);
 }
 
 test "accessibilityValue returns NSNumber for bool and number, NSString for string" {
@@ -924,7 +924,7 @@ test "accessibilityValue returns NSNumber for bool and number, NSString for stri
     try testing.expectEqualStrings("NSNumber", valueClassName(.boolean));
     try testing.expectEqualStrings("NSNumber", valueClassName(.number));
     try testing.expectEqualStrings("NSString", valueClassName(.string));
-    try testing.expectEqual(@as(usize, 3), @typeInfo(ValueShape).@"enum".fields.len);
+    try testing.expectEqual(@as(usize, 3), @typeInfo(ValueShape).@"enum".field_names.len);
 }
 
 test "accessibilityActionNames is empty rather than nil when no action is supported" {
@@ -975,8 +975,8 @@ test "the name published by accessibilityActionNames is the name performAction m
 test "every answer records the expression upstream writes for it" {
     // The 15 answers, 14 of which the 54 use. The spelling is what a reader
     // checks the port against.
-    inline for (@typeInfo(Answer).@"enum".fields) |field| {
-        const answer: Answer = @enumFromInt(field.value);
+    inline for (@typeInfo(Answer).@"enum".field_values) |field_value| {
+        const answer: Answer = @fromBackingInt(@intCast(field_value));
         try testing.expect(answerExpression(answer).len > 0);
     }
     // `unlisted` is the only answer no group names, because it is the

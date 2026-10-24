@@ -1035,7 +1035,7 @@ fn fillScreenBounds(
     const location = try newIntArrayChecked(jni_table, location_slot_count);
     defer jni_table.deleteLocalRef(location);
     try callVoidChecked(jni_table, host, get_location_on_screen, &.{.{ .l = location }});
-    var origin = [_]JInt{0} ** location_slot_count;
+    var origin = @as([location_slot_count]JInt, @splat(0));
     jni_table.getIntArrayRegion(location, 0, location_slot_count, &origin);
     if (jni_table.exceptionCheck()) return error.JavaException;
     const host_x: f64 = @floatFromInt(origin[0]);
