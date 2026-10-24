@@ -11,7 +11,6 @@ on:
       - 'src/**'
       - 'tools/windows_native_client.zig'
       - 'tools/macos_native_client.zig'
-      - 'docs/50-verification.md'
   push:
     branches: [main]
     paths:
@@ -21,7 +20,6 @@ on:
       - 'src/**'
       - 'tools/windows_native_client.zig'
       - 'tools/macos_native_client.zig'
-      - 'docs/50-verification.md'
 
 permissions:
   contents: read

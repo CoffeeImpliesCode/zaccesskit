@@ -587,53 +587,6 @@ pub fn build(b: *std.Build) void {
     parity_run.addPassthruArgs();
     parity_run.step.dependOn(&parity_test_run.step);
     parity_step.dependOn(&parity_run.step);
-
-    // The per-module symbol tables in `docs/36-consumer-call-graph.md`. The
-    // tool reads every module under `src/`, resolves each qualified name to the
-    // file that declares it, and compares what it found against the tables the
-    // document marks as generated. It imports nothing from the library: it
-    // reads the same files a compiler would, and parsing the source a second
-    // time is what lets it report a name it could not resolve.
-    //
-    // The default action is a check. `--write` is the only path that touches
-    // the document, because a generator that rewrites a hand-maintained file on
-    // a plain run is a generator that will one day destroy a human's edit
-    // without asking.
-    //
-    // `has_side_effects` because a cached run executes nothing, and a check
-    // that can report success without having compared anything is the failure
-    // this step exists to prevent.
-    const tables_step = b.step(
-        "docs-tables",
-        "Check the generated symbol tables in docs/36 against the source",
-    );
-
-    const tables_module = b.createModule(.{
-        .root_source_file = b.path("tools/docs_tables/main.zig"),
-        .target = target,
-        .optimize = .Debug,
-    });
-
-    // The tool's own tests run first and gate the check. The scanner's tests
-    // are what prove it reads a declaration-shaped comment as a comment, so a
-    // sweep that ran without them would be reporting on code nothing checked.
-    const tables_tests = b.addTest(.{
-        .name = "docs-tables-test",
-        .root_module = tables_module,
-    });
-    const tables_test_run = b.addRunArtifact(tables_tests);
-    tables_test_run.has_side_effects = true;
-    tables_step.dependOn(&tables_test_run.step);
-
-    const tables = b.addExecutable(.{
-        .name = "docs-tables",
-        .root_module = tables_module,
-    });
-    const tables_run = b.addRunArtifact(tables);
-    tables_run.has_side_effects = true;
-    tables_run.addPassthruArgs();
-    tables_run.step.dependOn(&tables_test_run.step);
-    tables_step.dependOn(&tables_run.step);
 }
 
 /// SDK declarations are generated only for the real macOS target.

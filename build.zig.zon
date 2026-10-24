@@ -34,7 +34,6 @@
         "include",
         "docs",
         "README.md",
-        "AGENTS.md",
         "fuzz_root.zig",
         "capi_root.zig",
         "integration_root.zig",
