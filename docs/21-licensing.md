@@ -2,9 +2,9 @@
 
 Port-authored code and changes are MIT, Copyright (c) 2026 Janis Gertulla;
 see [LICENSE](../LICENSE). Upstream-owned material retains its own terms.
-The distribution license bundle is included at the repository root:
-[LICENSE-MIT](../LICENSE-MIT), [LICENSE-APACHE](../LICENSE-APACHE),
-[LICENSE.chromium](../LICENSE.chromium), [NOTICE.md](../NOTICE.md), and
+The distribution license bundle includes the upstream grant texts in `licenses/`:
+[LICENSE-MIT](../licenses/LICENSE-MIT), [LICENSE-APACHE](../licenses/LICENSE-APACHE),
+[LICENSE.chromium](../licenses/LICENSE.chromium), [NOTICE.md](../NOTICE.md), and
 [THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md).
 
 ## Upstream source
@@ -50,7 +50,7 @@ Other upstream derivations have separate notices:
 
 The port uses the available MIT option for the derivations above. Their
 copyright notices and selected terms are retained in `NOTICE.md` and
-`LICENSE-MIT`. The upstream rustls-ffi derivation header refers to an absent
+`licenses/LICENSE-MIT`. The upstream rustls-ffi derivation header refers to an absent
 `LICENSE-ISC`; that alternative is not needed for the MIT selection. The
 generated upstream C header omits some Chromium and Flutter copyright lines;
 the complete per-file inventory is retained in this port's `NOTICE.md`.
@@ -69,7 +69,7 @@ encoding is implemented in this repository; goose is not a dependency.
 ## Distribution
 
 Source and binary distributions containing the header or derived code must
-carry `LICENSE`, `LICENSE-MIT`, `LICENSE-APACHE`, `LICENSE.chromium`,
+carry `LICENSE`, `licenses/LICENSE-MIT`, `licenses/LICENSE-APACHE`, `licenses/LICENSE.chromium`,
 `NOTICE.md`, and `THIRD_PARTY_NOTICES.md`. All six files are included in the
 Zig package path list. Retain upstream copyright, permission, derivation,
 and change notices. The public C header's existing notices remain unchanged.

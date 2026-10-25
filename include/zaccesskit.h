@@ -1,29 +1,29 @@
 /**
  * Copyright 2023 The AccessKit Authors. All rights reserved.
- * Licensed under the Apache License, Version 2.0 (found in the LICENSE-APACHE
- * file) or the MIT license (found in the LICENSE-MIT file), at your option.
+ * Licensed under the Apache License, Version 2.0 (found in the licenses/LICENSE-APACHE
+ * file) or the MIT license (found in the licenses/LICENSE-MIT file), at your option.
  *
  * Portions of this header derive from Chromium. See the Chromium attribution
- * below and LICENSE.chromium.
+ * below and licenses/LICENSE.chromium.
  *
  * This file is the whole C surface of `zaccesskit`, a pure Zig port of
  * AccessKit. It is hand written, it is the contract, and the Zig declarations
  * in this repository are checked against it.
  *
  * Licence, by material. AccessKit-authored declarations are under
- * `MIT OR Apache-2.0`, at your option, as LICENSE-APACHE and LICENSE-MIT state.
+ * `MIT OR Apache-2.0`, at your option, as licenses/LICENSE-APACHE and licenses/LICENSE-MIT state.
  * The role list and the role descriptions come from Chromium and are under the
- * BSD-style licence in LICENSE.chromium, which is
+ * BSD-style licence in licenses/LICENSE.chromium, which is
  *
  *     Copyright 2015 The Chromium Authors. All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the conditions in LICENSE.chromium
+ * modification, are permitted provided that the conditions in licenses/LICENSE.chromium
  * are met. That licence is a separate obligation and the choice above does not
- * cover it. Each licence text travels with this header in the root of the
- * distribution that contains it: LICENSE-APACHE, LICENSE-MIT,
- * LICENSE.chromium, and NOTICE.md for the per-file inventory. A binary
- * distribution carries the same four files.
+ * cover it. Each licence text travels with this header in the distribution:
+ * licenses/LICENSE-APACHE, licenses/LICENSE-MIT, licenses/LICENSE.chromium,
+ * and NOTICE.md for the per-file inventory. A binary distribution carries the
+ * same four files.
  *
  * Change notice, which Apache-2.0 clause 4(b) requires. This file was
  * changed. It is a port of the AccessKit C header and not a copy of it.

@@ -1,5 +1,11 @@
 # zaccesskit notices
 
+This grant covers the port-authored code and changes. zaccesskit is derived
+from AccessKit and AccessKit C, whose authored material is MIT OR Apache-2.0.
+Their grants are retained in `licenses/LICENSE-MIT` and
+`licenses/LICENSE-APACHE`. Third-party material retains its own terms; see
+`THIRD_PARTY_NOTICES.md` and `NOTICE.md`.
+
 Copyright (c) 2026 Janis Gertulla. Port-authored code is MIT; see [LICENSE](LICENSE).
 
 ## AccessKit and AccessKit C
@@ -16,8 +22,8 @@ Keep source copyright, derivation, and change notices when redistributing.
   Copyright 2021 The AccessKit Authors, Copyright 2023 The AccessKit Authors,
   and Copyright 2025 The AccessKit Authors.
 - AccessKit-authored material is `MIT OR Apache-2.0`, at the recipient's option.
-  Both upstream grants are supplied in [LICENSE-MIT](LICENSE-MIT) and
-  [LICENSE-APACHE](LICENSE-APACHE). The port uses the available MIT option;
+  Both upstream grants are supplied in [licenses/LICENSE-MIT](licenses/LICENSE-MIT)
+  and [licenses/LICENSE-APACHE](licenses/LICENSE-APACHE). The port uses the available MIT option;
   this does not remove the upstream dual-license offer or the BSD obligations.
 - AccessKit's Apache-only winit adapter and AccessKit C's LGPL-2.1 Meson build
   system are not copied into this port.
@@ -26,9 +32,9 @@ Keep source copyright, derivation, and change notices when redistributing.
 
 The following are exact upstream AccessKit paths and their additional copyright
 notices. Port areas identify the translated subsystem, not a one-to-one file map.
-These portions retain BSD-3-Clause terms in [LICENSE.chromium](LICENSE.chromium),
+These portions retain BSD-3-Clause terms in [licenses/LICENSE.chromium](licenses/LICENSE.chromium),
 separately from the MIT OR Apache-2.0 choice for AccessKit-authored material.
-The upstream Flutter derivation headers also refer to `LICENSE.chromium`.
+The upstream Flutter derivation headers also refer to `licenses/LICENSE.chromium`.
 
 | Upstream AccessKit path | Copyright notice (all rights reserved) | Port area |
 |---|---|---|
@@ -46,7 +52,7 @@ The upstream Flutter derivation headers also refer to `LICENSE.chromium`.
 | `adapters/ios/src/node.rs` | Copyright 2013 The Flutter Authors. | `src/adapters/ios/` |
 
 `include/zaccesskit.h` also retains Copyright 2015 The Chromium Authors. All
-rights reserved, for the role list and descriptions, under `LICENSE.chromium`.
+rights reserved, for the role list and descriptions, under `licenses/LICENSE.chromium`.
 
 Upstream projects: [Chromium](https://chromium.googlesource.com/chromium/src/)
 and [Flutter engine](https://github.com/flutter/engine).
@@ -54,7 +60,7 @@ and [Flutter engine](https://github.com/flutter/engine).
 ## Other mapped derivations
 
 The MIT option is used for each entry below. The following copyright notices
-and the full permission and disclaimer text in [LICENSE-MIT](LICENSE-MIT)
+and the full permission and disclaimer text in [licenses/LICENSE-MIT](licenses/LICENSE-MIT)
 apply to the respective derived portions; keep both with copies.
 
 | Upstream path | Origin and copyright notice | Original terms | Port area |
@@ -69,7 +75,7 @@ No ISC text is needed for the selected MIT option of the rustls-ffi derivation.
 ## Distribution
 
 Source and binary distributions containing the header or derived code must
-carry `LICENSE`, `LICENSE-MIT`, `LICENSE-APACHE`, `LICENSE.chromium`, this
+carry `LICENSE`, `licenses/LICENSE-MIT`, `licenses/LICENSE-APACHE`, `licenses/LICENSE.chromium`, this
 `NOTICE.md`, and `THIRD_PARTY_NOTICES.md`. The latter includes dependency
 notices and MIT terms for bundled dependency code. Keep any additional
 copyright notices shipped with the actual dependency version.

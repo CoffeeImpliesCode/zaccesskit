@@ -19,8 +19,3 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
-
-This grant covers the port-authored code and changes. zaccesskit is derived
-from AccessKit and AccessKit C, whose authored material is MIT OR Apache-2.0.
-Their grants are retained in LICENSE-MIT and LICENSE-APACHE. Third-party
-material retains its own terms; see THIRD_PARTY_NOTICES.md and NOTICE.md.
