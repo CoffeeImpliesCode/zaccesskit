@@ -2,7 +2,7 @@
 
 A Zig port of [AccessKit](https://github.com/AccessKit/accesskit), with an
 accessibility tree, consumer queries, platform adapters, and a C interface.
-Experimental; native platform coverage and licensing are incomplete.
+Experimental; native platform coverage is incomplete.
 
 ## Requirements
 
@@ -90,10 +90,13 @@ Include `<zaccesskit.h>`. The artifact supplies the installed header. Pass
 - `test/`: C consumer, application scenarios, fixtures, and fuzz corpora.
 - `tools/`: benchmarks, C declaration checks, and native platform clients.
 
-## Licence and provenance
+## License
 
-No licence has been chosen for port-authored code. The distribution licence
-bundle is incomplete. See [licensing and provenance](docs/21-licensing.md).
-AccessKit-authored material is MIT OR Apache-2.0; Chromium- and Flutter-derived
-material carries additional BSD-style notices. This project is independent of
-AccessKit and does not claim endorsement by its authors or platform vendors.
+MIT, see [LICENSE](LICENSE). Third-party components keep their own licenses: see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+
+The port is derived from AccessKit and AccessKit C (MIT OR Apache-2.0).
+Chromium- and Flutter-derived portions retain their BSD-3-Clause notices.
+See [NOTICE.md](NOTICE.md) and [licensing and provenance](docs/21-licensing.md)
+for the component inventory and distribution requirements. This project is
+independent of AccessKit and does not claim endorsement by its authors or
+platform vendors.

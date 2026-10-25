@@ -1,8 +1,11 @@
 # Licensing and provenance
 
-The project has not chosen a licence for port-authored code. This inventory does
-not grant a licence. Distribution needs a review of upstream notices, translated
-files, dependency licences, and native SDK terms.
+Port-authored code and changes are MIT, Copyright (c) 2026 Janis Gertulla;
+see [LICENSE](../LICENSE). Upstream-owned material retains its own terms.
+The distribution license bundle is included at the repository root:
+[LICENSE-MIT](../LICENSE-MIT), [LICENSE-APACHE](../LICENSE-APACHE),
+[LICENSE.chromium](../LICENSE.chromium), [NOTICE.md](../NOTICE.md), and
+[THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md).
 
 ## Upstream source
 
@@ -45,26 +48,34 @@ Other upstream derivations have separate notices:
 | AccessKit `adapters/unix/src/executor.rs` | zbus; Copyright 2024 Zeeshan Ali Khan | MIT |
 | AccessKit C `src/lib.rs` | rustls-ffi; Copyright (c) 2021, Jacob Hoffman-Andrews | Apache-2.0 OR ISC OR MIT |
 
-The upstream rustls-ffi derivation header refers to `LICENSE-ISC`, which is absent
-from the pinned AccessKit C tree. The generated upstream C header also lacks the
-Chromium and Flutter copyright lines. Neither omission removes the applicable
-upstream conditions from derived material.
+The port uses the available MIT option for the derivations above. Their
+copyright notices and selected terms are retained in `NOTICE.md` and
+`LICENSE-MIT`. The upstream rustls-ffi derivation header refers to an absent
+`LICENSE-ISC`; that alternative is not needed for the MIT selection. The
+generated upstream C header omits some Chromium and Flutter copyright lines;
+the complete per-file inventory is retained in this port's `NOTICE.md`.
 
 ## Dependencies
 
 The package fetches [zio](https://github.com/lalinsky/zio) and
 [zigwin32](https://github.com/marlersoft/zigwin32); exact pins are in
 `build.zig.zon`. zio carries MIT notices for Lukas Lalinsky and Zig contributors.
-Its package path list omits its licence file, so a binary distribution must
-obtain and retain that text separately. zigwin32 includes its `LICENSE` in its
-package. D-Bus encoding is implemented in this repository; goose is not a
-dependency.
+Its package path list omits its license file, so the full pinned zio and Zig
+contributor notices are retained in `THIRD_PARTY_NOTICES.md` for distributions
+that bundle dependency code. zigwin32 includes its `LICENSE` in its package;
+its notice and MIT terms are also retained in `THIRD_PARTY_NOTICES.md`. D-Bus
+encoding is implemented in this repository; goose is not a dependency.
 
 ## Distribution
 
-Retain upstream copyright, permission, derivation, and change notices. Include
-the applicable full licence texts with source and binary distributions. The
-repository does not yet contain the complete distribution licence bundle or a
-port-authored grant. Review the derivative-work scope and Apple and Microsoft
-SDK terms before release. The project does not claim endorsement by AccessKit,
-Google, Apple, or Microsoft.
+Source and binary distributions containing the header or derived code must
+carry `LICENSE`, `LICENSE-MIT`, `LICENSE-APACHE`, `LICENSE.chromium`,
+`NOTICE.md`, and `THIRD_PARTY_NOTICES.md`. All six files are included in the
+Zig package path list. Retain upstream copyright, permission, derivation,
+and change notices. The public C header's existing notices remain unchanged.
+
+The root MIT grant applies to the port's authored code and changes, not to
+third-party ownership. AccessKit's MIT OR Apache-2.0 offer remains intact;
+Chromium and Flutter BSD obligations are separate. Native Apple and Microsoft
+SDK terms remain separate from this license bundle. The project does not
+claim endorsement by AccessKit, Google, Apple, or Microsoft.
